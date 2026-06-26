@@ -30,9 +30,14 @@
         --focus-ring: 0 0 0 4px rgba(3,114,255,0.25);
         --ease: cubic-bezier(.16,1,.3,1);
       }
-      html, body { height: 100%; background: #e6eaf2; color: var(--dark); font-family: 'DM Sans', system-ui, sans-serif; }
-      body { margin: 0; overflow: hidden; display: flex; justify-content: center; }
-      #app { position: relative; height: 100dvh; width: 390px; max-width: 100%; background: var(--n25); overflow: hidden; box-shadow: 0 0 0 1px rgba(22,31,91,0.06), 0 24px 70px rgba(22,31,91,0.16); }
+      html, body { height: 100%; background: var(--wall, #e6eaf2); color: var(--dark); font-family: 'DM Sans', system-ui, sans-serif; }
+      /* Docked side panel: the app fills the panel's full width at whatever
+         size the user drags it to — no fixed-width phone mockup, no centering
+         gutters, no floating drop-shadow frame. Inner content keeps its own
+         max-widths (msg-col, composer, console-inner) so lines stay readable
+         when the panel is dragged wide. */
+      body { margin: 0; overflow: hidden; }
+      #app { position: relative; height: 100dvh; width: 100%; background: var(--n25); overflow: hidden; }
       * { scrollbar-width: thin; scrollbar-color: var(--n300) transparent; }
       *::-webkit-scrollbar { width: 8px; height: 8px; }
       *::-webkit-scrollbar-thumb { background: var(--n300); border-radius: 4px; }
