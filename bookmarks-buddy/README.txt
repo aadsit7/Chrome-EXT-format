@@ -5,8 +5,8 @@ Save your favorite links and open them hands-free with your voice. Bookmarks
 Buddy runs as a SIDE PANEL docked beside your web pages.
 
 
-HOW TO LOAD (Developer mode → Load unpacked)
---------------------------------------------
+HOW TO LOAD (Developer mode -> Load unpacked)
+---------------------------------------------
 1. Open Chrome and go to:  chrome://extensions
 2. Turn on "Developer mode" (toggle in the top-right corner).
 3. Click "Load unpacked".
@@ -25,34 +25,48 @@ The first time you start listening, Chrome asks for microphone access so the
 extension can hear your voice commands. Allow it to use voice features.
 
 
-WHAT IT DOES
-------------
+WHAT IT DOES (unchanged from the original)
+------------------------------------------
 - Voice listening (Web Speech API) and spoken replies (text-to-speech).
-- Open bookmarks in new browser tabs/windows by voice or by clicking.
+- Open bookmarks in new browser tabs/windows by voice or by tapping a tile.
 - Save bookmarks, settings, and your home-screen layout on the device
-  (stored in localStorage — nothing leaves your browser by default).
-- A keyboard shortcut (configurable in Settings, default Ctrl+R) toggles
-  listening while the panel is focused.
-- Optional Google Sheet backup/sync: stays off unless you enter a code in
-  Settings. This is the only feature that talks to the network, which is why
-  the manifest requests host access to https://script.google.com/* — the app
-  works fully without it.
+  (localStorage — nothing leaves your browser).
+- Springboard home screen with folders and a rearrange ("jiggle") edit mode.
+- Site icons are fetched as images from Google's public favicon service; this
+  is an ordinary <img> load and needs no special permission.
+
+
+HOW IT WAS PACKAGED (notes for maintainers)
+-------------------------------------------
+The source was an exported, self-extracting single-file bundle built on a
+small React-based template framework ("dc-runtime"). Manifest V3 forbids two
+things the original relied on, so the bundle was unpacked into ordinary local
+files and two minimal, behavior-preserving adjustments were made:
+
+  1. dc-runtime evaluated the component logic with `new Function(...)`, which
+     MV3's content-security-policy blocks. The component source is now shipped
+     verbatim in lib/component-logic.js, wrapped in a real function; dc-runtime
+     was patched to call it instead of compiling a string. The app logic is
+     byte-for-byte unchanged.
+
+  2. dc-runtime loaded React, ReactDOM and Babel from a CDN at runtime. Those
+     are now bundled locally (lib/react*.js) and the runtime's URLs point at
+     the local copies. (Babel is only used for JSX, which this app does not
+     use, so it is not bundled.)
+
+Everything is local, so the default MV3 CSP is used (no custom CSP needed).
 
 
 FILES
 -----
-  manifest.json      Manifest V3 configuration
-  panel.html         The side-panel page (markup only)
-  panel.css          All styles (moved out of the original <style> block)
-  panel.js           The whole app (moved out of the original inline <script>)
-  background.js       Service worker — makes the toolbar icon open the panel
-  lib/lucide.min.js  Lucide icon library, bundled locally (no internet needed)
-  icons/             Toolbar/extension icons (16, 48, 128 px)
-
-
-NOTES
------
-- No code is loaded from the internet; everything is bundled locally, so the
-  default Manifest V3 content-security-policy is used (no custom CSP needed).
-- The DM Sans web font from the original file was removed; the UI falls back to
-  the system sans-serif font. This is purely cosmetic.
+  manifest.json              Manifest V3 configuration
+  panel.html                 The side-panel page (the unpacked app template)
+  background.js              Service worker — makes the toolbar icon open the panel
+  lib/dc-runtime.js          The template framework (patched: no eval, local URLs)
+  lib/component-logic.js     The app's component logic (was the inline x-dc script)
+  lib/lucide.min.js          Lucide icon library (bundled locally)
+  lib/react.production.min.js
+  lib/react-dom.production.min.js   React 18.3.1, bundled locally
+  lib/font-latin.woff2
+  lib/font-latin-ext.woff2   DM Sans web font, bundled locally
+  icons/                     Toolbar/extension icons (16, 48, 128 px)
