@@ -60,6 +60,8 @@
       .btn-primary:active { background: var(--primary-press); }
       .btn-outline { display: inline-flex; align-items: center; gap: 6px; background: transparent; color: var(--navy-deep); border: 1.5px solid var(--n300); border-radius: 999px; padding: 9px 20px; min-height: 42px; font-weight: 600; font-size: 13px; cursor: pointer; transition: border-color 0.12s, color 0.12s; }
       .btn-outline:hover { color: var(--primary); border-color: var(--primary); }
+      .btn-outline.armed { color: var(--primary); border-color: var(--primary); background: rgba(3,114,255,0.10); }
+      .btn-outline.armed:hover { background: rgba(3,114,255,0.16); }
       .btn-danger { display: inline-flex; align-items: center; gap: 6px; background: transparent; color: #dc2626; border: 1.5px solid #fca5a5; border-radius: 999px; padding: 9px 20px; min-height: 42px; font-weight: 600; font-size: 13px; cursor: pointer; transition: background 0.12s, color 0.12s; }
       .btn-danger:hover { background: #dc2626; border-color: #dc2626; color: #fff; }
 
