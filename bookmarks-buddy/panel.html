@@ -104,6 +104,7 @@
   <style>
     @keyframes bbJiggle { 0%{transform:rotate(-1.4deg)} 50%{transform:rotate(1.4deg)} 100%{transform:rotate(-1.4deg)} }
     @keyframes bbRing { 0%{transform:scale(1);opacity:.5} 100%{transform:scale(1.7);opacity:0} }
+    @keyframes bbMicPulse { 0%,100%{ box-shadow:0 8px 22px rgba(3,114,255,.45); } 50%{ box-shadow:0 8px 34px rgba(3,114,255,.85); } }
     @keyframes bbBlink { 50%{opacity:.3} }
     @keyframes bbCaret { 50%{opacity:0} }
     @keyframes bbPop { 0%{transform:scale(.96)} 55%{transform:scale(1.04)} 100%{transform:scale(1)} }
@@ -216,7 +217,7 @@
     <!-- ===== Dock ===== -->
     <div style="flex-shrink:0; display:flex; align-items:center; justify-content:center; gap:22px; margin:6px 18px 18px; padding:11px 18px; border-radius:24px; background:var(--bb-glass); border:1px solid var(--bb-glass-bd); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px); box-shadow:var(--bb-glass-sh);">
       <button onclick="{{ openAdd }}" aria-label="Add site" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="plus" style="width:23px;height:23px;"></i></button>
-      <button onclick="{{ launchVoice }}" aria-label="Start voice" style="position:relative; width:62px; height:62px; border-radius:50%; border:none; cursor:pointer; display:grid; place-items:center; color:#fff; background:linear-gradient(140deg,var(--bb-accent),var(--bb-accent2)); box-shadow:0 8px 22px rgba(3,114,255,.45); margin-top:-14px;"><i data-lucide="mic" style="width:27px;height:27px;"></i></button>
+      <button onclick="{{ toggleMic }}" aria-label="{{ micLabel }}" style="position:relative; width:62px; height:62px; border-radius:50%; border:none; cursor:pointer; display:grid; place-items:center; color:#fff; background:linear-gradient(140deg,var(--bb-accent),var(--bb-accent2)); box-shadow:0 8px 22px rgba(3,114,255,.45); margin-top:-14px; {{ micBtnAnim }}"><span class="bb-mic-ring" style="{{ micRingStyle }}"></span><i data-lucide="{{ micIcon }}" style="width:27px;height:27px; position:relative; z-index:1;"></i></button>
       <button onclick="{{ toggleEdit }}" aria-label="Rearrange" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="layout-grid" style="width:22px;height:22px;"></i></button>
     </div>
   </sc-if>
