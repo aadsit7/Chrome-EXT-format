@@ -193,6 +193,13 @@
       </div>
     </div>
 
+    <!-- rename current page (edit mode) -->
+    <sc-if value="{{ editMode }}" hint-placeholder-val="{{ false }}">
+      <div style="flex-shrink:0; display:flex; justify-content:center; padding:0 18px 6px;">
+        <input type="text" value="{{ pageTitle }}" oninput="{{ onPageName }}" placeholder="Page name" spellcheck="false" style="width:60%; max-width:220px; height:34px; text-align:center; padding:0 12px; border-radius:11px; border:1px solid var(--bb-glass-bd); background:var(--bb-search-bg); color:var(--bb-fg); font-family:inherit; font-size:13px; font-weight:700; outline:none;">
+      </div>
+    </sc-if>
+
     <!-- page dots / done bar -->
     <div style="flex-shrink:0; display:flex; align-items:center; justify-content:center; gap:8px; height:30px;">
       <sc-if value="{{ editMode }}" hint-placeholder-val="{{ false }}">
@@ -309,13 +316,22 @@
     <div style="position:absolute; inset:0; z-index:150; display:grid; place-items:center; padding:30px; animation:bbFade .18s ease-out;">
       <div onclick="{{ closeFolder }}" style="position:absolute; inset:0; background:var(--bb-scrim);"></div>
       <div style="position:relative; width:100%; max-width:330px; background:var(--bb-folder-panel); border:1px solid var(--bb-glass-bd); border-radius:26px; padding:22px 20px; -webkit-backdrop-filter:blur(24px); backdrop-filter:blur(24px); box-shadow:0 30px 70px rgba(0,0,0,.4); animation:bbPop .25s var(--bb-ease);">
-        <div style="text-align:center; font-size:18px; font-weight:800; letter-spacing:-.01em; color:var(--bb-fg); margin-bottom:18px;">{{ folderName }}</div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:18px;">
+          <span style="width:46px;"></span>
+          <div style="flex:1; text-align:center; font-size:18px; font-weight:800; letter-spacing:-.01em; color:var(--bb-fg);">{{ folderName }}</div>
+          <button onclick="{{ toggleFolderEdit }}" style="flex-shrink:0; width:46px; text-align:right; border:none; background:transparent; color:var(--bb-accent); font-family:inherit; font-size:13px; font-weight:700; cursor:pointer;">{{ folderEditLabel }}</button>
+        </div>
         <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:18px 6px; justify-items:center;">
           <sc-for list="{{ folderApps }}" as="fa" hint-placeholder-count="6">
-            <button data-id="{{ fa.id }}" onclick="{{ fa.onTap }}" style="display:flex; flex-direction:column; align-items:center; gap:6px; border:none; background:transparent; cursor:pointer; font-family:inherit; padding:0;">
-              <span class="bb-tile {{ fa.tileClass }}" data-bg="{{ fa.grad }}" style="position:relative; width:58px; height:58px; border-radius:16px; display:grid; place-items:center; overflow:hidden; background:var(--bb-tile); box-shadow:var(--bb-tile-sh);"><img class="bb-tile-img bb-ico" data-src="{{ fa.icon }}" data-letter="{{ fa.letter }}" style="width:32px;height:32px;"><span class="bb-tile-letter" style="position:absolute; inset:0; place-items:center; font-size:24px; font-weight:800; color:#fff;">{{ fa.letter }}</span></span>
-              <span style="font-size:11.5px; font-weight:600; color:var(--bb-fg); max-width:74px; text-align:center; line-height:1.22; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; word-break:break-word;">{{ fa.name }}</span>
-            </button>
+            <div class="bb-fapp" style="position:relative; display:flex; flex-direction:column; align-items:center; gap:6px;">
+              <sc-if value="{{ folderEditing }}" hint-placeholder-val="{{ false }}">
+                <button onclick="{{ fa.onRemove }}" aria-label="Take out" style="position:absolute; top:-7px; left:50%; margin-left:-21px; z-index:3; width:22px; height:22px; border-radius:50%; border:none; cursor:pointer; background:#fff; color:#15171f; box-shadow:0 1px 5px rgba(0,0,0,.4); display:grid; place-items:center;"><i data-lucide="minus" style="width:14px;height:14px;"></i></button>
+              </sc-if>
+              <button data-id="{{ fa.id }}" onclick="{{ fa.onTap }}" style="display:flex; flex-direction:column; align-items:center; gap:6px; border:none; background:transparent; cursor:pointer; font-family:inherit; padding:0;">
+                <span class="bb-tile {{ fa.tileClass }}" data-bg="{{ fa.grad }}" style="position:relative; width:58px; height:58px; border-radius:16px; display:grid; place-items:center; overflow:hidden; background:var(--bb-tile); box-shadow:var(--bb-tile-sh);"><img class="bb-tile-img bb-ico" data-src="{{ fa.icon }}" data-letter="{{ fa.letter }}" style="width:32px;height:32px;"><span class="bb-tile-letter" style="position:absolute; inset:0; place-items:center; font-size:24px; font-weight:800; color:#fff;">{{ fa.letter }}</span></span>
+                <span style="font-size:11.5px; font-weight:600; color:var(--bb-fg); max-width:74px; text-align:center; line-height:1.22; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; word-break:break-word;">{{ fa.name }}</span>
+              </button>
+            </div>
           </sc-for>
         </div>
         <button onclick="{{ openFolderAll }}" style="width:100%; height:44px; margin-top:20px; border-radius:13px; border:1px solid var(--bb-glass-bd); background:var(--bb-glass); color:var(--bb-fg); font-family:inherit; font-size:13px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:8px;"><i data-lucide="layers" style="width:16px;height:16px;"></i>Open all {{ folderCount }} sites</button>
