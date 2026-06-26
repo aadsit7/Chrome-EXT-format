@@ -9,6 +9,8 @@ class Component extends DCLogic {
   constructor(props) {
     super(props);
     this.PER_PAGE = 16;
+    this.STALL_MS = 5000;          // recognition is considered stalled after this many ms with no events
+    this._opened = [];             // window references we opened by voice/tap (for "close tabs")
     this.LS_B = 'bookmarksBuddy.sidepanel.bookmarks.v1';
     this.LS_L = 'bookmarksBuddy.sidepanel.layout.v1';
     this.LS_S = 'bookmarksBuddy.sidepanel.settings.v1';
@@ -363,6 +365,7 @@ class Component extends DCLogic {
   parseCommand(raw) {
     const t = ' ' + this.normalize(raw) + ' ';
     if (/\b(stop listening|quit listening|turn (it |yourself )?off|go to sleep|stop now)\b/.test(t)) return { kind: 'stop' };
+    if (/\bclose\b/.test(t) && /\b(tabs?|windows?|them|those|these|everything|all|it|that)\b/.test(t)) return { kind: 'close' };
     if (/\b(what can you do|help me out|show help|list (my )?bookmarks|what bookmarks)\b/.test(t)) return { kind: 'help' };
     const addM = (' ' + String(raw).toLowerCase().replace(/[^a-z0-9\s.\-]/g, ' ').replace(/\s+/g, ' ').trim() + ' ').match(/\b(add a bookmark for|new bookmark for|add a bookmark|new bookmark|bookmark|add|save|remember)\b/);
     if (addM) { const rawQ = addM.input.slice(addM.index + addM[0].length).replace(/\b(a|an|the|please|for me|to my (bookmarks|favorites))\b/g, ' ').replace(/\s+/g, ' ').trim(); return { kind: 'add', query: this.normalize(rawQ), rawQuery: rawQ }; }
@@ -385,24 +388,76 @@ class Component extends DCLogic {
   }
   handleTranscript(raw) {
     const text = String(raw).trim(); if (!text) return;
+    // Dictation: while a text field is focused, type the spoken words into it
+    // instead of running commands — but still honour "stop listening".
+    const field = this.activeField();
+    if (field) {
+      const c0 = this.parseCommand(text);
+      if (c0.kind === 'stop') { this.stopListen(); return; }
+      this.dictate(field, text); return;
+    }
     const nav = this.parsePageNav(text);
     if (nav) { this.applyNav(nav); return; }
     const cmd = this.parseCommand(text);
     if (cmd.kind === 'stop') { this.stopListen(); return; }
+    if (cmd.kind === 'close') { this.closeOpened(); return; }
     if (cmd.kind === 'help') { this.toast('Say “open” + a site, “next page”, or “add Notion”', 'sparkles'); return; }
     if (cmd.kind === 'add') { if (cmd.rawQuery) this.addByVoice(cmd.rawQuery); else this.toast('Say a site to add, e.g. “add Notion”', 'mic'); return; }
     if (cmd.kind === 'maybe') {
       const exact = this.state.bookmarks.find(b => this.normalize(b.name) === cmd.query || this.normalize(this.hostCore(b.url)) === cmd.query);
       if (exact) this.openBookmark(exact, true);
-      else { const f = this.allFolders().find(f => this.normalize(f.name) === cmd.query); if (f) this.openFolderModal(f); }
+      else { const f = this.allFolders().find(f => this.normalize(f.name) === cmd.query); if (f) this.openFolderVoice(f); }
       return;
     }
     if (!cmd.query) { this.toast('Say “open” and a site name', 'mic'); return; }
     const tg = this.resolveTarget(cmd.query);
     if (!tg) { this.toast('No site matches “' + cmd.query + '”', 'search-x'); return; }
     if (tg.kind === 'bookmark') this.openBookmark(tg.bm, true);
-    else this.openFolderModal(tg.folder);
+    else this.openFolderVoice(tg.folder);
   }
+  // The focused text field within our app, if any (used for dictation).
+  activeField() {
+    const el = document.activeElement;
+    if (!el) return null;
+    const tag = el.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') return null;
+    if (tag === 'INPUT' && !/^(text|search|url|email|tel|number|password|)$/i.test(el.type || 'text')) return null;
+    if (!el.closest || !el.closest('.bb-root')) return null;
+    // The search box invites spoken commands ("or say open…"), so it stays a
+    // command target rather than a dictation sink.
+    if (el.hasAttribute('data-no-dictate')) return null;
+    return el;
+  }
+  // Append dictated words to a (React-controlled) field and notify React so its
+  // state updates exactly as if the user had typed.
+  dictate(el, text) {
+    const cur = el.value || '';
+    const sep = cur && !/\s$/.test(cur) ? ' ' : '';
+    const next = cur + sep + text.trim();
+    const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (setter && setter.set) setter.set.call(el, next); else el.value = next;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    this.setState({ heard: text.trim() });
+  }
+  // Briefly pulse the matched tile on the springboard so the user sees the hit.
+  highlightTile(id) {
+    this._hitId = id;
+    if (this._hitT) { clearTimeout(this._hitT); this._hitT = null; }
+    this.applyHit();
+    this._hitT = setTimeout(() => { this._hitId = null; this.applyHit(); this._hitT = null; }, 1300);
+  }
+  applyHit() {
+    const root = document.querySelector('.bb-root'); if (!root) return;
+    root.querySelectorAll('.bb-tile.bb-hit').forEach(t => t.classList.remove('bb-hit'));
+    if (!this._hitId) return;
+    const sel = (window.CSS && CSS.escape) ? CSS.escape(this._hitId) : String(this._hitId).replace(/"/g, '\\"');
+    const cell = root.querySelector('.bb-cell[data-id="' + sel + '"]');
+    const tile = cell && cell.querySelector('.bb-tile');
+    if (tile) tile.classList.add('bb-hit');
+  }
+  // Tuck the big voice overlay away without stopping the session's listener.
+  hideVoiceOverlay() { if (this.state.voiceOpen) this.setState({ voiceOpen: false }); }
   applyNav(nav) {
     const n = this.state.pages.length, to = nav.to;
     if (to < 0 || to >= n) { this.toast(nav.rel ? (to < 0 ? 'First page' : 'Last page') : 'No such page', 'panel-left'); return; }
@@ -413,16 +468,51 @@ class Component extends DCLogic {
   pageName(i) { return (this.state.pageNames[i] || '').trim() || ('Page ' + (i + 1)); }
 
   /* ---------- actions ---------- */
+  // Open a URL the same way the rest of the app does (window.open from the
+  // panel), but keep the returned window reference so "close tabs" can shut the
+  // ones voice opened and so the tile can be tracked.
+  openUrl(url) {
+    url = this.ensureScheme(url); if (!url) return null;
+    let w = null;
+    try { w = window.open(url, '_blank'); if (w) w.opener = null; } catch {}
+    if (w) { this._opened = this._opened.filter(x => x && !x.closed); this._opened.push(w); }
+    return w;
+  }
+  // Close every tab/window we opened this session.
+  closeOpened() {
+    const live = (this._opened || []).filter(x => x && !x.closed);
+    let n = 0;
+    live.forEach(w => { try { w.close(); n++; } catch {} });
+    this._opened = [];
+    this.toast(n ? ('Closed ' + n + (n === 1 ? ' tab' : ' tabs')) : 'Nothing to close', 'x');
+    this.speakIf(n ? ('Closed ' + n + (n === 1 ? ' tab' : ' tabs')) : 'Nothing to close');
+  }
   openBookmark(bm, viaVoice) {
     if (!bm) return; const url = this.ensureScheme(bm.url);
     if (!url) { this.toast('That site has no address', 'triangle-alert'); return; }
-    try { const w = window.open(url, '_blank'); if (w) w.opener = null; } catch {}
+    this.openUrl(url);
     this.toast('Opening ' + (bm.name || this.hostCore(bm.url)), 'external-link');
     this.speakIf('Opening ' + (bm.name || this.hostCore(bm.url)));
-    if (viaVoice) { this.setState({ heard: bm.name || this.hostCore(bm.url) }); setTimeout(() => this.closeVoiceFn(), 900); }
+    if (viaVoice) {
+      this.highlightTile(bm.id);
+      // Keep listening for the whole session — only clear the heard label and,
+      // if the big voice overlay happens to be open, tuck it away.
+      this.setState({ heard: bm.name || this.hostCore(bm.url) });
+      setTimeout(() => { this.hideVoiceOverlay(); this.setState({ heard: '' }); }, 1400);
+    }
   }
   openFolderModal(f) { this.setState({ folderOpen: f, folderEdit: false, voiceOpen: false }); this.stopRec(); }
-  openFolderAllFn() { const f = this.state.folderOpen; if (!f) return; f.items.forEach(id => { const bm = this.state.bookmarks.find(b => b.id === id); if (bm) { try { const w = window.open(this.ensureScheme(bm.url), '_blank'); if (w) w.opener = null; } catch {} } }); this.toast('Opening ' + f.items.length + ' sites', 'layers'); this.setState({ folderOpen: null, folderEdit: false }); }
+  // Voice "open <folder>" fans the folder out, opening every site it holds (web
+  // app behaviour), while keeping the listener alive.
+  openFolderVoice(f) {
+    if (!f) return;
+    f.items.forEach(id => { const bm = this.state.bookmarks.find(b => b.id === id); if (bm) this.openUrl(bm.url); });
+    this.toast('Opening ' + f.items.length + ' sites', 'layers');
+    this.speakIf('Opening ' + f.name);
+    this.setState({ heard: f.name });
+    setTimeout(() => { this.hideVoiceOverlay(); this.setState({ heard: '' }); }, 1400);
+  }
+  openFolderAllFn() { const f = this.state.folderOpen; if (!f) return; f.items.forEach(id => { const bm = this.state.bookmarks.find(b => b.id === id); if (bm) this.openUrl(bm.url); }); this.toast('Opening ' + f.items.length + ' sites', 'layers'); this.setState({ folderOpen: null, folderEdit: false }); }
   addBookmark(name, url, silent) {
     url = String(url || '').trim(); name = String(name || '').trim();
     if (!url) { this.toast('Enter a web address', 'triangle-alert'); return false; }
@@ -510,7 +600,11 @@ class Component extends DCLogic {
       else if (interim) this.setState({ interim: interim.trim() });
     };
     r.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { this.stopListen(); this.toast('Allow microphone access, then try again', 'mic-off'); } };
-    r.onstart = () => { this._running = true; this._lastEvt = Date.now(); };
+    // Any sign of life resets the stall clock so the watchdog never aborts a
+    // healthy recognizer mid-utterance; only a truly silent (zombie) one trips it.
+    const bump = () => { this._lastEvt = Date.now(); };
+    r.onstart = () => { this._running = true; bump(); };
+    r.onaudiostart = bump; r.onsoundstart = bump; r.onspeechstart = bump; r.onaudioend = bump;
     r.onend = () => { this._running = false; if (this._want && this.state.listening) this.kick(); };
     this._rec = r; return r;
   }
@@ -518,9 +612,29 @@ class Component extends DCLogic {
   startListen() {
     const r = this.ensureRec();
     if (!r) { this.setState({ voiceOpen: true }); return; }
-    if (navigator.mediaDevices) navigator.mediaDevices.getUserMedia({ audio: true }).then(s => { this._mic = s; }).catch(() => {});
+    this.holdMic();
     this._want = true; this.setState({ listening: true, interim: '', heard: '' }); this.kick();
-    if (!this._wd) this._wd = setInterval(() => { if (this._want && this.state.listening && !this._running) this.kick(); }, 4000);
+    // Reliability watchdog. Web Speech silently dies on long sessions, so every
+    // few seconds we (a) revive a recognizer that has stopped and (b) abort()+
+    // restart one that is "running" but has gone silent past STALL_MS (a zombie).
+    if (!this._wd) this._wd = setInterval(() => {
+      if (!this._want || !this.state.listening) return;
+      this.holdMic();
+      if (!this._running) { this.kick(); return; }
+      if (this._lastEvt && Date.now() - this._lastEvt > this.STALL_MS) {
+        this._lastEvt = Date.now();
+        try { this._rec.abort(); } catch {}   // onend -> kick() brings it straight back
+      }
+    }, 2500);
+  }
+  // Hold one live mic stream open for the whole session so the recognizer (and
+  // the watchdog) stay warm. Only requested when we don't already have a live
+  // track, so a granted permission is never re-prompted.
+  holdMic() {
+    if (this._mic && this._mic.getTracks().some(t => t.readyState === 'live')) return;
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(s => { this._mic = s; }).catch(() => {});
+    }
   }
   stopRec() { this._want = false; if (this._rec) { try { this._rec.stop(); } catch {} } if (this._mic) { this._mic.getTracks().forEach(t => t.stop()); this._mic = null; } }
   stopListen() { this.stopRec(); if (this._wd) { clearInterval(this._wd); this._wd = null; } this.setState({ listening: false, interim: '' }); }
@@ -593,10 +707,37 @@ class Component extends DCLogic {
       if (img.getAttribute('src') && img.complete && img.naturalWidth === 0) fail();
     });
   }
-  postRender() { this.applyTheme(); this.applyTransform(); this.applyEdit(); this.refreshIcons(); this.handleIcons(); }
-  componentDidMount() { this.postRender(); this.attachGestures(); this.attachKeys(); this.sheetBoot(); this.autoStartMic(); }
+  postRender() { this.applyTheme(); this.applyTransform(); this.applyEdit(); this.refreshIcons(); this.handleIcons(); this.applyHit(); }
+  componentDidMount() { this.postRender(); this.attachGestures(); this.attachKeys(); this.attachLifecycle(); this.sheetBoot(); this.autoStartMic(); }
   componentDidUpdate() { this.postRender(); }
-  componentWillUnmount() { this.stopListen(); if (this._keyH) window.removeEventListener('keydown', this._keyH); }
+  componentWillUnmount() { this.stopListen(); this.detachLifecycle(); if (this._hitT) clearTimeout(this._hitT); if (this._keyH) window.removeEventListener('keydown', this._keyH); }
+
+  /* ---------- side-panel lifecycle (revive-only) ----------
+   * A side panel keeps its own document alive for the whole session; clicking
+   * into the underlying web page merely blurs the panel. So — unlike the web
+   * tab version, which stops on blur/hide — we must NEVER stop listening on
+   * blur, or a side-panel focus quirk would silently kill the mic on every page
+   * click. We only REVIVE: whenever the panel regains visibility/focus and we
+   * still want to listen, re-arm the held mic and re-kick the recognizer. The
+   * watchdog covers anything that dies while we're blurred. The mic is released
+   * only when the panel is genuinely torn down (pagehide / unmount). */
+  attachLifecycle() {
+    if (this._lifeAttached) return; this._lifeAttached = true;
+    const revive = () => { if (this._want && this.state.listening) { this.holdMic(); this.kick(); } };
+    this._visH = () => { if (!document.hidden) revive(); };
+    this._focusH = () => revive();
+    document.addEventListener('visibilitychange', this._visH);
+    window.addEventListener('focus', this._focusH);
+    window.addEventListener('pageshow', this._focusH);
+    this._unloadH = () => { try { this.stopRec(); } catch {} };
+    window.addEventListener('pagehide', this._unloadH);
+  }
+  detachLifecycle() {
+    if (this._visH) document.removeEventListener('visibilitychange', this._visH);
+    if (this._focusH) { window.removeEventListener('focus', this._focusH); window.removeEventListener('pageshow', this._focusH); }
+    if (this._unloadH) window.removeEventListener('pagehide', this._unloadH);
+    this._lifeAttached = false;
+  }
 
   /* ---------- keyboard shortcut ---------- */
   attachKeys() {
