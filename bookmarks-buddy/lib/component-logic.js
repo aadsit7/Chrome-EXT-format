@@ -26,6 +26,7 @@ class Component extends DCLogic {
       editMode: false, voiceOpen: false, listening: false, interim: '', heard: '',
       draftName: '', draftUrl: '', dark: false, speak: false,
       editing: null, editName: '', editUrl: '', editIcon: '', editNotes: '', editConfirmDelete: false,
+      dictating: false,
       toast: '', toastIcon: '', srSupported: !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     };
     this.loadData();
@@ -473,9 +474,9 @@ class Component extends DCLogic {
       editName: bm.name || '', editUrl: bm.url || '',
       editIcon: bm.icon || '', editNotes: bm.notes || '',
       editConfirmDelete: false
-    });
+    }, () => this.startDictation('editName'));
   }
-  closeEdit() { this.setState({ editing: null, editConfirmDelete: false }); }
+  closeEdit() { this.stopDictation(); this.setState({ editing: null, editConfirmDelete: false }); }
   saveEdit() {
     const id = this.state.editing; if (!id) return;
     const url = String(this.state.editUrl || '').trim();
@@ -488,14 +489,83 @@ class Component extends DCLogic {
     // Update the bookmark in place — its springboard slot/page is left alone, so
     // editing never moves a tile. sheetSync() diffs and queues only this change.
     const bms = this.state.bookmarks.map(b => b.id === id ? { ...b, name, url, icon, notes } : b);
+    this.stopDictation();
     this.setState({ bookmarks: bms, editing: null, editConfirmDelete: false }, () => this.save());
     this.toast('Saved', 'check');
   }
   confirmDeleteEdit() {
     const id = this.state.editing; if (!id) return;
+    this.stopDictation();
     this.setState({ editing: null, editConfirmDelete: false });
     this.deleteBookmark(id);
   }
+
+  /* ---------- field dictation (voice-to-text in the Add/Edit sheets) ----------
+   * While a sheet is open the microphone runs automatically and types what you
+   * say into whichever text box has focus — switch boxes with the mouse, no
+   * keyboard needed. The same SpeechRecognition stream is reused; setting
+   * _dictTarget makes onresult route text to the field instead of the command
+   * parser. URL/Icon boxes get light spoken-punctuation handling ("dot" -> ".",
+   * "slash" -> "/") so a spoken address lands usable. */
+  isUrlField(key) { return key === 'draftUrl' || key === 'editUrl' || key === 'editIcon'; }
+  dictationText(prev, spoken, isUrl) {
+    spoken = String(spoken || '').trim(); if (!spoken) return prev;
+    if (isUrl) {
+      let s = ' ' + spoken.toLowerCase() + ' ';
+      s = s.replace(/\bdot\b/g, '.').replace(/\bslash\b/g, '/').replace(/\bcolon\b/g, ':')
+           .replace(/\b(dash|hyphen)\b/g, '-').replace(/\bunderscore\b/g, '_')
+           .replace(/\s+/g, '');
+      return prev + s;
+    }
+    return (prev ? prev.replace(/\s+$/, '') + ' ' : '') + spoken;
+  }
+  dictatePreview(interim) {
+    const key = this._dictTarget; if (!key) return;
+    this.setState({ [key]: this.dictationText(this._dictBase, interim, this.isUrlField(key)) });
+  }
+  dictateCommit(fin) {
+    const key = this._dictTarget; if (!key) return;
+    this._dictBase = this.dictationText(this._dictBase, fin, this.isUrlField(key));
+    this.setState({ [key]: this._dictBase });
+  }
+  // Called when a field gains focus (mouse click or programmatic). Dictation
+  // aims at this box and starts from an empty base, so the first thing you say
+  // *replaces* its contents (you're dictating the value, not appending to the
+  // old one) while further words in the same focus accumulate. A box you never
+  // speak into keeps whatever it already had.
+  setDictField(key) {
+    this._lastField = key; this._dictTarget = key; this._dictBase = '';
+  }
+  focusField(key) {
+    try { const el = document.querySelector('.bb-root [data-field="' + key + '"]'); if (el) el.focus({ preventScroll: true }); } catch {}
+  }
+  // Open a sheet -> start the mic in dictation mode aimed at its first field.
+  startDictation(firstKey) {
+    if (!this.state.srSupported) { this.setDictField(firstKey); return; }
+    this._wasListening = this.state.listening;
+    this.setDictField(firstKey);
+    this.setState({ dictating: true });
+    if (!this.state.listening) this.startListen(); else this.kick();
+    setTimeout(() => this.focusField(firstKey), 80);
+  }
+  // Close a sheet -> leave dictation; resume command listening only if it was on
+  // before the sheet opened, otherwise stop the mic entirely.
+  stopDictation() {
+    const wasL = this._wasListening; this._wasListening = false;
+    this._dictTarget = null; this._dictBase = ''; this._lastField = null;
+    if (this.state.dictating) this.setState({ dictating: false });
+    if (wasL) { this._want = true; this.kick(); } else this.stopListen();
+  }
+  // Optional pause/resume toggle shown in the sheet, in case you'd rather type.
+  pauseDictation() { this._dictTarget = null; this._want = false; if (this._rec) { try { this._rec.stop(); } catch {} } this.setState({ dictating: false }); }
+  resumeDictation() {
+    if (!this.state.srSupported) return;
+    const k = this._lastField || (this.state.editing ? 'editName' : 'draftName');
+    this._want = true; this.setDictField(k); this.setState({ dictating: true });
+    if (!this.state.listening) this.startListen(); else this.kick();
+    this.focusField(k);
+  }
+  toggleDictation() { if (this.state.dictating) this.pauseDictation(); else this.resumeDictation(); }
 
   /* ---------- voice lifecycle ---------- */
   ensureRec() {
@@ -506,6 +576,13 @@ class Component extends DCLogic {
     r.onresult = (e) => {
       this._lastEvt = Date.now(); let interim = '', fin = '';
       for (let i = e.resultIndex; i < e.results.length; i++) { const res = e.results[i]; const t = res[0] && res[0].transcript || ''; if (res.isFinal) fin += t + ' '; else interim += t; }
+      // Dictation mode: while the Add/Edit sheet is open the mic types into the
+      // focused text box instead of being parsed as a voice command.
+      if (this._dictTarget) {
+        if (fin) this.dictateCommit(fin.trim());
+        else if (interim) this.dictatePreview(interim.trim());
+        return;
+      }
       if (fin) { this.setState({ interim: '' }); this.handleTranscript(fin); }
       else if (interim) this.setState({ interim: interim.trim() });
     };
@@ -869,7 +946,7 @@ class Component extends DCLogic {
       showResults, showBoard: !showResults, noResults: showResults && results.length === 0, results,
       pages, dots, showDots: s.pages.length > 1 && !s.editMode, editMode: s.editMode,
       openSettings: () => this.setState({ settingsOpen: true }), closeSettings: () => this.setState({ settingsOpen: false }),
-      openAdd: () => this.setState({ adding: true, draftName: '', draftUrl: '' }), closeAdd: () => this.setState({ adding: false }),
+      openAdd: () => this.setState({ adding: true, draftName: '', draftUrl: '' }, () => this.startDictation('draftName')), closeAdd: () => { this.stopDictation(); this.setState({ adding: false }); },
       launchVoice: () => this.launchVoiceFn(), closeVoice: () => this.closeVoiceFn(), toggleListen: () => { if (s.listening) this.stopListen(); else this.startListen(); },
       // Dock mic button: pulses while the mic is live; tapping it stops listening
       // (and re-opens the voice panel to start again when it's off).
@@ -881,7 +958,8 @@ class Component extends DCLogic {
       adding: s.adding, settingsOpen: s.settingsOpen,
       draftName: s.draftName, draftUrl: s.draftUrl,
       onDraftName: e => this.setState({ draftName: e.target.value }), onDraftUrl: e => this.setState({ draftUrl: e.target.value }),
-      saveAdd: () => { if (this.addBookmark(s.draftName, s.draftUrl)) this.setState({ adding: false }); },
+      onFocusDraftName: () => this.setDictField('draftName'), onFocusDraftUrl: () => this.setDictField('draftUrl'),
+      saveAdd: () => { if (this.addBookmark(s.draftName, s.draftUrl)) { this.stopDictation(); this.setState({ adding: false }); } },
       // ----- per-bookmark edit panel -----
       editing: !!s.editing,
       editName: s.editName, editUrl: s.editUrl, editIcon: s.editIcon, editNotes: s.editNotes,
@@ -889,6 +967,8 @@ class Component extends DCLogic {
       onEditUrl: e => this.setState({ editUrl: e.target.value }),
       onEditIcon: e => this.setState({ editIcon: e.target.value }),
       onEditNotes: e => this.setState({ editNotes: e.target.value }),
+      onFocusEditName: () => this.setDictField('editName'), onFocusEditUrl: () => this.setDictField('editUrl'),
+      onFocusEditIcon: () => this.setDictField('editIcon'), onFocusEditNotes: () => this.setDictField('editNotes'),
       // Live tile preview: a hosted http(s) image if given, else the site favicon
       // (same icon rule the springboard tiles use). bb-ico falls back to the letter.
       editIconPreview: (/^https?:\/\//i.test(String(s.editIcon || '').trim()) ? String(s.editIcon).trim() : this.favicon(s.editUrl)),
@@ -898,6 +978,12 @@ class Component extends DCLogic {
       askDeleteEdit: () => this.setState({ editConfirmDelete: true }),
       cancelDeleteEdit: () => this.setState({ editConfirmDelete: false }),
       confirmDeleteEdit: () => this.confirmDeleteEdit(),
+      // ----- dictation status pill (shared by Add + Edit sheets) -----
+      micSupported: s.srSupported, dictating: s.dictating,
+      toggleDictation: () => this.toggleDictation(),
+      dictLabel: !s.srSupported ? 'Voice not supported here' : (s.dictating ? 'Listening — just speak' : 'Voice paused — tap to dictate'),
+      dictDot: s.dictating ? '#22c55e' : 'var(--bb-fg-soft)', dictDotAnim: s.dictating ? 'animation:bbBlink 1.4s infinite;' : '',
+      dictIcon: s.dictating ? 'mic' : 'mic-off',
       suggestions,
       addPage: () => this.addPage(),
       pageList: s.pages.map((pg, i) => {
