@@ -28,6 +28,7 @@ class Component extends DCLogic {
       editMode: false, voiceOpen: false, listening: false, interim: '', heard: '',
       draftName: '', draftUrl: '', dark: false, speak: false,
       editing: null, editName: '', editUrl: '', editIcon: '', editNotes: '', editConfirmDelete: false,
+      choosing: null, choiceQuery: '',
       toast: '', toastIcon: '', srSupported: !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     };
     this.loadData();
@@ -331,21 +332,75 @@ class Component extends DCLogic {
   normalize(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim(); }
   lev(a, b) { a = a || ''; b = b || ''; if (a === b) return 0; if (!a.length) return b.length; if (!b.length) return a.length; let prev = Array.from({ length: b.length + 1 }, (_, i) => i); for (let i = 1; i <= a.length; i++) { let cur = [i]; for (let j = 1; j <= b.length; j++) { const c = a[i - 1] === b[j - 1] ? 0 : 1; cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + c); } prev = cur; } return prev[b.length]; }
   sim(a, b) { a = a || ''; b = b || ''; if (!a || !b) return 0; const m = Math.max(a.length, b.length); return m ? 1 - this.lev(a, b) / m : 0; }
-  scoreBookmark(query, bm) {
-    const q = this.normalize(query); if (!q) return 0;
+  // ---- speech-robust matching helpers ----
+  // Common ways the speech engine mangles popular site names. These are SAFE
+  // spelling/spacing fixes ("g mail" -> "gmail"): they're added as extra query
+  // variants, never used to rename what the user actually said, so they can only
+  // help a correct match and never cause a wrong one.
+  aliasMap() {
+    return this._aliasMap || (this._aliasMap = {
+      'g mail': 'gmail', 'google mail': 'gmail',
+      'you tube': 'youtube', 'u tube': 'youtube', 'utube': 'youtube',
+      'linked in': 'linkedin', 'fig ma': 'figma',
+      'chat gpt': 'chatgpt', 'chat g p t': 'chatgpt', 'chatgbt': 'chatgpt', 'chat gbt': 'chatgpt',
+      'google drive': 'drive', 'g drive': 'drive',
+      'google calendar': 'calendar', 'g calendar': 'calendar', 'g cal': 'calendar',
+      'google docs': 'docs', 'google sheets': 'sheets', 'google slides': 'slides',
+      'sales force': 'salesforce', 'git hub': 'github', 'face book': 'facebook',
+      'whats app': 'whatsapp', 'what s app': 'whatsapp', 'insta': 'instagram', 'the gram': 'instagram',
+      'note ion': 'notion', 'no shun': 'notion', 'red it': 'reddit', 'micro soft': 'microsoft',
+      'out look': 'outlook', 'drop box': 'dropbox', 'sound cloud': 'soundcloud'
+    });
+  }
+  // A compact Soundex-style key, used only as a last-resort tie-breaker for
+  // consonant-preserving mis-hears (e.g. "figma" vs "fig mah").
+  phon(s) {
+    s = String(s || '').toLowerCase().replace(/[^a-z]/g, '');
+    if (!s) return '';
+    const map = { b: '1', f: '1', p: '1', v: '1', c: '2', g: '2', j: '2', k: '2', q: '2', s: '2', x: '2', z: '2', d: '3', t: '3', l: '4', m: '5', n: '5', r: '6' };
+    const first = s[0]; let code = ''; let prev = map[first] || '';
+    for (let i = 1; i < s.length; i++) { const ch = s[i]; const c = map[ch]; if (c && c !== prev) code += c; if (ch !== 'h' && ch !== 'w') prev = c || ''; }
+    return (first + code).slice(0, 6);
+  }
+  // Build the set of query strings we'll try when matching: the normalized form,
+  // a de-spaced form ("g mail" -> "gmail"), plus alias-expanded variants.
+  prepQuery(query) {
+    const base = this.normalize(query);
+    const variants = new Set();
+    const add = v => { v = (v || '').trim(); if (v) variants.add(v); };
+    add(base); add(base.replace(/\s+/g, ''));
+    let aliased = base;
+    for (const k in this.aliasMap()) if (aliased.includes(k)) aliased = aliased.split(k).join(this.aliasMap()[k]);
+    add(aliased); add(aliased.replace(/\s+/g, ''));
+    return { variants: [...variants], phon: this.phon(base.replace(/\s+/g, '')), raw: base };
+  }
+  scoreBookmark(prep, bm) {
+    // Accept a raw string for backward-compatibility.
+    if (typeof prep === 'string') prep = this.prepQuery(prep);
+    const variants = prep.variants || []; if (!variants.length) return 0;
     const name = this.normalize(bm.name), core = this.normalize(this.hostCore(bm.url)), host = this.normalize(this.hostOf(bm.url).replace(/\./g, ' '));
+    const nameFlat = name.replace(/\s+/g, '');
     let best = 0;
-    for (const c of [name, core]) { if (!c) continue; if (c === q) return 1; best = Math.max(best, this.sim(q, c)); }
-    for (const c of [name, core, host]) { if (!c) continue; if (c.includes(q) || q.includes(c)) { const r = Math.min(q.length, c.length) / Math.max(q.length, c.length); best = Math.max(best, 0.78 + 0.2 * r); } }
-    const qt = q.split(' ').filter(Boolean); const hay = (name + ' ' + host + ' ' + core).trim();
-    if (qt.length && qt.every(w => hay.includes(w))) best = Math.max(best, 0.9);
-    const hw = hay.split(' ').filter(Boolean);
-    for (const w of qt) for (const h of hw) if (w.length >= 3 && h.length >= 3) best = Math.max(best, 0.7 * this.sim(w, h));
-    const notes = this.normalize(bm.notes);
-    if (notes && q.length >= 3 && notes.includes(q)) { const r = Math.min(q.length, notes.length) / Math.max(q.length, notes.length); best = Math.max(best, 0.6 + 0.18 * r); }
+    for (const q of variants) {
+      if (!q) continue;
+      for (const c of [name, nameFlat, core]) { if (!c) continue; if (c === q) return 1; best = Math.max(best, this.sim(q, c)); }
+      for (const c of [name, nameFlat, core, host]) { if (!c) continue; if (c.includes(q) || q.includes(c)) { const r = Math.min(q.length, c.length) / Math.max(q.length, c.length); best = Math.max(best, 0.78 + 0.2 * r); } }
+      const qt = q.split(' ').filter(Boolean); const hay = (name + ' ' + host + ' ' + core).trim();
+      if (qt.length && qt.every(w => hay.includes(w))) best = Math.max(best, 0.9);
+      const hw = hay.split(' ').filter(Boolean);
+      for (const w of qt) for (const h of hw) if (w.length >= 3 && h.length >= 3) best = Math.max(best, 0.7 * this.sim(w, h));
+      const notes = this.normalize(bm.notes);
+      if (notes && q.length >= 3 && notes.includes(q)) { const r = Math.min(q.length, notes.length) / Math.max(q.length, notes.length); best = Math.max(best, 0.6 + 0.18 * r); }
+    }
+    // Phonetic last resort — only a mild boost, never enough to beat a real match.
+    if (best < 0.86 && prep.phon) { for (const c of [nameFlat, core]) { if (c && this.phon(c) === prep.phon) { best = Math.max(best, 0.85); break; } } }
     return best;
   }
-  matchBookmark(q, th) { let best = null; for (const bm of this.state.bookmarks) { const s = this.scoreBookmark(q, bm); if (s >= th && (!best || s > best.s)) best = { bm, s }; } return best; }
+  // Rank every bookmark for a prepared query, best first.
+  rankBookmarks(prep) {
+    return this.state.bookmarks.map(bm => ({ bm, s: this.scoreBookmark(prep, bm) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s);
+  }
+  matchBookmark(q, th) { const prep = typeof q === 'string' ? this.prepQuery(q) : q; let best = null; for (const bm of this.state.bookmarks) { const s = this.scoreBookmark(prep, bm); if (s >= th && (!best || s > best.s)) best = { bm, s }; } return best; }
   allFolders() { const out = []; for (const pg of this.state.pages) for (const c of pg) if (c && c.type === 'folder') out.push(c); return out; }
   scoreFolder(q, f) { q = this.normalize(q).replace(/\b(folder|group)\b/g, ' ').replace(/\s+/g, ' ').trim(); const n = this.normalize(f.name); if (!q || !n) return 0; if (n === q) return 1; let best = this.sim(q, n); if (n.includes(q) || q.includes(n)) { const r = Math.min(q.length, n.length) / Math.max(q.length, n.length); best = Math.max(best, 0.78 + 0.2 * r); } const qt = q.split(' ').filter(Boolean); if (qt.length && qt.every(w => n.includes(w))) best = Math.max(best, 0.9); return best; }
   matchFolder(q, th) { let best = null; for (const f of this.allFolders()) { const s = this.scoreFolder(q, f); if (s >= th && (!best || s > best.s)) best = { f, s }; } return best; }
@@ -376,14 +431,34 @@ class Component extends DCLogic {
     query = query.replace(/\b(in|on)\s+(a\s+)?(new\s+)?(tab|window|browser)\b/g, ' ').replace(/\b(please|for me|right now|now|real quick|hey|ok|okay|can you|could you|i want to|i need to)\b/g, ' ').replace(/\b(website|web site|the site|site|the page|page|the app|dot com|dot org|dot net)\b/g, ' ').replace(/\b(my|the|a|an|to|up|new|tab|window)\b/g, ' ').replace(/\s+/g, ' ').trim();
     return { kind: explicit ? 'open' : 'maybe', query };
   }
+  // Decide exactly which bookmark/folder a spoken phrase means. The guiding rule
+  // is accuracy over eagerness: open immediately only when there is a clear,
+  // unambiguous winner; when two sites are plausibly close, return the short list
+  // so the user can confirm (via the chooser) rather than risk opening the wrong
+  // one.
   resolveTarget(query) {
-    const q = this.normalize(query); if (!q) return null;
+    const prep = this.prepQuery(query); if (!prep.variants.length) return null;
+    const q = prep.variants[0];
     const wantsFolder = /\b(folder|group)\b/.test(q);
+    const ranked = this.rankBookmarks(prep);
     const fm = this.matchFolder(q, wantsFolder ? 0.34 : 0.52);
-    const bm = this.matchBookmark(q, 0.42);
-    if (wantsFolder && fm) return { kind: 'folder', folder: fm.f };
-    if (bm && (!fm || bm.s >= fm.s)) return { kind: 'bookmark', bm: bm.bm };
-    if (fm) return { kind: 'folder', folder: fm.f };
+    const best = ranked[0] || null, second = ranked[1] || null;
+
+    if (wantsFolder && fm && (!best || fm.s >= best.s)) return { kind: 'folder', folder: fm.f, confident: true };
+
+    const FLOOR = 0.42, STRONG = 0.86, GAP = 0.12;
+    if (best && best.s >= FLOOR) {
+      // A folder that clearly beats the best bookmark wins.
+      if (fm && fm.s > best.s + GAP) return { kind: 'folder', folder: fm.f, confident: true };
+      // Exact hit, or a strong winner that's well clear of the runner-up → open.
+      const clearWinner = best.s >= 0.999 || (best.s >= STRONG && (!second || best.s - second.s >= GAP));
+      if (clearWinner) return { kind: 'bookmark', bm: best.bm, confident: true };
+      // Otherwise it's ambiguous: offer the close candidates for a one-tap or one-word confirm.
+      const choices = ranked.filter(x => x.s >= 0.5).slice(0, 4).map(x => x.bm);
+      if (choices.length > 1) return { kind: 'choose', choices };
+      return { kind: 'bookmark', bm: best.bm, confident: false };
+    }
+    if (fm) return { kind: 'folder', folder: fm.f, confident: true };
     return null;
   }
   handleTranscript(raw) {
@@ -396,6 +471,9 @@ class Component extends DCLogic {
       if (c0.kind === 'stop') { this.stopListen(); return; }
       this.dictate(field, text); return;
     }
+    // If a disambiguation chooser is open, let the spoken words pick from it
+    // ("the second one", "Gmail", "cancel") before anything else.
+    if (this.state.choosing) { if (this.pickFromChoices(text)) return; }
     const nav = this.parsePageNav(text);
     if (nav) { this.applyNav(nav); return; }
     const cmd = this.parseCommand(text);
@@ -404,16 +482,52 @@ class Component extends DCLogic {
     if (cmd.kind === 'help') { this.toast('Say “open” + a site, “next page”, or “add Notion”', 'sparkles'); return; }
     if (cmd.kind === 'add') { if (cmd.rawQuery) this.addByVoice(cmd.rawQuery); else this.toast('Say a site to add, e.g. “add Notion”', 'mic'); return; }
     if (cmd.kind === 'maybe') {
-      const exact = this.state.bookmarks.find(b => this.normalize(b.name) === cmd.query || this.normalize(this.hostCore(b.url)) === cmd.query);
-      if (exact) this.openBookmark(exact, true);
-      else { const f = this.allFolders().find(f => this.normalize(f.name) === cmd.query); if (f) this.openFolderVoice(f); }
+      // No explicit "open" verb — this may just be ambient speech, so only act on
+      // a near-perfect, unambiguous match (never guess from a bare phrase).
+      const prep = this.prepQuery(cmd.query);
+      const ranked = this.rankBookmarks(prep);
+      const top = ranked[0], second = ranked[1];
+      if (top && top.s >= 0.97 && (!second || top.s - second.s >= 0.1)) { this.openBookmark(top.bm, true); return; }
+      const f = this.allFolders().find(f => this.normalize(f.name) === prep.variants[0]);
+      if (f) this.openFolderVoice(f);
       return;
     }
     if (!cmd.query) { this.toast('Say “open” and a site name', 'mic'); return; }
     const tg = this.resolveTarget(cmd.query);
     if (!tg) { this.toast('No site matches “' + cmd.query + '”', 'search-x'); return; }
+    if (tg.kind === 'choose') { this.offerChoices(tg.choices, cmd.query); return; }
     if (tg.kind === 'bookmark') this.openBookmark(tg.bm, true);
     else this.openFolderVoice(tg.folder);
+  }
+  // Present the close candidates and wait for a tap or a spoken pick. Listening
+  // stays on so the user can simply say the number or the clearer name.
+  offerChoices(choices, query) {
+    this.setState({ choosing: (choices || []).slice(0, 4), choiceQuery: query || '' });
+    this.toast('Which one? Tap it or say the number', 'sparkles');
+    this.speakIf('Which one did you mean?');
+  }
+  // Resolve a spoken phrase against an open chooser. Returns true if it consumed
+  // the phrase (picked, or cancelled); false to let normal handling try instead.
+  pickFromChoices(text) {
+    const list = this.state.choosing; if (!list || !list.length) return false;
+    const t = this.normalize(text);
+    if (/\b(cancel|never mind|nevermind|none|forget it|no thanks)\b/.test(t)) { this.setState({ choosing: null, choiceQuery: '' }); return true; }
+    // Pick the EARLIEST number word in the phrase so "the second one" reads as
+    // 2 (not the trailing pronoun "one"). Ordinals win ties at the same index.
+    const NUM = { first: 1, second: 2, third: 3, fourth: 4, one: 1, two: 2, three: 3, four: 4, '1': 1, '2': 2, '3': 3, '4': 4 };
+    let n = null, at = Infinity, ord = false;
+    for (const w in NUM) {
+      const m = t.match(new RegExp('\\b' + w + '\\b'));
+      if (!m) continue;
+      const isOrd = /first|second|third|fourth/.test(w);
+      if (m.index < at || (m.index === at && isOrd && !ord)) { at = m.index; n = NUM[w]; ord = isOrd; }
+    }
+    if (n != null && n >= 1 && n <= list.length) { const bm = list[n - 1]; this.setState({ choosing: null, choiceQuery: '' }); this.openBookmark(bm, true); return true; }
+    // Try the spoken name against just the offered candidates.
+    const prep = this.prepQuery(text);
+    let best = null; for (const bm of list) { const s = this.scoreBookmark(prep, bm); if (!best || s > best.s) best = { bm, s }; }
+    if (best && best.s >= 0.7) { this.setState({ choosing: null, choiceQuery: '' }); this.openBookmark(best.bm, true); return true; }
+    return false;
   }
   // The focused text field within our app, if any (used for dictation).
   activeField() {
@@ -490,6 +604,7 @@ class Component extends DCLogic {
   openBookmark(bm, viaVoice) {
     if (!bm) return; const url = this.ensureScheme(bm.url);
     if (!url) { this.toast('That site has no address', 'triangle-alert'); return; }
+    if (this.state.choosing) this.setState({ choosing: null, choiceQuery: '' });
     this.openUrl(url);
     this.toast('Opening ' + (bm.name || this.hostCore(bm.url)), 'external-link');
     this.speakIf('Opening ' + (bm.name || this.hostCore(bm.url)));
@@ -1052,6 +1167,14 @@ class Component extends DCLogic {
           downStyle: i === s.pages.length - 1 ? 'opacity:.28; pointer-events:none;' : ''
         };
       }),
+      // ----- voice disambiguation chooser -----
+      choosing: !!(s.choosing && s.choosing.length), choiceQuery: s.choiceQuery || '',
+      choices: (s.choosing || []).map((bm, i) => ({
+        n: i + 1, id: bm.id, name: bm.name || this.hostCore(bm.url), host: this.hostOf(bm.url),
+        icon: this.iconFor(bm), letter: this.letterOf(bm),
+        onTap: () => { this.setState({ choosing: null, choiceQuery: '' }); this.openBookmark(bm, true); }
+      })),
+      cancelChoose: () => this.setState({ choosing: null, choiceQuery: '' }),
       voiceOpen: s.voiceOpen, voiceStatus: s.listening ? 'Listening' : 'Paused', noVoice: !s.srSupported,
       statusDot: s.listening ? '#22c55e' : 'var(--bb-fg-soft)', statusAnim: s.listening ? 'animation:bbBlink 1.4s infinite;' : '',
       orbIcon: s.listening ? 'mic' : 'mic-off',
