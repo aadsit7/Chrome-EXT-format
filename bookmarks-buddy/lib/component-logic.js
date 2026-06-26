@@ -750,6 +750,30 @@ class Component extends DCLogic {
     names[this.state.currentPage] = String(name || '');
     this.setState({ pageNames: names }, () => this.save());
   }
+  // Add a new empty page at the end and jump to it. A page with no bookmarks
+  // lives in the local layout; it (and any custom name) only reaches the sheet
+  // once a bookmark sits on it — same limitation as page names.
+  addPage() {
+    const pages = this.state.pages.map(p => p.slice());
+    const names = (this.state.pageNames || []).slice();
+    pages.push([]);
+    while (names.length < pages.length) names.push('');
+    this.setState({ pages, pageNames: names, currentPage: pages.length - 1 }, () => this.save());
+  }
+  // Move a page (with its name) up/down in the order. Reordering re-stamps the
+  // Page number on every bookmark via save() -> sheetSync, so it persists/syncs.
+  movePage(i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= this.state.pages.length) return;
+    const pages = this.state.pages.map(p => p.slice());
+    const names = (this.state.pageNames || []).slice();
+    while (names.length < pages.length) names.push('');
+    const pt = pages[i]; pages[i] = pages[j]; pages[j] = pt;
+    const nt = names[i]; names[i] = names[j]; names[j] = nt;
+    let cur = this.state.currentPage;
+    if (cur === i) cur = j; else if (cur === j) cur = i;
+    this.setState({ pages, pageNames: names, currentPage: cur }, () => this.save());
+  }
 
   /* ---------- toggles ---------- */
   toggleEditFn() { this.setState({ editMode: !this.state.editMode }); }
@@ -807,6 +831,16 @@ class Component extends DCLogic {
       onDraftName: e => this.setState({ draftName: e.target.value }), onDraftUrl: e => this.setState({ draftUrl: e.target.value }),
       saveAdd: () => { if (this.addBookmark(s.draftName, s.draftUrl)) this.setState({ adding: false }); },
       suggestions,
+      addPage: () => this.addPage(),
+      pageList: s.pages.map((pg, i) => {
+        const n = pg.reduce((t, c) => t + (c && c.type === 'folder' ? c.items.length : 1), 0);
+        return {
+          label: this.pageName(i), count: n + (n === 1 ? ' site' : ' sites'),
+          moveUp: () => this.movePage(i, -1), moveDown: () => this.movePage(i, 1),
+          upStyle: i === 0 ? 'opacity:.28; pointer-events:none;' : '',
+          downStyle: i === s.pages.length - 1 ? 'opacity:.28; pointer-events:none;' : ''
+        };
+      }),
       voiceOpen: s.voiceOpen, voiceStatus: s.listening ? 'Listening' : 'Paused', noVoice: !s.srSupported,
       statusDot: s.listening ? '#22c55e' : 'var(--bb-fg-soft)', statusAnim: s.listening ? 'animation:bbBlink 1.4s infinite;' : '',
       orbIcon: s.listening ? 'mic' : 'mic-off',
