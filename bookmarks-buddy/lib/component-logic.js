@@ -766,7 +766,7 @@ class Component extends DCLogic {
       const bm = byId(c.id) || { id: c.id, name: '?', url: '' };
       return { id: c.id, kind: 'app', isApp: true, isFolder: false, name: bm.name || this.hostCore(bm.url), icon: this.iconFor(bm), letter: this.letterOf(bm), grad: this.grad(bm.name || bm.url), tileClass: '', idx, onDelete: () => this.deleteBookmark(c.id) };
     };
-    const pages = s.pages.map((pg, pi) => ({ cells: pg.map((c, i) => cellOf(c, i)), empty: pg.length === 0 }));
+    const pages = s.pages.map((pg, pi) => ({ name: this.pageName(pi), cells: pg.map((c, i) => cellOf(c, i)), empty: pg.length === 0 }));
     // re-stamp idx as data attribute via cell objects (idx used by gestures); ensure data-index present
     pages.forEach(p => p.cells.forEach((c, i) => { c.idx = i; }));
 
