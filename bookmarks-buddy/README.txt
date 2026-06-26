@@ -32,6 +32,11 @@ WHAT IT DOES
   springboard arrangement — pages, folders, and order — in sync with it.
 - Auto-starts the microphone listener when the panel opens.
 - Voice listening (Web Speech API) and spoken replies (text-to-speech).
+- Hands-free entry: opening the Add or Edit sheet auto-starts the mic in
+  dictation mode, typing what you say into whichever text box has focus. Click
+  a different box with the mouse and dictation follows it — no keyboard needed.
+  URL/Icon boxes understand spoken punctuation ("dot" -> ".", "slash" -> "/").
+  A status pill in the sheet shows when it's listening and can pause/resume it.
 - Open bookmarks in new browser tabs/windows by voice or by tapping a tile.
 - Springboard home screen with named pages, folders, and a rearrange
   ("jiggle") edit mode.
