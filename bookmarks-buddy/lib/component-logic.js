@@ -22,7 +22,7 @@ class Component extends DCLogic {
     ];
     this.state = {
       bookmarks: [], pages: [], pageNames: [], currentPage: 0,
-      search: '', adding: false, settingsOpen: false, folderOpen: null,
+      search: '', adding: false, settingsOpen: false, folderOpen: null, folderEdit: false,
       editMode: false, voiceOpen: false, listening: false, interim: '', heard: '',
       draftName: '', draftUrl: '', dark: false, speak: false,
       toast: '', toastIcon: '', srSupported: !!(window.SpeechRecognition || window.webkitSpeechRecognition)
@@ -420,8 +420,8 @@ class Component extends DCLogic {
     this.speakIf('Opening ' + (bm.name || this.hostCore(bm.url)));
     if (viaVoice) { this.setState({ heard: bm.name || this.hostCore(bm.url) }); setTimeout(() => this.closeVoiceFn(), 900); }
   }
-  openFolderModal(f) { this.setState({ folderOpen: f, voiceOpen: false }); this.stopRec(); }
-  openFolderAllFn() { const f = this.state.folderOpen; if (!f) return; f.items.forEach(id => { const bm = this.state.bookmarks.find(b => b.id === id); if (bm) { try { const w = window.open(this.ensureScheme(bm.url), '_blank'); if (w) w.opener = null; } catch {} } }); this.toast('Opening ' + f.items.length + ' sites', 'layers'); this.setState({ folderOpen: null }); }
+  openFolderModal(f) { this.setState({ folderOpen: f, folderEdit: false, voiceOpen: false }); this.stopRec(); }
+  openFolderAllFn() { const f = this.state.folderOpen; if (!f) return; f.items.forEach(id => { const bm = this.state.bookmarks.find(b => b.id === id); if (bm) { try { const w = window.open(this.ensureScheme(bm.url), '_blank'); if (w) w.opener = null; } catch {} } }); this.toast('Opening ' + f.items.length + ' sites', 'layers'); this.setState({ folderOpen: null, folderEdit: false }); }
   addBookmark(name, url, silent) {
     url = String(url || '').trim(); name = String(name || '').trim();
     if (!url) { this.toast('Enter a web address', 'triangle-alert'); return false; }
@@ -529,6 +529,10 @@ class Component extends DCLogic {
     document.querySelectorAll('.bb-root .bb-cell').forEach((el, i) => {
       el.style.animation = editing ? ('bbJiggle .32s infinite ' + (i % 2 ? '-.16s' : '0s')) : '';
     });
+    const fedit = this.state.folderEdit;
+    document.querySelectorAll('.bb-root .bb-fapp').forEach((el, i) => {
+      el.style.animation = fedit ? ('bbJiggle .32s infinite ' + (i % 2 ? '-.16s' : '0s')) : '';
+    });
     document.querySelectorAll('.bb-root .bb-vring').forEach(el => { el.style.animation = this.state.listening ? 'bbRing 1.9s ease-out infinite' : ''; el.style.animationDelay = el.style.animationDelay; });
   }
   refreshIcons() {
@@ -574,10 +578,10 @@ class Component extends DCLogic {
   attachGestures() {
     if (this._attached) return; this._attached = true;
     const root = document.querySelector('.bb-root'); if (!root) return;
-    let vp = null, startX = 0, startY = 0, dx = 0, dy = 0, mode = null, cell = null, fromIdx = -1, ghost = null, pressT = null, downAt = 0;
+    let vp = null, startX = 0, startY = 0, dx = 0, dy = 0, mode = null, cell = null, fromIdx = -1, fromPage = -1, ghost = null, pressT = null, downAt = 0;
     const getVp = () => document.querySelector('.bb-viewport');
     const track = () => document.querySelector('.bb-track');
-    const reset = () => { mode = null; cell = null; fromIdx = -1; if (ghost) { ghost.remove(); ghost = null; } if (pressT) { clearTimeout(pressT); pressT = null; } };
+    const reset = () => { mode = null; cell = null; fromIdx = -1; fromPage = -1; this.cancelFlip(); if (ghost) { ghost.remove(); ghost = null; } if (pressT) { clearTimeout(pressT); pressT = null; } };
 
     root.addEventListener('pointerdown', (e) => {
       if (e.target.closest('.bb-badge') || e.target.closest('button:not(.bb-cell)') && !e.target.closest('.bb-cell')) {
@@ -610,9 +614,9 @@ class Component extends DCLogic {
         if (off > 0) off = off * 0.35; if (off < min) off = min + (off - min) * 0.35;
         t.style.transform = 'translateX(' + off + 'px)';
       } else if (mode === 'pendingdrag') {
-        if (Math.abs(dx) > 6 || Math.abs(dy) > 6) { this.beginDrag(cell, e); mode = 'drag'; ghost = this._ghost; const pg = this.state.pages[this.state.currentPage]; fromIdx = +cell.dataset.idx; }
+        if (Math.abs(dx) > 6 || Math.abs(dy) > 6) { this.beginDrag(cell, e); mode = 'drag'; ghost = this._ghost; fromIdx = +cell.dataset.idx; fromPage = this.state.currentPage; }
       }
-      if (mode === 'drag' && ghost) { ghost.style.transform = 'translate(' + (e.clientX - 31) + 'px,' + (e.clientY - 31) + 'px)'; this.highlightDrop(e); }
+      if (mode === 'drag' && ghost) { ghost.style.transform = 'translate(' + (e.clientX - 31) + 'px,' + (e.clientY - 31) + 'px)'; this.highlightDrop(e); this.edgeFlip(e, vp); }
     });
 
     const end = (e) => {
@@ -627,7 +631,7 @@ class Component extends DCLogic {
       } else if (mode === 'pendingswipe' && cell && Math.abs(dx) < 8 && Math.abs(dy) < 8 && Date.now() - downAt < 500) {
         this.tapCell(cell);
       } else if (mode === 'drag') {
-        this.dropDrag(e, fromIdx);
+        this.dropDrag(e, fromIdx, fromPage);
       }
       reset();
     };
@@ -646,24 +650,105 @@ class Component extends DCLogic {
     g.style.pointerEvents = 'none'; g.style.width = cell.offsetWidth + 'px'; g.style.margin = '0'; g.style.animation = '';
     g.style.filter = 'drop-shadow(0 16px 28px rgba(22,31,91,.35))'; g.style.opacity = '.95';
     g.style.transform = 'translate(' + (e.clientX - 31) + 'px,' + (e.clientY - 31) + 'px)';
-    document.querySelector('.bb-root').appendChild(g); this._ghost = g; cell.style.opacity = '.25';
+    // Append to <body>, not .bb-root, so the ghost survives the re-render that a
+    // cross-page edge-flip triggers mid-drag.
+    document.body.appendChild(g); this._ghost = g; cell.style.opacity = '.25';
     this._dragCell = cell;
   }
+  // While dragging near the left/right edge of the board, flip to the adjacent
+  // page after a short hover so tiles can be moved across pages.
+  edgeFlip(e, vp) {
+    if (!vp) return;
+    const r = vp.getBoundingClientRect(), edge = 38;
+    if (e.clientX < r.left + edge && this.state.currentPage > 0) this.scheduleFlip(-1);
+    else if (e.clientX > r.right - edge && this.state.currentPage < this.state.pages.length - 1) this.scheduleFlip(1);
+    else this.cancelFlip();
+  }
+  scheduleFlip(dir) {
+    if (this._flipDir === dir && this._flipT) return;
+    this.cancelFlip(); this._flipDir = dir;
+    this._flipT = setTimeout(() => {
+      this._flipT = null; this._flipDir = 0;
+      const to = this.state.currentPage + dir;
+      if (to >= 0 && to < this.state.pages.length) this.goPage(to);
+    }, 650);
+  }
+  cancelFlip() { if (this._flipT) { clearTimeout(this._flipT); this._flipT = null; } this._flipDir = 0; }
   highlightDrop(e) {
     document.querySelectorAll('.bb-root .bb-cell').forEach(c => c.style.outline = '');
     const el = document.elementFromPoint(e.clientX, e.clientY); const target = el && el.closest('.bb-cell');
     if (target && target !== this._dragCell) { const tile = target.querySelector('.bb-tile'); if (tile) tile.style.outline = ''; target.style.outline = '2px dashed var(--bb-accent)'; target.style.outlineOffset = '2px'; }
   }
-  dropDrag(e, fromIdx) {
+  dropDrag(e, fromIdx, fromPage) {
+    this.cancelFlip();
     document.querySelectorAll('.bb-root .bb-cell').forEach(c => c.style.outline = '');
     if (this._dragCell) this._dragCell.style.opacity = '';
-    const el = document.elementFromPoint(e.clientX, e.clientY); const target = el && el.closest('.bb-cell');
-    const pages = this.state.pages.slice(); const pg = pages[this.state.currentPage].slice();
-    if (target && target !== this._dragCell) {
-      const toIdx = +target.dataset.idx;
-      if (!isNaN(toIdx) && !isNaN(fromIdx) && toIdx !== fromIdx) { const [moved] = pg.splice(fromIdx, 1); pg.splice(toIdx, 0, moved); pages[this.state.currentPage] = pg; this.setState({ pages }, () => this.save()); }
-    }
     this._dragCell = null;
+    if (fromPage == null) fromPage = this.state.currentPage;
+    const toPage = this.state.currentPage; // may differ from fromPage after an edge-flip
+    // Work on a deep-enough copy: clone every page array; cell objects stay by
+    // reference so we can locate them after the source is spliced out.
+    const pages = this.state.pages.map(p => p.slice());
+    if (!pages[fromPage]) return;
+    const src = pages[fromPage][fromIdx];
+    if (!src) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const targetEl = el && el.closest('.bb-cell');
+    const tIdx = targetEl ? +targetEl.dataset.idx : -1;
+    const targetCell = (targetEl && pages[toPage] && tIdx >= 0) ? pages[toPage][tIdx] : null;
+    if (targetCell === src) return; // dropped back on itself — no change
+
+    // Remove the dragged cell from its origin page first.
+    pages[fromPage].splice(fromIdx, 1);
+
+    if (targetCell && src.type === 'app' && targetCell.type === 'app') {
+      // App onto app → make a new folder holding both, where the target sat.
+      const ti = pages[toPage].indexOf(targetCell);
+      const folder = { type: 'folder', name: 'Folder', items: [targetCell.id, src.id] };
+      pages[toPage].splice(ti < 0 ? pages[toPage].length : ti, 1, folder);
+    } else if (targetCell && src.type === 'app' && targetCell.type === 'folder') {
+      // App onto folder → drop it inside.
+      targetCell.items = targetCell.items.concat([src.id]);
+    } else {
+      // Plain reorder / cross-page move (also when src is a folder, or dropped on
+      // empty space → append to the end of the destination page).
+      let ti = targetCell ? pages[toPage].indexOf(targetCell) : pages[toPage].length;
+      if (ti < 0) ti = pages[toPage].length;
+      pages[toPage].splice(ti, 0, src);
+    }
+    // Trim trailing empty pages but always keep at least one.
+    while (pages.length > 1 && !pages[pages.length - 1].length) pages.pop();
+    const cur = Math.min(this.state.currentPage, pages.length - 1);
+    this.setState({ pages, currentPage: cur }, () => this.save());
+  }
+  // Remove one app from an open folder, dropping it back beside the folder.
+  // When the folder is left with a single item (or none) it dissolves, exactly
+  // like dragging the last tile out on iOS.
+  removeFromFolder(folderCell, id) {
+    const pages = this.state.pages.map(p => p.slice());
+    let fp = -1, fi = -1;
+    for (let p = 0; p < pages.length && fp < 0; p++) { const i = pages[p].indexOf(folderCell); if (i >= 0) { fp = p; fi = i; } }
+    if (fp < 0) return;
+    const folder = pages[fp][fi];
+    folder.items = folder.items.filter(x => x !== id);
+    pages[fp].splice(fi + 1, 0, { type: 'app', id });
+    let open = folder;
+    if (folder.items.length <= 1) {
+      if (folder.items.length === 1) pages[fp].splice(fi, 1, { type: 'app', id: folder.items[0] });
+      else pages[fp].splice(fi, 1);
+      open = null; // folder dissolved → close the overlay
+    }
+    this.setState({ pages, folderOpen: open, folderEdit: !!open && this.state.folderEdit }, () => this.save());
+    this.toast(open ? 'Moved out' : 'Folder emptied', 'check');
+  }
+  toggleFolderEdit() { this.setState({ folderEdit: !this.state.folderEdit }); }
+  // Rename the current page. Names ride along in the sheet's Page column
+  // ("<n>|<name>") so they sync to other devices once a bookmark sits on the page.
+  renamePage(name) {
+    const names = (this.state.pageNames || []).slice();
+    while (names.length < this.state.pages.length) names.push('');
+    names[this.state.currentPage] = String(name || '');
+    this.setState({ pageNames: names }, () => this.save());
   }
 
   /* ---------- toggles ---------- */
@@ -724,8 +809,10 @@ class Component extends DCLogic {
       caretStyle: s.listening && !s.heard ? 'display:inline-block;width:3px;height:1em;background:var(--bb-accent2);margin-left:3px;vertical-align:text-bottom;animation:bbCaret 1s step-end infinite;' : 'display:none;',
       voiceExamples: ['open ' + fname, 'next page', 'add Notion'],
       folderOpen: !!folder, folderName: folder ? folder.name : '', folderCount: folder ? folder.items.length : 0,
-      folderApps: folder ? folder.items.map(id => { const bm = byId(id) || { id, name: '?', url: '' }; return { id, name: bm.name || this.hostCore(bm.url), icon: this.iconFor(bm), letter: this.letterOf(bm), grad: this.grad(bm.name || bm.url), tileClass: '', onTap: () => this.openBookmark(bm, false) }; }) : [],
-      closeFolder: () => this.setState({ folderOpen: null }), openFolderAll: () => this.openFolderAllFn(),
+      folderEditing: s.folderEdit, folderEditLabel: s.folderEdit ? 'Done' : 'Edit', toggleFolderEdit: () => this.toggleFolderEdit(),
+      folderApps: folder ? folder.items.map(id => { const bm = byId(id) || { id, name: '?', url: '' }; return { id, name: bm.name || this.hostCore(bm.url), icon: this.iconFor(bm), letter: this.letterOf(bm), grad: this.grad(bm.name || bm.url), tileClass: '', onTap: () => { if (s.folderEdit) return; this.openBookmark(bm, false); }, onRemove: () => this.removeFromFolder(folder, id) }; }) : [],
+      closeFolder: () => this.setState({ folderOpen: null, folderEdit: false }), openFolderAll: () => this.openFolderAllFn(),
+      pageTitle: (s.pageNames[s.currentPage] || ''), onPageName: e => this.renamePage(e.target.value),
       shortcutLabel: (navigator.platform || '').toLowerCase().includes('mac') ? '⌘⇧M' : 'Ctrl ⇧ M',
       dark: s.dark, toggleDark: () => this.setState({ dark: !s.dark }, () => this.saveSettings()),
       darkSwitchBg: s.dark ? 'var(--bb-accent)' : 'var(--bb-input-bd)', darkKnobX: s.dark ? '21px' : '2.5px',
