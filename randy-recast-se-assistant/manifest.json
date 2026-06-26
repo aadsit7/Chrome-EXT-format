@@ -4,7 +4,12 @@
   "version": "1.0.0",
   "description": "Voice assistant that listens during calls and answers Recast product questions on screen and aloud.",
   "action": {
-    "default_title": "Randy — Recast SE Assistant"
+    "default_title": "Randy — Recast SE Assistant",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "side_panel": {
     "default_path": "panel.html"
