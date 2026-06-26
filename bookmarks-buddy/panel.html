@@ -102,6 +102,14 @@
 </style>
   <script src="lib/lucide.min.js"></script>
   <style>
+    /* Fill the entire Chrome side panel — no default body margin, no blank
+       gutters around a fixed-width column. The app's gradient wall now covers
+       edge-to-edge at any panel width. */
+    html, body { margin:0; padding:0; height:100%; background:#e7ecfa; }
+    /* Responsive springboard: keep tiles a constant comfortable size and add
+       columns as the panel gets wider, instead of stretching 4 columns apart
+       and leaving white space. Overrides the inline 4-column grid. */
+    .bb-root .bb-page { grid-template-columns:repeat(auto-fill, minmax(76px, 1fr)) !important; }
     @keyframes bbJiggle { 0%{transform:rotate(-1.4deg)} 50%{transform:rotate(1.4deg)} 100%{transform:rotate(-1.4deg)} }
     @keyframes bbRing { 0%{transform:scale(1);opacity:.5} 100%{transform:scale(1.7);opacity:0} }
     @keyframes bbMicPulse { 0%,100%{ box-shadow:0 8px 22px rgba(3,114,255,.45); } 50%{ box-shadow:0 8px 34px rgba(3,114,255,.85); } }
@@ -120,7 +128,7 @@
     .bb-tile.noico .bb-tile-letter{ display:grid; }
   </style>
 </helmet>
-<div class="bb-root" style="position:relative; width:390px; max-width:100%; height:100dvh; margin:0 auto; display:flex; flex-direction:column; overflow:hidden; font-family:'DM Sans',system-ui,sans-serif; color:var(--bb-fg); background:var(--bb-wall); -webkit-font-smoothing:antialiased;">
+<div class="bb-root" style="position:relative; width:100%; max-width:100%; height:100dvh; margin:0; display:flex; flex-direction:column; overflow:hidden; font-family:'DM Sans',system-ui,sans-serif; color:var(--bb-fg); background:var(--bb-wall); -webkit-font-smoothing:antialiased;">
 
   <!-- ===== Header: greeting + search ===== -->
   <header style="flex-shrink:0; padding:18px 22px 8px;">
@@ -397,6 +405,33 @@
           </sc-for>
         </div>
         <button onclick="{{ openFolderAll }}" style="width:100%; height:44px; margin-top:20px; border-radius:13px; border:1px solid var(--bb-glass-bd); background:var(--bb-glass); color:var(--bb-fg); font-family:inherit; font-size:13px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:8px;"><i data-lucide="layers" style="width:16px;height:16px;"></i>Open all {{ folderCount }} sites</button>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ===== Voice disambiguation chooser ===== -->
+  <!-- Shown only when a spoken site name is genuinely ambiguous, so the wrong
+       bookmark is never opened. The user taps the site, or says its number. -->
+  <sc-if value="{{ choosing }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute; inset:0; z-index:155; display:grid; place-items:center; padding:26px; animation:bbFade .18s ease-out;">
+      <div onclick="{{ cancelChoose }}" style="position:absolute; inset:0; background:var(--bb-scrim);"></div>
+      <div style="position:relative; width:100%; max-width:360px; background:var(--bb-folder-panel); border:1px solid var(--bb-glass-bd); border-radius:24px; padding:20px; -webkit-backdrop-filter:blur(24px); backdrop-filter:blur(24px); box-shadow:0 30px 70px rgba(0,0,0,.4); animation:bbPop .25s var(--bb-ease);">
+        <div style="font-size:17px; font-weight:800; letter-spacing:-.01em; color:var(--bb-fg); text-align:center;">Which one did you mean?</div>
+        <div style="font-size:12.5px; font-weight:600; color:var(--bb-fg-soft); text-align:center; margin-top:3px;">Heard “{{ choiceQuery }}” — tap a site or say its number.</div>
+        <div style="display:flex; flex-direction:column; gap:9px; margin-top:16px;">
+          <sc-for list="{{ choices }}" as="ch" hint-placeholder-count="3">
+            <button data-id="{{ ch.id }}" onclick="{{ ch.onTap }}" style="display:flex; align-items:center; gap:12px; width:100%; text-align:left; padding:11px 13px; border-radius:15px; border:1px solid var(--bb-glass-bd); background:var(--bb-glass); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); cursor:pointer; font-family:inherit;">
+              <span style="flex-shrink:0; width:24px; height:24px; border-radius:50%; display:grid; place-items:center; background:var(--bb-accent); color:#fff; font-size:12.5px; font-weight:800;">{{ ch.n }}</span>
+              <span style="width:38px; height:38px; border-radius:11px; flex-shrink:0; display:grid; place-items:center; background:var(--bb-tile); box-shadow:var(--bb-tile-sh); overflow:hidden;"><img class="bb-ico" data-src="{{ ch.icon }}" data-letter="{{ ch.letter }}" style="width:23px;height:23px;display:block;"></span>
+              <span style="flex:1; min-width:0;">
+                <span style="display:block; font-size:14px; font-weight:700; color:var(--bb-fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ ch.name }}</span>
+                <span style="display:block; font-size:11.5px; font-weight:500; color:var(--bb-fg-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px;">{{ ch.host }}</span>
+              </span>
+              <i data-lucide="arrow-up-right" style="width:18px;height:18px;color:var(--bb-fg-soft);flex-shrink:0;"></i>
+            </button>
+          </sc-for>
+        </div>
+        <button onclick="{{ cancelChoose }}" style="width:100%; height:44px; margin-top:14px; border-radius:13px; border:1px solid var(--bb-glass-bd); background:var(--bb-glass); color:var(--bb-fg); font-family:inherit; font-size:13px; font-weight:700; cursor:pointer;">Cancel</button>
       </div>
     </div>
   </sc-if>
