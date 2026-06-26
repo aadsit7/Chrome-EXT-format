@@ -94,6 +94,9 @@ class Component extends DCLogic {
   save() {
     try { localStorage.setItem(this.LS_B, JSON.stringify(this.state.bookmarks)); } catch {}
     try { localStorage.setItem(this.LS_L, JSON.stringify({ pages: this.state.pages, pageNames: this.state.pageNames })); } catch {}
+    // Mirror every change up to the Google Sheet (no-op until the first pull
+    // has baselined us; covers add / remove / rename / reorder via save()).
+    try { if (this._sheet) this._sheet.push(); } catch {}
   }
   saveSettings() { try { localStorage.setItem(this.LS_S, JSON.stringify({ dark: this.state.dark, speak: this.state.speak })); } catch {} }
   uid() { return 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
@@ -332,7 +335,32 @@ class Component extends DCLogic {
     });
   }
   postRender() { this.applyTheme(); this.applyTransform(); this.applyEdit(); this.refreshIcons(); this.handleIcons(); }
-  componentDidMount() { this.postRender(); this.attachGestures(); this.attachKeys(); }
+  // Boot the Google Sheet sync layer (lib/sheet-sync.js). The sheet is the
+  // source of truth: on open we pull the live list and render it through the
+  // EXISTING UI; edits go back via save() -> this._sheet.push(). The UI is
+  // untouched — only the data source/persistence changes.
+  sheetBoot() {
+    if (this._sheet || !window.BBSheetSync) return;
+    this._sheet = new window.BBSheetSync({
+      getState: () => ({ bookmarks: this.state.bookmarks, pages: this.state.pages, pageNames: this.state.pageNames }),
+      uid: () => this.uid(),
+      onLoaded: (bookmarks, layout) => {
+        // The sheet is authoritative — show exactly what's in your sheet.
+        this.state.bookmarks = bookmarks;
+        this.applyLayout(layout, this.state.bookmarks);
+        // Keep localStorage as an instant offline mirror.
+        try { localStorage.setItem(this.LS_B, JSON.stringify(this.state.bookmarks)); } catch {}
+        try { localStorage.setItem(this.LS_L, JSON.stringify({ pages: this.state.pages, pageNames: this.state.pageNames })); } catch {}
+        // Baseline the snapshot to the final state so save() won't echo it back.
+        this._sheet.baseline();
+        let cur = this.state.currentPage;
+        if (cur >= this.state.pages.length) cur = Math.max(0, this.state.pages.length - 1);
+        this.setState({ bookmarks: this.state.bookmarks, pages: this.state.pages, pageNames: this.state.pageNames, currentPage: cur });
+      }
+    });
+    this._sheet.boot();
+  }
+  componentDidMount() { this.postRender(); this.attachGestures(); this.attachKeys(); this.sheetBoot(); }
   componentDidUpdate() { this.postRender(); }
   componentWillUnmount() { this.stopListen(); if (this._keyH) window.removeEventListener('keydown', this._keyH); }
 
