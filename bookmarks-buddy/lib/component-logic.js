@@ -25,6 +25,7 @@ class Component extends DCLogic {
       search: '', adding: false, settingsOpen: false, folderOpen: null, folderEdit: false,
       editMode: false, voiceOpen: false, listening: false, interim: '', heard: '',
       draftName: '', draftUrl: '', dark: false, speak: false,
+      editing: null, editName: '', editUrl: '', editIcon: '', editNotes: '', editConfirmDelete: false,
       toast: '', toastIcon: '', srSupported: !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     };
     this.loadData();
@@ -457,6 +458,45 @@ class Component extends DCLogic {
     this.toast('Removed', 'trash-2');
   }
 
+  /* ---------- per-bookmark editing (matches the web app's edit flow) ----------
+   * Opened by tapping a tile while the springboard is in edit (jiggle) mode.
+   * Edits the same fields the web version exposes — Name, URL, Icon, Notes —
+   * writes them back onto the bookmark in place (its page/slot is untouched),
+   * and persists through the existing save() -> sheetSync() outbox path so the
+   * change reaches the Google Sheet and follows you to other devices. Delete
+   * reuses the same confirm-then-remove flow the web app uses. */
+  openEdit(id) {
+    const bm = this.state.bookmarks.find(b => b.id === id);
+    if (!bm) return;
+    this.setState({
+      editing: id,
+      editName: bm.name || '', editUrl: bm.url || '',
+      editIcon: bm.icon || '', editNotes: bm.notes || '',
+      editConfirmDelete: false
+    });
+  }
+  closeEdit() { this.setState({ editing: null, editConfirmDelete: false }); }
+  saveEdit() {
+    const id = this.state.editing; if (!id) return;
+    const url = String(this.state.editUrl || '').trim();
+    if (!url) { this.toast('Enter a web address', 'triangle-alert'); return; }
+    if (!this.looksLikeUrl(url)) { this.toast('That doesn’t look like a web address', 'triangle-alert'); return; }
+    let name = String(this.state.editName || '').trim();
+    if (!name) name = this.hostCore(url).replace(/^\w/, c => c.toUpperCase());
+    const icon = String(this.state.editIcon || '').trim();
+    const notes = String(this.state.editNotes || '');
+    // Update the bookmark in place — its springboard slot/page is left alone, so
+    // editing never moves a tile. sheetSync() diffs and queues only this change.
+    const bms = this.state.bookmarks.map(b => b.id === id ? { ...b, name, url, icon, notes } : b);
+    this.setState({ bookmarks: bms, editing: null, editConfirmDelete: false }, () => this.save());
+    this.toast('Saved', 'check');
+  }
+  confirmDeleteEdit() {
+    const id = this.state.editing; if (!id) return;
+    this.setState({ editing: null, editConfirmDelete: false });
+    this.deleteBookmark(id);
+  }
+
   /* ---------- voice lifecycle ---------- */
   ensureRec() {
     if (!this.state.srSupported) return null;
@@ -630,6 +670,9 @@ class Component extends DCLogic {
         if (to !== this.state.currentPage) this.setState({ currentPage: to }); else this.applyTransform(true);
       } else if (mode === 'pendingswipe' && cell && Math.abs(dx) < 8 && Math.abs(dy) < 8 && Date.now() - downAt < 500) {
         this.tapCell(cell);
+      } else if (mode === 'pendingdrag' && cell && Math.abs(dx) < 8 && Math.abs(dy) < 8 && Date.now() - downAt < 500) {
+        // A tap (no drag) on a tile while in edit mode opens its edit panel.
+        this.tapCellEdit(cell);
       } else if (mode === 'drag') {
         this.dropDrag(e, fromIdx, fromPage);
       }
@@ -644,6 +687,15 @@ class Component extends DCLogic {
     if (!c) return;
     if (c.type === 'folder') { this.openFolderModal(c); return; }
     const bm = this.state.bookmarks.find(b => b.id === c.id); if (bm) this.openBookmark(bm, false);
+  }
+  // In edit mode a tap (rather than a drag) on a bookmark tile opens its edit
+  // panel. Folders keep their existing behaviour (drag to rearrange; rename via
+  // the folder overlay), so only app tiles are editable here.
+  tapCellEdit(cell) {
+    const idx = +cell.dataset.idx;
+    const c = this.state.pages[this.state.currentPage][idx];
+    if (!c || c.type !== 'app') return;
+    this.openEdit(c.id);
   }
   beginDrag(cell, e) {
     const g = cell.cloneNode(true); g.style.position = 'fixed'; g.style.left = '0'; g.style.top = '0'; g.style.zIndex = '9999';
@@ -830,6 +882,22 @@ class Component extends DCLogic {
       draftName: s.draftName, draftUrl: s.draftUrl,
       onDraftName: e => this.setState({ draftName: e.target.value }), onDraftUrl: e => this.setState({ draftUrl: e.target.value }),
       saveAdd: () => { if (this.addBookmark(s.draftName, s.draftUrl)) this.setState({ adding: false }); },
+      // ----- per-bookmark edit panel -----
+      editing: !!s.editing,
+      editName: s.editName, editUrl: s.editUrl, editIcon: s.editIcon, editNotes: s.editNotes,
+      onEditName: e => this.setState({ editName: e.target.value }),
+      onEditUrl: e => this.setState({ editUrl: e.target.value }),
+      onEditIcon: e => this.setState({ editIcon: e.target.value }),
+      onEditNotes: e => this.setState({ editNotes: e.target.value }),
+      // Live tile preview: a hosted http(s) image if given, else the site favicon
+      // (same icon rule the springboard tiles use). bb-ico falls back to the letter.
+      editIconPreview: (/^https?:\/\//i.test(String(s.editIcon || '').trim()) ? String(s.editIcon).trim() : this.favicon(s.editUrl)),
+      editLetter: ((String(s.editName || '').trim() || this.hostCore(s.editUrl) || '?').trim()[0] || '?').toUpperCase(),
+      closeEdit: () => this.closeEdit(), saveEdit: () => this.saveEdit(),
+      editConfirmDelete: s.editConfirmDelete, showEditActions: !s.editConfirmDelete,
+      askDeleteEdit: () => this.setState({ editConfirmDelete: true }),
+      cancelDeleteEdit: () => this.setState({ editConfirmDelete: false }),
+      confirmDeleteEdit: () => this.confirmDeleteEdit(),
       suggestions,
       addPage: () => this.addPage(),
       pageList: s.pages.map((pg, i) => {
