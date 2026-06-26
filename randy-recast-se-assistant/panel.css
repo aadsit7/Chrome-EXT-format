@@ -650,3 +650,20 @@
       .sb-foot-btn:hover { background: rgba(3,114,255,0.07); color: var(--primary); }
       .sb-foot-btn.active { background: rgba(3,114,255,0.12); color: var(--primary); }
 
+      /* ================================================================
+       * Listening console — ~30% smaller. The "Randy is on / off" stage
+       * (orb + status + transcript) was too large; scale it down across the
+       * board. Last in source order so it wins over the base + glass skin.
+       * ================================================================ */
+      .console { padding: 14px 13px; }
+      .console-inner { gap: 11px; }
+      .cl-status { font-size: 13px; }
+      .console-orb { gap: 9px; }
+      .console-orb .orb-wrap { width: 81px; height: 81px; }
+      .console-orb .voice-orb { width: 66px; height: 66px; }
+      .console-orb .voice-orb svg, .console-orb .voice-orb i { width: 22px; height: 22px; }
+      .cl-transcript { font-size: 15px; min-height: 42px; max-height: 118px; }
+      .cl-transcript.cl-tr-muted { font-size: 11px; }
+      .console.stage-analyzing .cl-transcript, .console.stage-researching .cl-transcript { font-size: 13px; }
+      .cl-transcript.ac-live { font-size: 12px; max-height: 224px; }
+
