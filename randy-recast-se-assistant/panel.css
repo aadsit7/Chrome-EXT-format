@@ -309,6 +309,13 @@
       .comp-send:hover:not(:disabled) { background: var(--primary-hover); }
       .comp-send:active:not(:disabled) { transform: scale(0.94); }
       .comp-send:disabled { background: var(--n200); color: #fff; cursor: not-allowed; }
+      .comp-mic { width: 38px; height: 38px; border-radius: 50%; background: transparent; color: var(--navy); border: 1.5px solid var(--n200); display: grid; place-items: center; cursor: pointer; flex-shrink: 0; transition: background 0.12s, border-color 0.12s, color 0.12s, transform 0.12s; }
+      .comp-mic:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+      .comp-mic:active:not(:disabled) { transform: scale(0.94); }
+      .comp-mic:disabled { opacity: 0.5; cursor: not-allowed; }
+      .comp-mic.live { background: #E11D48; border-color: #E11D48; color: #fff; animation: compMicPulse 1.5s ease-in-out infinite; }
+      .comp-mic.live:hover:not(:disabled) { background: #BE123C; border-color: #BE123C; color: #fff; }
+      @keyframes compMicPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(225,29,72,0.45); } 50% { box-shadow: 0 0 0 6px rgba(225,29,72,0); } }
 
       /* ===== Saved-conversation view (read-only, in place) ===== */
       .saved-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -512,9 +519,10 @@
         .voice-switch.on::after { left: 24px; }
         input[type="text"], input[type="password"], textarea { font-size: 16px; }
         .comp-send { width: 44px; height: 44px; }
+        .comp-mic { width: 44px; height: 44px; }
       }
       @media (prefers-reduced-motion: reduce) {
-        .orb-wrap .orb-ring, .sound-wave-bar, .typing-dot, .vp .vp-dot, .chat-avatar .status-dot, .interim-caret, .voice-toast, .vp-spin { animation: none !important; }
+        .orb-wrap .orb-ring, .sound-wave-bar, .typing-dot, .vp .vp-dot, .chat-avatar .status-dot, .interim-caret, .voice-toast, .vp-spin, .comp-mic.live { animation: none !important; }
         .orb-wrap .orb-ring { display: none; }
         .ac-scrim, .ac-modal { animation: none !important; }
         .ac-seg-thumb { transition: none !important; }

@@ -414,7 +414,8 @@
         dictation: null,          // dedicated dictation SpeechRecognition
         dictating: false,         // dictation actively capturing the mic
         dictationPaused: false,   // passive recognizer paused for dictation
-        dictationBase: ''         // finalized dictation text staged in the input
+        dictationBase: '',        // finalized dictation text staged in the input
+        dictationTarget: null     // where dictation writes: {kind:'pip'} or {kind:'home', slot}
       };
 
       // Listening runtime state. Randy hears on two channels: (1) the
@@ -1628,13 +1629,30 @@
        * it for as long as the user keeps dictating.
        * ================================================================ */
 
-      // Write the staged dictation text (+ optional live interim) into the
-      // pop-out input. Never throws — the window can vanish mid-write.
-      function syncDictationInput(interim) {
+      // Is dictation currently typing into this home composer slot?
+      function isHomeDictating(slotIdx) {
+        const t = VOICE.dictationTarget;
+        return !!(VOICE.dictating && t && t.kind === 'home' && t.slot === slotIdx);
+      }
+
+      // Resolve the live input element dictation is currently writing into —
+      // either the pop-out composer or a home composer slot. Never throws.
+      function dictationInputEl() {
+        const t = VOICE.dictationTarget;
+        if (!t) return null;
+        if (t.kind === 'home') {
+          return document.getElementById('home-input-' + t.slot);
+        }
+        // Default / 'pip': the pop-out window's input (a separate document).
         const w = PIP.window;
-        if (!w || w.closed) return;
-        let input;
-        try { input = w.document.getElementById('pip-input'); } catch { return; }
+        if (!w || w.closed) return null;
+        try { return w.document.getElementById('pip-input'); } catch { return null; }
+      }
+
+      // Write the staged dictation text (+ optional live interim) into the
+      // active input. Never throws — the pop-out window can vanish mid-write.
+      function syncDictationInput(interim) {
+        const input = dictationInputEl();
         if (!input) return;
         const base = VOICE.dictationBase || '';
         const it = (interim || '').trim();
@@ -1644,6 +1662,17 @@
           input.selectionStart = input.selectionEnd = val.length;
           input.scrollLeft = input.scrollWidth;
         } catch {}
+        // A home composer write fires no 'input' event, so keep STATE and the
+        // send button's disabled state in sync by hand (the pop-out has its own).
+        const t = VOICE.dictationTarget;
+        if (t && t.kind === 'home' && STATE.slots[t.slot]) {
+          STATE.slots[t.slot].inputText = val;
+          const sendBtn = document.querySelector('[data-action="send-home"][data-idx="' + t.slot + '"]');
+          if (sendBtn) {
+            const dis = !!STATE.slots[t.slot].loading || !val.trim();
+            if (sendBtn.disabled !== dis) sendBtn.disabled = dis;
+          }
+        }
       }
 
       // Fold a finalized chunk into the staged dictation text with sane spacing.
@@ -1727,23 +1756,24 @@
         tryStart(0);
       }
 
-      function toggleDictation() {
+      function toggleDictation(target) {
         if (!VOICE.srSupported) { showToast('Voice typing needs Chrome or Edge'); return; }
         if (VOICE.dictating) stopDictation();
-        else startDictation();
+        else startDictation(target);
       }
 
-      function startDictation() {
+      function startDictation(target) {
         if (!VOICE.srSupported || VOICE.dictating) return;
         const r = ensureDictationRecognition();
         if (!r) return;
         VOICE.dictating = true;
+        // Default to the pop-out composer for back-compat with its mic button.
+        VOICE.dictationTarget = target || { kind: 'pip' };
 
         // Seed the staged text from whatever the user already typed, so
         // dictation appends rather than overwrites.
-        const w = PIP.window;
         let existing = '';
-        try { existing = (w && !w.closed && w.document.getElementById('pip-input').value) || ''; } catch {}
+        try { existing = (dictationInputEl() || {}).value || ''; } catch {}
         VOICE.dictationBase = existing.trim();
 
         // Pause Randy's passive listener so the two recognizers don't fight
@@ -1766,8 +1796,10 @@
         };
         tryStart(0);
 
-        try { if (w && !w.closed) w.document.getElementById('pip-input').focus(); } catch {}
+        // Reflect the live mic in the UI first (render() rebuilds the home
+        // composer), then put focus back on the freshly-built input.
         render();
+        try { const el = dictationInputEl(); if (el) { el.focus(); const n = el.value.length; el.setSelectionRange(n, n); } } catch {}
       }
 
       function stopDictation() {
@@ -2957,6 +2989,9 @@
         if (slot.loading) return;
         const text = slot.inputText.trim();
         if (!text) return;
+        // If the user was voice-typing into this composer, end dictation so the
+        // mic is freed and Randy's passive listener resumes.
+        if (isHomeDictating(idx)) stopDictation();
         slot.loading = true;
 
         slot.messages.push({ role: 'user', content: text });
@@ -3514,9 +3549,6 @@
                 <i data-lucide="x" class="w-4 h-4"></i>
               </button>
             </div>
-            <button class="sb-new" data-action="new-chat" title="Start a new chat — the current one is saved below">
-              <i data-lucide="square-pen" class="w-4 h-4"></i>New chat
-            </button>
             <div class="sb-controls">
               <div class="sb-label">Options</div>
               <button class="sb-ctl" data-action="toggle-speak-answers" title="${slot.speakAnswers ? 'Randy reads each answer out loud' : 'Answers show in the chat only'}">
@@ -3733,13 +3765,19 @@
                 </div>
               </div>
               <div class="composer-zone">
-                <div class="composer-tools" style="max-width:768px;margin:0 auto 8px;display:flex">
+                <div class="composer-tools" style="max-width:768px;margin:0 auto 8px;display:flex;gap:8px;flex-wrap:wrap">
                   <button class="btn-outline${SELECTION_CAPTURE.armed ? ' armed' : ''}" data-action="ask-selection" data-idx="${idx}" style="padding:7px 14px;min-height:0;font-size:12.5px" title="${SELECTION_CAPTURE.armed ? 'Capturing — highlight text on the page and it goes to Randy. Click to stop.' : 'Click, then highlight text on the page — it goes straight to Randy.'}">
                     <i data-lucide="highlighter" class="w-4 h-4"></i>${SELECTION_CAPTURE.armed ? 'Capturing highlights — click to stop' : 'Ask about highlighted text'}
+                  </button>
+                  <button class="btn-outline" data-action="new-chat" style="padding:7px 14px;min-height:0;font-size:12.5px" title="Start a new chat — the current one is saved in the menu">
+                    <i data-lucide="square-pen" class="w-4 h-4"></i>New chat
                   </button>
                 </div>
                 <div class="composer">
                   <textarea id="home-input-${idx}" class="composer-input" rows="1" placeholder="Message ${escAttr(slot.label)}…" ${slot.loading ? 'disabled' : ''}>${escHtml(slot.inputText || '')}</textarea>
+                  ${VOICE.srSupported ? `<button class="comp-mic${isHomeDictating(idx) ? ' live' : ''}" data-action="dictate-home" data-idx="${idx}" title="${isHomeDictating(idx) ? 'Stop voice typing' : 'Voice to text — speak your message'}" aria-label="Voice to text" aria-pressed="${isHomeDictating(idx)}" ${slot.loading ? 'disabled' : ''}>
+                    <i data-lucide="${isHomeDictating(idx) ? 'square' : 'mic'}" class="w-5 h-5"></i>
+                  </button>` : ''}
                   <button class="comp-send" data-action="send-home" data-idx="${idx}" title="Send message" aria-label="Send message" ${(slot.loading || !(slot.inputText || '').trim()) ? 'disabled' : ''}>
                     <i data-lucide="arrow-up" class="w-5 h-5"></i>
                   </button>
@@ -4884,6 +4922,15 @@
               const inp = document.getElementById('home-input-' + idx);
               if (inp) STATE.slots[idx].inputText = inp.value;
               sendMessage(idx);
+              break;
+            }
+            case 'dictate-home': {
+              const di = idx !== null ? idx : 0;
+              // Persist whatever's typed so dictation appends to it (and a
+              // re-render from the toggle keeps it).
+              const cur = document.getElementById('home-input-' + di);
+              if (cur && STATE.slots[di]) STATE.slots[di].inputText = cur.value;
+              toggleDictation({ kind: 'home', slot: di });
               break;
             }
             case 'ask-selection': toggleSelectionCapture(idx !== null ? idx : 0); break;
