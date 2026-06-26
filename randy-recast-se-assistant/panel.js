@@ -1127,6 +1127,32 @@
         }
       }
 
+      // Auto-arm highlight capture at launch, so highlighting any text on the
+      // page goes straight to Randy without first clicking the button — the
+      // user can still toggle it off with the button. Silent + resilient: an
+      // unreadable active tab (chrome://, Web Store, etc.) just leaves it armed,
+      // and the tab-follow listeners inject the watcher the moment the user
+      // lands on a readable page.
+      async function autoArmSelectionCapture() {
+        if (SELECTION_CAPTURE.armed) return;
+        SELECTION_CAPTURE.armed = true;
+        SELECTION_CAPTURE.slotIdx = 0;
+        SELECTION_CAPTURE.lastText = '';
+        armTabFollow();
+        try {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (tab && tab.id != null) {
+            // Install the in-page watcher only — unlike the button, don't send
+            // whatever was already highlighted before launch (that would fire a
+            // surprising message on open). Only fresh mouse-up highlights count.
+            // An unreadable page returns null; stay armed and let tab-follow
+            // inject on the next readable page. No toast at launch.
+            await injectSelectionListener(tab.id);
+          }
+        } catch (e) {}
+        render();
+      }
+
       // Receive selections reported by the in-page watcher. Registered once.
       if (!globalThis.__randySelMsgWired) {
         globalThis.__randySelMsgWired = true;
@@ -5236,4 +5262,8 @@
         if (VOICE.srSupported) {
           setTimeout(() => { if (!STATE.slots[0].listenOn) { try { startListening('one-way'); } catch {} } }, 400);
         }
+        // Auto-arm highlight capture on open too, so highlighting text on the
+        // page (e.g. while copying something) goes straight to Randy — the
+        // button still lets the user turn it off.
+        setTimeout(() => { try { autoArmSelectionCapture(); } catch {} }, 600);
       });
