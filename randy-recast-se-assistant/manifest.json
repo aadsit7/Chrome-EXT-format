@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Randy — Recast SE Assistant",
+  "version": "1.0.0",
+  "description": "Voice assistant that listens during calls and answers Recast product questions on screen and aloud.",
+  "action": {
+    "default_title": "Randy — Recast SE Assistant"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["sidePanel"],
+  "host_permissions": [
+    "https://script.google.com/*",
+    "https://script.googleusercontent.com/*",
+    "https://randy-stream.aadsit7.workers.dev/*"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
