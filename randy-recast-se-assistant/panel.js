@@ -992,43 +992,148 @@
       }
 
       /* ================================================================
-       * "Ask about highlighted text" — grab the page selection and send it
-       * down the exact same path as a typed question (sendMessage).
+       * "Ask about highlighted text" — arm a capture mode. Once armed, any
+       * text the user highlights on the current page (mouse-up) flows straight
+       * into the active composer and sends, exactly like typing it + Enter.
+       * A small watcher is injected into the page; it messages the panel back
+       * over chrome.runtime, and handleCapturedSelection() does the send.
        * ================================================================ */
-      async function askAboutSelection(idx) {
-        const slotIdx = idx !== null && idx !== undefined ? idx : 0;
-        const slot = STATE.slots[slotIdx];
-        if (!slot || slot.loading) return;
+      const SELECTION_CAPTURE = { armed: false, slotIdx: 0, lastText: '', tabFollow: false };
+
+      // Runs INSIDE the page (isolated world). Installs a one-time mouse-up
+      // watcher that reports the current selection to the extension, and
+      // returns whatever is selected right now so arming also catches a
+      // selection the user made before clicking the button.
+      function installRandySelectionWatcher() {
+        if (!window.__randySelWatcher) {
+          window.__randySelWatcher = true;
+          let last = '';
+          document.addEventListener('mouseup', () => {
+            // Let the browser finalize the selection before we read it.
+            setTimeout(() => {
+              let text = '';
+              try { text = (window.getSelection().toString() || '').trim(); } catch (e) {}
+              if (!text) { last = ''; return; }      // deselect → allow re-sending the same text later
+              if (text === last) return;             // ignore the duplicate selectionchange/mouseup pair
+              last = text;
+              try { chrome.runtime.sendMessage({ type: 'randy-selection', text }); } catch (e) {}
+            }, 0);
+          }, true);
+        }
+        try { return (window.getSelection().toString() || '').trim(); } catch (e) { return ''; }
+      }
+
+      async function injectSelectionListener(tabId) {
         try {
-          // activeTab grants temporary access to the current tab on this click.
+          const results = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: installRandySelectionWatcher,
+          });
+          return ((results && results[0] && results[0].result) || '').trim();
+        } catch (err) {
+          // chrome://, the Web Store, the Extensions page, etc. are blocked for
+          // every extension — nothing we can read there. Signal the caller.
+          return null;
+        }
+      }
+
+      // Single shared send path for captured text — used both when arming (an
+      // already-highlighted selection) and for every later mouse-up message.
+      function handleCapturedSelection(rawText) {
+        if (!SELECTION_CAPTURE.armed) return;
+        const text = (rawText || '').trim();
+        if (!text || text === SELECTION_CAPTURE.lastText) return;
+        const slotIdx = SELECTION_CAPTURE.slotIdx;
+        const slot = STATE.slots[slotIdx];
+        if (!slot) return;
+        // If Randy is mid-answer, sendMessage() would no-op and the highlight
+        // would be lost. Don't record it as lastText so the user can re-highlight
+        // once the answer lands; just let them know.
+        if (slot.loading) { showToast('Randy is still answering — highlight again in a moment.'); return; }
+        SELECTION_CAPTURE.lastText = text;
+        // Drop it into the active composer and fire the normal send path, so the
+        // behaviour is identical to typing the text and pressing Enter.
+        slot.inputText = text;
+        const live = document.getElementById('home-input-' + slotIdx);
+        if (live) live.value = text;
+        sendMessage(slotIdx);
+      }
+
+      // Keep capturing when the user switches tabs or navigates — re-inject the
+      // watcher into whatever tab is now active. The in-page guard makes
+      // re-injection a no-op on tabs that already have it.
+      function onCaptureTabActivated(info) {
+        if (SELECTION_CAPTURE.armed && info && info.tabId != null) injectSelectionListener(info.tabId);
+      }
+      function onCaptureTabUpdated(tabId, changeInfo, tab) {
+        if (SELECTION_CAPTURE.armed && changeInfo.status === 'complete' && tab && tab.active) {
+          injectSelectionListener(tabId);
+        }
+      }
+      function armTabFollow() {
+        if (SELECTION_CAPTURE.tabFollow) return;
+        SELECTION_CAPTURE.tabFollow = true;
+        try {
+          chrome.tabs.onActivated.addListener(onCaptureTabActivated);
+          chrome.tabs.onUpdated.addListener(onCaptureTabUpdated);
+        } catch (e) {}
+      }
+
+      function disarmSelectionCapture() {
+        SELECTION_CAPTURE.armed = false;
+        SELECTION_CAPTURE.lastText = '';
+        // The tab-follow listeners stay registered but no-op while disarmed, and
+        // any in-page watchers go quiet because handleCapturedSelection() gates
+        // on `armed`. Nothing to tear down.
+      }
+
+      async function toggleSelectionCapture(idx) {
+        const slotIdx = idx !== null && idx !== undefined ? idx : 0;
+        if (SELECTION_CAPTURE.armed) {
+          disarmSelectionCapture();
+          showToast('Highlight capture off.');
+          render();
+          return;
+        }
+        try {
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
           if (!tab || tab.id == null) { showToast("Can't read this page."); return; }
 
-          let results;
-          try {
-            results = await chrome.scripting.executeScript({
-              target: { tabId: tab.id },
-              func: () => window.getSelection().toString(),
-            });
-          } catch (err) {
-            // chrome://, the Web Store, the Extensions page, etc. are blocked
-            // for every extension — there's no selection we can ever read.
+          // Arm before injecting so a pre-existing selection (returned by the
+          // inject call) is accepted by handleCapturedSelection().
+          SELECTION_CAPTURE.armed = true;
+          SELECTION_CAPTURE.slotIdx = slotIdx;
+          SELECTION_CAPTURE.lastText = '';
+
+          const current = await injectSelectionListener(tab.id);
+          if (current === null) {            // page we can never read
+            disarmSelectionCapture();
             showToast("Can't read this page.");
+            render();
             return;
           }
-
-          const text = ((results && results[0] && results[0].result) || '').trim();
-          if (!text) { showToast('Highlight some text on the page first.'); return; }
-
-          // Drop it into the active composer and fire the normal send path, so
-          // the behaviour is identical to typing the text and pressing Enter.
-          slot.inputText = text;
-          const live = document.getElementById('home-input-' + slotIdx);
-          if (live) live.value = text;
-          sendMessage(slotIdx);
+          armTabFollow();
+          if (current) {
+            handleCapturedSelection(current); // already had text highlighted → send it now
+          } else {
+            showToast('Highlight text on the page — it goes straight to Randy.');
+          }
+          render();
         } catch (err) {
+          disarmSelectionCapture();
           showToast("Can't read this page.");
+          render();
         }
+      }
+
+      // Receive selections reported by the in-page watcher. Registered once.
+      if (!globalThis.__randySelMsgWired) {
+        globalThis.__randySelMsgWired = true;
+        try {
+          chrome.runtime.onMessage.addListener((msg) => {
+            if (msg && msg.type === 'randy-selection') handleCapturedSelection(msg.text);
+          });
+        } catch (e) {}
       }
 
       /* ================================================================
@@ -3629,8 +3734,8 @@
               </div>
               <div class="composer-zone">
                 <div class="composer-tools" style="max-width:768px;margin:0 auto 8px;display:flex">
-                  <button class="btn-outline" data-action="ask-selection" data-idx="${idx}" style="padding:7px 14px;min-height:0;font-size:12.5px" title="Send the text you've highlighted on the page to Randy" ${slot.loading ? 'disabled' : ''}>
-                    <i data-lucide="highlighter" class="w-4 h-4"></i>Ask about highlighted text
+                  <button class="btn-outline${SELECTION_CAPTURE.armed ? ' armed' : ''}" data-action="ask-selection" data-idx="${idx}" style="padding:7px 14px;min-height:0;font-size:12.5px" title="${SELECTION_CAPTURE.armed ? 'Capturing — highlight text on the page and it goes to Randy. Click to stop.' : 'Click, then highlight text on the page — it goes straight to Randy.'}">
+                    <i data-lucide="highlighter" class="w-4 h-4"></i>${SELECTION_CAPTURE.armed ? 'Capturing highlights — click to stop' : 'Ask about highlighted text'}
                   </button>
                 </div>
                 <div class="composer">
@@ -4781,7 +4886,7 @@
               sendMessage(idx);
               break;
             }
-            case 'ask-selection': askAboutSelection(idx !== null ? idx : 0); break;
+            case 'ask-selection': toggleSelectionCapture(idx !== null ? idx : 0); break;
             case 'toggle-listen': toggleListening(); break;
             case 'pick-audio-mode': {
               const m = act.dataset.mode === 'two-way' ? 'two-way' : 'one-way';
