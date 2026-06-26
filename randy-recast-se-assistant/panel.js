@@ -992,6 +992,46 @@
       }
 
       /* ================================================================
+       * "Ask about highlighted text" — grab the page selection and send it
+       * down the exact same path as a typed question (sendMessage).
+       * ================================================================ */
+      async function askAboutSelection(idx) {
+        const slotIdx = idx !== null && idx !== undefined ? idx : 0;
+        const slot = STATE.slots[slotIdx];
+        if (!slot || slot.loading) return;
+        try {
+          // activeTab grants temporary access to the current tab on this click.
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (!tab || tab.id == null) { showToast("Can't read this page."); return; }
+
+          let results;
+          try {
+            results = await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              func: () => window.getSelection().toString(),
+            });
+          } catch (err) {
+            // chrome://, the Web Store, the Extensions page, etc. are blocked
+            // for every extension — there's no selection we can ever read.
+            showToast("Can't read this page.");
+            return;
+          }
+
+          const text = ((results && results[0] && results[0].result) || '').trim();
+          if (!text) { showToast('Highlight some text on the page first.'); return; }
+
+          // Drop it into the active composer and fire the normal send path, so
+          // the behaviour is identical to typing the text and pressing Enter.
+          slot.inputText = text;
+          const live = document.getElementById('home-input-' + slotIdx);
+          if (live) live.value = text;
+          sendMessage(slotIdx);
+        } catch (err) {
+          showToast("Can't read this page.");
+        }
+      }
+
+      /* ================================================================
        * TTS — streaming sentence queue + echo protection
        * ================================================================ */
 
@@ -3588,6 +3628,11 @@
                 </div>
               </div>
               <div class="composer-zone">
+                <div class="composer-tools" style="max-width:768px;margin:0 auto 8px;display:flex">
+                  <button class="btn-outline" data-action="ask-selection" data-idx="${idx}" style="padding:7px 14px;min-height:0;font-size:12.5px" title="Send the text you've highlighted on the page to Randy" ${slot.loading ? 'disabled' : ''}>
+                    <i data-lucide="highlighter" class="w-4 h-4"></i>Ask about highlighted text
+                  </button>
+                </div>
                 <div class="composer">
                   <textarea id="home-input-${idx}" class="composer-input" rows="1" placeholder="Message ${escAttr(slot.label)}…" ${slot.loading ? 'disabled' : ''}>${escHtml(slot.inputText || '')}</textarea>
                   <button class="comp-send" data-action="send-home" data-idx="${idx}" title="Send message" aria-label="Send message" ${(slot.loading || !(slot.inputText || '').trim()) ? 'disabled' : ''}>
@@ -4736,6 +4781,7 @@
               sendMessage(idx);
               break;
             }
+            case 'ask-selection': askAboutSelection(idx !== null ? idx : 0); break;
             case 'toggle-listen': toggleListening(); break;
             case 'pick-audio-mode': {
               const m = act.dataset.mode === 'two-way' ? 'two-way' : 'one-way';
