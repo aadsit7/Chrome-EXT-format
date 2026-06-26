@@ -1012,9 +1012,11 @@ class Component extends DCLogic {
       openSettings: () => this.setState({ settingsOpen: true }), closeSettings: () => this.setState({ settingsOpen: false }),
       openAdd: () => this.setState({ adding: true, draftName: '', draftUrl: '' }), closeAdd: () => this.setState({ adding: false }),
       launchVoice: () => this.launchVoiceFn(), closeVoice: () => this.closeVoiceFn(), toggleListen: () => { if (s.listening) this.stopListen(); else this.startListen(); },
-      // Dock mic button: pulses while the mic is live; tapping it stops listening
-      // (and re-opens the voice panel to start again when it's off).
-      toggleMic: () => { if (this.state.listening) this.stopListen(); else this.launchVoiceFn(); },
+      // Dock mic button: pulses while the mic is live; tapping it pauses
+      // listening, and tapping again simply resumes the pulse inline — no voice
+      // overlay pop-out. (startListen still falls back to the overlay only when
+      // speech recognition isn't supported, to show the explainer.)
+      toggleMic: () => { if (this.state.listening) this.stopListen(); else this.startListen(); },
       micIcon: 'mic', micLabel: s.listening ? 'Stop listening' : 'Start voice',
       micRingStyle: s.listening ? 'position:absolute; inset:-5px; border-radius:50%; border:2px solid var(--bb-accent2); pointer-events:none; animation:bbRing 1.6s ease-out infinite;' : 'display:none;',
       micBtnAnim: s.listening ? 'animation:bbMicPulse 1.6s ease-in-out infinite;' : '',
