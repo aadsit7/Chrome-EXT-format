@@ -21,19 +21,42 @@ the icon, click the puzzle-piece "Extensions" button and pin Bookmarks Buddy.)
 
 FIRST-RUN PERMISSIONS
 ---------------------
-The first time you start listening, Chrome asks for microphone access so the
-extension can hear your voice commands. Allow it to use voice features.
+The first time the panel opens it starts the microphone listener, so Chrome
+asks for microphone access. Allow it to use voice features. (You can stop
+listening any time by tapping the mic; it starts again on the next open.)
 
 
-WHAT IT DOES (unchanged from the original)
-------------------------------------------
+WHAT IT DOES
+------------
+- Loads your apps from your Google Sheet on launch (see below) and keeps the
+  springboard arrangement — pages, folders, and order — in sync with it.
+- Auto-starts the microphone listener when the panel opens.
 - Voice listening (Web Speech API) and spoken replies (text-to-speech).
 - Open bookmarks in new browser tabs/windows by voice or by tapping a tile.
-- Save bookmarks, settings, and your home-screen layout on the device
-  (localStorage — nothing leaves your browser).
-- Springboard home screen with folders and a rearrange ("jiggle") edit mode.
+- Springboard home screen with named pages, folders, and a rearrange
+  ("jiggle") edit mode.
+- localStorage is kept as an instant, offline mirror.
 - Site icons are fetched as images from Google's public favicon service; this
   is an ordinary <img> load and needs no special permission.
+
+
+GOOGLE SHEET SYNC (ported from the web app)
+-------------------------------------------
+Your bookmarks live in a Google Sheet, reached through a deployed Apps Script
+web app (the same backend and embedded token as the browser version). On
+launch the extension pulls the list and rebuilds your pages/folders/order from
+the sheet's Folder / Page / Position columns; every change you make (add,
+remove, rearrange) is written back, and changes made while offline are queued
+and flushed once the sheet is reachable again. The sheet is authoritative, so
+the extension shows exactly what's in your sheet.
+
+This is why the manifest now requests host access to:
+  - https://script.google.com/*            (the Apps Script web app)
+  - https://script.googleusercontent.com/* (where its GET response is served)
+
+To point a device at a different token without editing files, open the panel's
+DevTools console and run:  bbSetToken('your-token')   (or clear it with
+bbSetToken('')). A ?token=… on the panel URL works too.
 
 
 HOW IT WAS PACKAGED (notes for maintainers)
@@ -63,7 +86,9 @@ FILES
   panel.html                 The side-panel page (the unpacked app template)
   background.js              Service worker — makes the toolbar icon open the panel
   lib/dc-runtime.js          The template framework (patched: no eval, local URLs)
-  lib/component-logic.js     The app's component logic (was the inline x-dc script)
+  lib/component-logic.js     The app's component logic (was the inline x-dc
+                             script), plus the ported Google Sheet sync layer
+                             and the auto-start-mic-on-launch hook
   lib/lucide.min.js          Lucide icon library (bundled locally)
   lib/react.production.min.js
   lib/react-dom.production.min.js   React 18.3.1, bundled locally

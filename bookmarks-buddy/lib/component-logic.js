@@ -94,8 +94,226 @@ class Component extends DCLogic {
   save() {
     try { localStorage.setItem(this.LS_B, JSON.stringify(this.state.bookmarks)); } catch {}
     try { localStorage.setItem(this.LS_L, JSON.stringify({ pages: this.state.pages, pageNames: this.state.pageNames })); } catch {}
+    // Mirror every change up to the Google Sheet (no-op until the first pull
+    // has baselined us, and a no-op when no token is configured).
+    try { this.sheetSync(); } catch {}
   }
   saveSettings() { try { localStorage.setItem(this.LS_S, JSON.stringify({ dark: this.state.dark, speak: this.state.speak })); } catch {} }
+
+  /* ================================================================
+   * Google Sheet backend — ported from the web app (index_26) so the
+   * extension loads the same bookmarks/apps from your Google Sheet,
+   * keeps the springboard arrangement (pages, folders, order) in the
+   * sheet's Folder/Page/Position columns, and writes changes back.
+   * localStorage stays on as an instant, offline mirror. With no token
+   * the whole layer is dormant and the app is localStorage-only.
+   * ================================================================ */
+  sheetBoot() {
+    if (this._sheet) return;
+    const C = {
+      url: 'https://script.google.com/macros/s/AKfycbwXvgj1niSwrREBepEA9oO_YNBtgyq1vSdZPNclYBqMz0ytTI1r1sjUDxePExx5B0mOlA/exec',
+      embedded: 'c1XGANPfknryxC-49LbEhOljwWKwYIzo',
+      LS_TOKEN: 'bookmarksBuddy.sidepanel.appToken',
+      LS_OUTBOX: 'bookmarksBuddy.sidepanel.outbox.v1',
+      LS_SYNCED: 'bookmarksBuddy.sidepanel.synced.v1'
+    };
+    this._sheet = Object.assign({}, C, {
+      token: this.sheetResolveToken(C),
+      online: true, snapshot: Object.create(null), flushing: false, ready: false, seq: Date.now()
+    });
+    // Console helper, same name/behaviour as the web app.
+    try {
+      window.bbSetToken = (t) => {
+        this._sheet.token = String(t || '').trim();
+        try { if (this._sheet.token) localStorage.setItem(C.LS_TOKEN, this._sheet.token); else localStorage.removeItem(C.LS_TOKEN); } catch {}
+        if (this.sheetEnabled()) this.syncFromSheet();
+        return this._sheet.token ? 'app_token set — syncing with your sheet' : 'app_token cleared';
+      };
+    } catch {}
+    if (this.sheetEnabled()) this.syncFromSheet();
+  }
+  sheetResolveToken(C) {
+    try {
+      const here = new URL(location.href);
+      const q = here.searchParams.get('token') || new URLSearchParams((location.hash || '').replace(/^#/, '')).get('token');
+      if (q) { try { localStorage.setItem(C.LS_TOKEN, q); } catch {} return q; }
+    } catch {}
+    try { const saved = localStorage.getItem(C.LS_TOKEN); if (saved) return saved; } catch {}
+    return C.embedded;
+  }
+  sheetEnabled() { return !!(this._sheet && this._sheet.url && this._sheet.token); }
+  async sheetPost(payload) {
+    // text/plain keeps it a "simple" request (no CORS preflight Apps Script can't answer).
+    const res = await fetch(this._sheet.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ token: this._sheet.token }, payload))
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    let data = {}; try { data = await res.json(); } catch {}
+    if (data && data.ok === false) throw new Error(data.error || 'sheet rejected the write');
+    return data;
+  }
+  async sheetGet() {
+    const u = new URL(this._sheet.url);
+    u.searchParams.set('action', 'getBookmarks');
+    u.searchParams.set('token', this._sheet.token);
+    const res = await fetch(u.toString(), { method: 'GET' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (!data || !data.ok || !Array.isArray(data.bookmarks)) throw new Error('unexpected getBookmarks response');
+    return data.bookmarks;
+  }
+  /* offline write queue */
+  sheetLoadOutbox() { try { const o = JSON.parse(localStorage.getItem(this._sheet.LS_OUTBOX) || '[]'); return Array.isArray(o) ? o : []; } catch { return []; } }
+  sheetSaveOutbox(q) { try { localStorage.setItem(this._sheet.LS_OUTBOX, JSON.stringify(q)); } catch {} }
+  sheetEnqueue(item) {
+    const q = this.sheetLoadOutbox();
+    if (item.action === 'saveBookmark' || item.action === 'deleteBookmark') {
+      const id = item.action === 'saveBookmark' ? item.bookmark['Bookmark ID'] : item.id;
+      for (let i = q.length - 1; i >= 0; i--) {
+        const it = q[i];
+        const itId = it.action === 'saveBookmark' ? (it.bookmark && it.bookmark['Bookmark ID']) : it.action === 'deleteBookmark' ? it.id : undefined;
+        if (itId !== undefined && itId === id) q.splice(i, 1);
+      }
+    }
+    item.seq = ++this._sheet.seq; q.push(item); this.sheetSaveOutbox(q);
+    if (this._sheet.online) this.sheetFlush();
+  }
+  async sheetFlush() {
+    if (this._sheet.flushing || !this.sheetEnabled()) return;
+    this._sheet.flushing = true;
+    try {
+      while (true) {
+        const q = this.sheetLoadOutbox();
+        if (!q.length) { this._sheet.online = true; break; }
+        const item = q[0];
+        try { const { seq, ...body } = item; await this.sheetPost(body); }
+        catch { this._sheet.online = false; break; }
+        this._sheet.online = true;
+        this.sheetSaveOutbox(this.sheetLoadOutbox().filter(x => x.seq !== item.seq));
+      }
+    } finally { this._sheet.flushing = false; }
+  }
+  /* springboard arrangement <-> sheet columns (same encoding as the web app) */
+  sheetPlacements() {
+    const map = Object.create(null); const placed = new Set();
+    const pages = this.state.pages || [], names = this.state.pageNames || [];
+    for (let p = 0; p < pages.length; p++) {
+      const nm = names[p] && String(names[p]).trim();
+      const pageField = nm ? ((p + 1) + '|' + nm) : String(p + 1);
+      const page = pages[p] || [];
+      for (let s = 0; s < page.length; s++) {
+        const it = page[s]; if (!it) continue;
+        if (it.type === 'app') { map[it.id] = { folder: '', page: pageField, position: s }; placed.add(it.id); }
+        else if (it.type === 'folder') { for (let k = 0; k < it.items.length; k++) { const id = it.items[k]; map[id] = { folder: it.name || 'Folder', page: pageField, position: 'F' + s + ':' + k }; placed.add(id); } }
+      }
+    }
+    for (const b of this.state.bookmarks) if (!placed.has(b.id)) map[b.id] = { folder: '', page: '', position: '' };
+    return map;
+  }
+  sheetRow(bm, pl) {
+    pl = pl || { folder: '', page: '', position: '' };
+    if (!bm._dateAdded) bm._dateAdded = new Date().toISOString();
+    const cell = v => (v == null || v === '' ? '' : String(v));
+    return {
+      'Bookmark ID': bm.id, 'Name': bm.name || '', 'URL': bm.url || '',
+      'Folder': pl.folder != null ? pl.folder : '', 'Page': cell(pl.page), 'Position': cell(pl.position),
+      'Owner (Profile ID)': bm._owner != null ? bm._owner : '',
+      'Date Added': bm._dateAdded, 'Last Opened': bm._lastOpened != null ? bm._lastOpened : '', 'Times Opened': bm._timesOpened != null ? bm._timesOpened : '',
+      'Notes': bm.notes != null ? bm.notes : '',
+      'Icon': /^https?:\/\//i.test(String(bm.icon || '').trim()) ? String(bm.icon).trim() : ''
+    };
+  }
+  // Diff the current list against the last-known sheet state; queue only changes.
+  sheetSync() {
+    if (!this.sheetEnabled() || !this._sheet.ready) return;
+    const pl = this.sheetPlacements(); const seen = new Set();
+    for (const bm of this.state.bookmarks) {
+      seen.add(bm.id);
+      const json = JSON.stringify(this.sheetRow(bm, pl[bm.id]));
+      if (this._sheet.snapshot[bm.id] !== json) { this._sheet.snapshot[bm.id] = json; this.sheetEnqueue({ action: 'saveBookmark', bookmark: JSON.parse(json) }); }
+    }
+    for (const id of Object.keys(this._sheet.snapshot)) if (!seen.has(id)) { delete this._sheet.snapshot[id]; this.sheetEnqueue({ action: 'deleteBookmark', id }); }
+  }
+  // Decode the sheet rows' Folder/Page/Position into a springboard layout.
+  sheetBuildLayout(items) {
+    const pagesMap = []; const names = [];
+    for (const b of items) {
+      const ps = String(b.page == null ? '' : b.page);
+      const pm = ps.match(/^\s*(\d+)\s*(?:\|([\s\S]*))?$/);
+      const p = pm ? parseInt(pm[1], 10) : parseInt(ps, 10);
+      const pname = pm && pm[2] != null ? pm[2].trim() : '';
+      if (Number.isInteger(p) && p >= 1 && pname && !names[p - 1]) names[p - 1] = pname;
+      const pos = String(b.position == null ? '' : b.position).trim();
+      if (!Number.isInteger(p) || p < 1 || pos === '') continue;
+      const pi = p - 1; if (!pagesMap[pi]) pagesMap[pi] = Object.create(null);
+      const fm = pos.match(/^F(\d+):(\d+)$/);
+      if (fm) {
+        const slot = parseInt(fm[1], 10), idx = parseInt(fm[2], 10);
+        let c = pagesMap[pi][slot];
+        if (!c || c.type !== 'folder') { c = { type: 'folder', name: String(b.folder || 'Folder'), items: Object.create(null) }; pagesMap[pi][slot] = c; }
+        c.items[idx] = b.id;
+      } else {
+        const slot = parseInt(pos, 10); if (!Number.isInteger(slot)) continue;
+        if (pagesMap[pi][slot]) continue;
+        pagesMap[pi][slot] = { type: 'app', id: b.id };
+      }
+    }
+    const pages = [], pageNames = [];
+    const maxP = Math.max(pagesMap.length, names.length, 0);
+    for (let pi = 0; pi < maxP; pi++) {
+      const slotsObj = pagesMap[pi]; const cells = [];
+      if (slotsObj) {
+        const slots = Object.keys(slotsObj).map(Number).sort((a, b) => a - b);
+        for (const s of slots) {
+          const c = slotsObj[s];
+          if (c.type === 'folder') { const ids = Object.keys(c.items).map(Number).sort((a, b) => a - b).map(k => c.items[k]); if (ids.length) cells.push({ type: 'folder', name: c.name, items: ids }); }
+          else cells.push({ type: 'app', id: c.id });
+        }
+      }
+      pages.push(cells); pageNames.push(names[pi] || '');
+    }
+    return { pages, pageNames };
+  }
+  async syncFromSheet() {
+    if (!this.sheetEnabled()) return;
+    let rows;
+    try { rows = await this.sheetGet(); }
+    catch (e) { this._sheet.online = false; console.warn('Bookmarks Buddy: could not reach the sheet — using local data.', e); return; }
+    this._sheet.online = true;
+    const str = v => (v == null ? '' : String(v));
+    const remote = rows.map(r => ({
+      id: str(r['Bookmark ID']).trim() || this.uid(),
+      name: str(r['Name']).trim(),
+      url: str(r['URL']).trim(),
+      notes: r['Notes'] != null ? String(r['Notes']) : '',
+      icon: r['Icon'] != null ? String(r['Icon']) : '',
+      folder: r['Folder'] != null ? r['Folder'] : '', page: r['Page'] != null ? r['Page'] : '', position: r['Position'] != null ? r['Position'] : '',
+      _owner: r['Owner (Profile ID)'] != null ? r['Owner (Profile ID)'] : '',
+      _dateAdded: r['Date Added'] != null ? String(r['Date Added']) : '',
+      _lastOpened: r['Last Opened'] != null ? r['Last Opened'] : '',
+      _timesOpened: r['Times Opened'] != null ? r['Times Opened'] : ''
+    })).filter(b => b.url);
+    // The sheet is authoritative — the extension shows exactly your sheet.
+    this.state.bookmarks = remote.map(b => ({ id: b.id, name: b.name, url: b.url, notes: b.notes, icon: b.icon, _owner: b._owner, _dateAdded: b._dateAdded, _lastOpened: b._lastOpened, _timesOpened: b._timesOpened }));
+    this.applyLayout(this.sheetBuildLayout(remote), this.state.bookmarks);
+    try { localStorage.setItem(this._sheet.LS_SYNCED, '1'); } catch {}
+    try { localStorage.setItem(this.LS_B, JSON.stringify(this.state.bookmarks)); } catch {}
+    try { localStorage.setItem(this.LS_L, JSON.stringify({ pages: this.state.pages, pageNames: this.state.pageNames })); } catch {}
+    // Baseline the snapshot to what we just loaded so save() won't echo it back.
+    const pl = this.sheetPlacements(); this._sheet.snapshot = Object.create(null);
+    for (const bm of this.state.bookmarks) this._sheet.snapshot[bm.id] = JSON.stringify(this.sheetRow(bm, pl[bm.id]));
+    this._sheet.ready = true;
+    let cur = this.state.currentPage; if (cur >= this.state.pages.length) cur = Math.max(0, this.state.pages.length - 1);
+    this.setState({ bookmarks: this.state.bookmarks, pages: this.state.pages, pageNames: this.state.pageNames, currentPage: cur });
+    this.sheetFlush();
+  }
+  // Launch the microphone listener on open (as requested).
+  autoStartMic() {
+    if (this._autoMic) return; this._autoMic = true;
+    setTimeout(() => { try { if (!this.state.listening) this.startListen(); } catch {} }, 350);
+  }
   uid() { return 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
   /* ---------- url / matching helpers (ported) ---------- */
@@ -332,7 +550,7 @@ class Component extends DCLogic {
     });
   }
   postRender() { this.applyTheme(); this.applyTransform(); this.applyEdit(); this.refreshIcons(); this.handleIcons(); }
-  componentDidMount() { this.postRender(); this.attachGestures(); this.attachKeys(); }
+  componentDidMount() { this.postRender(); this.attachGestures(); this.attachKeys(); this.sheetBoot(); this.autoStartMic(); }
   componentDidUpdate() { this.postRender(); }
   componentWillUnmount() { this.stopListen(); if (this._keyH) window.removeEventListener('keydown', this._keyH); }
 
