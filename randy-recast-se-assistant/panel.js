@@ -3792,8 +3792,8 @@
               </div>
               <div class="composer-zone">
                 <div class="composer-tools" style="max-width:768px;margin:0 auto 8px;display:flex;gap:8px;flex-wrap:wrap">
-                  <button class="btn-outline${SELECTION_CAPTURE.armed ? ' armed' : ''}" data-action="ask-selection" data-idx="${idx}" style="padding:7px 14px;min-height:0;font-size:12.5px" title="${SELECTION_CAPTURE.armed ? 'Capturing — highlight text on the page and it goes to Randy. Click to stop.' : 'Click, then highlight text on the page — it goes straight to Randy.'}">
-                    <i data-lucide="highlighter" class="w-4 h-4"></i>${SELECTION_CAPTURE.armed ? 'Capturing highlights — click to stop' : 'Ask about highlighted text'}
+                  <button class="btn-outline${SELECTION_CAPTURE.armed ? ' armed' : ''}" data-action="ask-selection" data-idx="${idx}" style="padding:7px;min-height:0" aria-label="${SELECTION_CAPTURE.armed ? 'Capturing highlights — click to stop' : 'Ask about highlighted text'}" aria-pressed="${SELECTION_CAPTURE.armed}" title="${SELECTION_CAPTURE.armed ? 'Capturing — highlight text on the page and it goes to Randy. Click to stop.' : 'Click, then highlight text on the page — it goes straight to Randy.'}">
+                    <i data-lucide="highlighter" class="w-4 h-4"></i>
                   </button>
                   <button class="btn-outline" data-action="new-chat" style="padding:7px 14px;min-height:0;font-size:12.5px" title="Start a new chat — the current one is saved in the menu">
                     <i data-lucide="square-pen" class="w-4 h-4"></i>New chat
