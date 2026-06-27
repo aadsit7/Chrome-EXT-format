@@ -31,7 +31,13 @@ WHAT IT DOES
 - Loads your apps from your Google Sheet on launch (see below) and keeps the
   springboard arrangement — pages, folders, and order — in sync with it.
 - Auto-starts the microphone listener when the panel opens.
-- Voice listening (Web Speech API) and spoken replies (text-to-speech).
+- Voice listening (Web Speech API) and spoken replies (text-to-speech). To work
+  out which bookmark you mean, it reads several of the speech engine's
+  hypotheses for each phrase (not just its single best guess) and fuzzy-matches
+  your target against all of them, plus a list of common site-name mis-hears —
+  so "open fig ma" / "open sigma" still lands on Figma. It opens immediately
+  only on a clear, unambiguous winner; close calls show a quick chooser instead
+  of guessing, and bare speech without an "open" verb is left alone.
 - Open bookmarks in new browser tabs/windows by voice or by tapping a tile.
 - Springboard home screen with named pages, folders, and a rearrange
   ("jiggle") edit mode. Press and hold a tile to lift it straight into a

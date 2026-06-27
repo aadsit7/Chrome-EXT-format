@@ -348,8 +348,16 @@ class Component extends DCLogic {
       'google docs': 'docs', 'google sheets': 'sheets', 'google slides': 'slides',
       'sales force': 'salesforce', 'git hub': 'github', 'face book': 'facebook',
       'whats app': 'whatsapp', 'what s app': 'whatsapp', 'insta': 'instagram', 'the gram': 'instagram',
-      'note ion': 'notion', 'no shun': 'notion', 'red it': 'reddit', 'micro soft': 'microsoft',
-      'out look': 'outlook', 'drop box': 'dropbox', 'sound cloud': 'soundcloud'
+      'note ion': 'notion', 'no shun': 'notion', 'note shun': 'notion', 'red it': 'reddit',
+      'red dit': 'reddit', 'micro soft': 'microsoft', 'out look': 'outlook',
+      'drop box': 'dropbox', 'sound cloud': 'soundcloud',
+      'google sheets': 'sheets', 'g sheets': 'sheets', 'g docs': 'docs', 'g slides': 'slides',
+      'open ai': 'openai', 'open a i': 'openai', 'chat g b t': 'chatgpt',
+      'tik tok': 'tiktok', 'tick tock': 'tiktok', 'snap chat': 'snapchat',
+      'pinter est': 'pinterest', 'spot if i': 'spotify', 'spot a fi': 'spotify',
+      'pay pal': 'paypal', 'venn mo': 'venmo', 'air bnb': 'airbnb', 'air b n b': 'airbnb',
+      'word press': 'wordpress', 'stack overflow': 'stackoverflow', 'cloud flare': 'cloudflare',
+      'note book lm': 'notebooklm', 'cal andar': 'calendar'
     });
   }
   // A compact Soundex-style key, used only as a last-resort tie-breaker for
@@ -364,14 +372,23 @@ class Component extends DCLogic {
   }
   // Build the set of query strings we'll try when matching: the normalized form,
   // a de-spaced form ("g mail" -> "gmail"), plus alias-expanded variants.
-  prepQuery(query) {
+  prepQuery(query, extra) {
     const base = this.normalize(query);
     const variants = new Set();
     const add = v => { v = (v || '').trim(); if (v) variants.add(v); };
-    add(base); add(base.replace(/\s+/g, ''));
-    let aliased = base;
-    for (const k in this.aliasMap()) if (aliased.includes(k)) aliased = aliased.split(k).join(this.aliasMap()[k]);
-    add(aliased); add(aliased.replace(/\s+/g, ''));
+    // Fold one phrase into the candidate set: its normalized form, a de-spaced
+    // form ("g mail" -> "gmail"), plus alias-expanded variants of each.
+    const fold = phrase => {
+      const b = this.normalize(phrase); if (!b) return;
+      add(b); add(b.replace(/\s+/g, ''));
+      let aliased = b;
+      for (const k in this.aliasMap()) if (aliased.includes(k)) aliased = aliased.split(k).join(this.aliasMap()[k]);
+      add(aliased); add(aliased.replace(/\s+/g, ''));
+    };
+    fold(base);
+    // Extra phrases come from the engine's alternative hypotheses; they enrich
+    // matching but the primary phrase still drives phon/raw (and variants[0]).
+    if (Array.isArray(extra)) for (const p of extra) fold(p);
     return { variants: [...variants], phon: this.phon(base.replace(/\s+/g, '')), raw: base };
   }
   scoreBookmark(prep, bm) {
@@ -436,8 +453,8 @@ class Component extends DCLogic {
   // unambiguous winner; when two sites are plausibly close, return the short list
   // so the user can confirm (via the chooser) rather than risk opening the wrong
   // one.
-  resolveTarget(query) {
-    const prep = this.prepQuery(query); if (!prep.variants.length) return null;
+  resolveTarget(query, extraQueries) {
+    const prep = this.prepQuery(query, extraQueries); if (!prep.variants.length) return null;
     const q = prep.variants[0];
     const wantsFolder = /\b(folder|group)\b/.test(q);
     const ranked = this.rankBookmarks(prep);
@@ -461,7 +478,7 @@ class Component extends DCLogic {
     if (fm) return { kind: 'folder', folder: fm.f, confident: true };
     return null;
   }
-  handleTranscript(raw) {
+  handleTranscript(raw, alts) {
     const text = String(raw).trim(); if (!text) return;
     // Dictation: while a text field is focused, type the spoken words into it
     // instead of running commands — but still honour "stop listening".
@@ -471,9 +488,15 @@ class Component extends DCLogic {
       if (c0.kind === 'stop') { this.stopListen(); return; }
       this.dictate(field, text); return;
     }
+    // Lower-ranked engine hypotheses, each reduced to just its target phrase.
+    // These only widen what a target name can match — they never change which
+    // command (open / add / nav / stop) we decide to run.
+    const altQueries = (Array.isArray(alts) ? alts : [])
+      .map(a => { try { return this.parseCommand(a).query; } catch { return ''; } })
+      .filter(Boolean);
     // If a disambiguation chooser is open, let the spoken words pick from it
     // ("the second one", "Gmail", "cancel") before anything else.
-    if (this.state.choosing) { if (this.pickFromChoices(text)) return; }
+    if (this.state.choosing) { if (this.pickFromChoices(text, altQueries)) return; }
     const nav = this.parsePageNav(text);
     if (nav) { this.applyNav(nav); return; }
     const cmd = this.parseCommand(text);
@@ -493,7 +516,7 @@ class Component extends DCLogic {
       return;
     }
     if (!cmd.query) { this.toast('Say “open” and a site name', 'mic'); return; }
-    const tg = this.resolveTarget(cmd.query);
+    const tg = this.resolveTarget(cmd.query, altQueries);
     if (!tg) { this.toast('No site matches “' + cmd.query + '”', 'search-x'); return; }
     if (tg.kind === 'choose') { this.offerChoices(tg.choices, cmd.query); return; }
     if (tg.kind === 'bookmark') this.openBookmark(tg.bm, true);
@@ -508,7 +531,7 @@ class Component extends DCLogic {
   }
   // Resolve a spoken phrase against an open chooser. Returns true if it consumed
   // the phrase (picked, or cancelled); false to let normal handling try instead.
-  pickFromChoices(text) {
+  pickFromChoices(text, extraQueries) {
     const list = this.state.choosing; if (!list || !list.length) return false;
     const t = this.normalize(text);
     if (/\b(cancel|never mind|nevermind|none|forget it|no thanks)\b/.test(t)) { this.setState({ choosing: null, choiceQuery: '' }); return true; }
@@ -523,8 +546,9 @@ class Component extends DCLogic {
       if (m.index < at || (m.index === at && isOrd && !ord)) { at = m.index; n = NUM[w]; ord = isOrd; }
     }
     if (n != null && n >= 1 && n <= list.length) { const bm = list[n - 1]; this.setState({ choosing: null, choiceQuery: '' }); this.openBookmark(bm, true); return true; }
-    // Try the spoken name against just the offered candidates.
-    const prep = this.prepQuery(text);
+    // Try the spoken name (and the engine's alternative hearings) against just
+    // the offered candidates.
+    const prep = this.prepQuery(text, extraQueries);
     let best = null; for (const bm of list) { const s = this.scoreBookmark(prep, bm); if (!best || s > best.s) best = { bm, s }; }
     if (best && best.s >= 0.7) { this.setState({ choosing: null, choiceQuery: '' }); this.openBookmark(best.bm, true); return true; }
     return false;
@@ -708,10 +732,19 @@ class Component extends DCLogic {
     if (this._rec) return this._rec;
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const r = new SR(); r.continuous = true; r.interimResults = true; r.lang = 'en-US';
+    // Ask the engine for several hypotheses per phrase, not just its single best
+    // guess. The top hypothesis often mangles a site name ("fig ma", "node ion")
+    // while a lower-ranked one nails it; handleTranscript matches the target
+    // against ALL of them, so the right bookmark is found far more reliably.
+    try { r.maxAlternatives = 6; } catch {}
     r.onresult = (e) => {
-      this._lastEvt = Date.now(); let interim = '', fin = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) { const res = e.results[i]; const t = res[0] && res[0].transcript || ''; if (res.isFinal) fin += t + ' '; else interim += t; }
-      if (fin) { this.setState({ interim: '' }); this.handleTranscript(fin); }
+      this._lastEvt = Date.now(); let interim = '', fin = '', alts = [];
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i]; const t = res[0] && res[0].transcript || '';
+        if (res.isFinal) { fin += t + ' '; for (let k = 1; k < res.length; k++) { const a = res[k] && res[k].transcript; if (a) alts.push(a); } }
+        else interim += t;
+      }
+      if (fin) { this.setState({ interim: '' }); this.handleTranscript(fin, alts); }
       else if (interim) this.setState({ interim: interim.trim() });
     };
     r.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { this.stopListen(); this.toast('Allow microphone access, then try again', 'mic-off'); } };
