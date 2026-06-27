@@ -1199,6 +1199,7 @@ class Component extends DCLogic {
       if (this._fGhost) { this._fGhost.remove(); this._fGhost = null; }
       if (this._fDragEl) { this._fDragEl.style.opacity = ''; this._fDragEl = null; }
       this._fOutside = false;
+      this.cancelFolderFlip(); this.setFolderDragPeek(false);
       document.querySelectorAll('.bb-folder-card.bb-removearm').forEach(c => c.classList.remove('bb-removearm'));
     };
     root.addEventListener('pointerdown', (e) => {
@@ -1207,6 +1208,7 @@ class Component extends DCLogic {
       const el = e.target.closest('.bb-fapp'); if (!el) return;
       fid = fappId(el); if (!fid) return;
       this._fDragEl = el; startX = e.clientX; startY = e.clientY; mode = 'pending';
+      this._fHomePage = this.state.currentPage;   // the page the folder lives on
       try { root.setPointerCapture(e.pointerId); } catch {}
     });
     root.addEventListener('pointermove', (e) => {
@@ -1220,6 +1222,11 @@ class Component extends DCLogic {
         const outside = r ? (e.clientX < r.left - 10 || e.clientX > r.right + 10 || e.clientY < r.top - 10 || e.clientY > r.bottom + 10) : false;
         this._fOutside = outside;
         if (card) card.classList.toggle('bb-removearm', outside);
+        // Dragged off the card → reveal the springboard underneath and let the
+        // tile flip pages at the left/right edges, so it can be dropped on a
+        // DIFFERENT page (not just back beside the folder).
+        this.setFolderDragPeek(outside);
+        if (outside) this.folderEdgeFlip(e.clientX); else this.cancelFolderFlip();
       }
     });
     const end = (e) => {
@@ -1229,8 +1236,20 @@ class Component extends DCLogic {
         const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
         root.addEventListener('click', swallow, { capture: true, once: true });
         setTimeout(() => { try { root.removeEventListener('click', swallow, { capture: true }); } catch {} }, 60);
-        if (this._fOutside) { const folder = this.state.folderOpen; if (folder) this.removeFromFolder(folder, fid); }
-        else this.commitFolderReorder(fid, e);
+        if (this._fOutside) {
+          const folder = this.state.folderOpen;
+          if (folder) {
+            // Released on a page we flipped to → move the site there and close
+            // the folder. Released on the folder's own page → keep the existing
+            // "drop beside the folder, stay open" behaviour.
+            if (this.state.currentPage !== this._fHomePage) this.removeFromFolderToPage(folder, fid, this.state.currentPage);
+            else this.removeFromFolder(folder, fid);
+          }
+        } else {
+          // Dropped back inside the card → reorder. Undo any page flip first.
+          if (this.state.currentPage !== this._fHomePage) this.setState({ currentPage: this._fHomePage });
+          this.commitFolderReorder(fid, e);
+        }
       }
       reset();
     };
@@ -1291,6 +1310,53 @@ class Component extends DCLogic {
     this.setState({ pages, folderOpen: open, folderEdit: !!open && this.state.folderEdit }, () => this.save());
     this.toast(open ? 'Moved out' : 'Folder emptied', 'check');
   }
+  // Take a site out of the folder and drop it onto another page (the one the
+  // user flipped to while dragging off the card), then close the folder so the
+  // result is visible. Persists/syncs through the same save() path.
+  removeFromFolderToPage(folderCell, id, destPage) {
+    const pages = this.state.pages.map(p => p.slice());
+    let fp = -1, fi = -1;
+    for (let p = 0; p < pages.length && fp < 0; p++) { const i = pages[p].indexOf(folderCell); if (i >= 0) { fp = p; fi = i; } }
+    if (fp < 0) { this.setState({ folderOpen: null, folderEdit: false }); return; }
+    if (destPage < 0 || destPage >= pages.length) destPage = fp;
+    const folder = Object.assign({}, folderCell, { items: folderCell.items.filter(x => x !== id) });
+    pages[fp] = pages[fp].slice(); pages[fp][fi] = folder;
+    pages[destPage] = pages[destPage].concat([{ type: 'app', id }]);   // land at the end of the target page
+    // A folder left with one/zero items dissolves, mirroring removeFromFolder.
+    if (folder.items.length <= 1) {
+      if (folder.items.length === 1) pages[fp].splice(fi, 1, { type: 'app', id: folder.items[0] });
+      else pages[fp].splice(fi, 1);
+    }
+    while (pages.length > 1 && !pages[pages.length - 1].length) pages.pop();
+    const cur = Math.max(0, Math.min(destPage, pages.length - 1));
+    this.setState({ pages, folderOpen: null, folderEdit: false, currentPage: cur }, () => this.save());
+    this.toast('Moved to ' + this.pageName(cur), 'check');
+  }
+  // While a site is dragged off the folder card, fade the card + scrim so the
+  // springboard (and its page dots) show through and the drop target is visible.
+  setFolderDragPeek(on) {
+    const card = document.querySelector('.bb-folder-card');
+    const scrim = document.querySelector('.bb-folder-scrim');
+    if (card) card.style.opacity = on ? '.22' : '';
+    if (scrim) scrim.style.opacity = on ? '.12' : '';
+  }
+  // Flip the springboard underneath when the dragged-out tile hovers a side edge.
+  folderEdgeFlip(x) {
+    const vp = document.querySelector('.bb-viewport'); if (!vp) { this.cancelFolderFlip(); return; }
+    const r = vp.getBoundingClientRect(), edge = 46;
+    if (x < r.left + edge && this.state.currentPage > 0) this.scheduleFolderFlip(-1);
+    else if (x > r.right - edge && this.state.currentPage < this.state.pages.length - 1) this.scheduleFolderFlip(1);
+    else this.cancelFolderFlip();
+  }
+  scheduleFolderFlip(dir) {
+    if (this._fFlipDir === dir && this._fFlipT) return;
+    this.cancelFolderFlip(); this._fFlipDir = dir;
+    this._fFlipT = setTimeout(() => {
+      this._fFlipT = null; this._fFlipDir = 0;
+      this.goPage(this.state.currentPage + dir);
+    }, 500);
+  }
+  cancelFolderFlip() { if (this._fFlipT) { clearTimeout(this._fFlipT); this._fFlipT = null; } this._fFlipDir = 0; }
   toggleFolderEdit() { this.setState({ folderEdit: !this.state.folderEdit }); }
   // Rename the current page. Names ride along in the sheet's Page column
   // ("<n>|<name>") so they sync to other devices once a bookmark sits on the page.

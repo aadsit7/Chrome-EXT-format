@@ -441,7 +441,7 @@
   <!-- ===== Folder overlay ===== -->
   <sc-if value="{{ folderOpen }}" hint-placeholder-val="{{ false }}">
     <div style="position:absolute; inset:0; z-index:150; display:grid; place-items:center; padding:30px; animation:bbFade .18s ease-out;">
-      <div onclick="{{ closeFolder }}" style="position:absolute; inset:0; background:var(--bb-scrim);"></div>
+      <div class="bb-folder-scrim" onclick="{{ closeFolder }}" style="position:absolute; inset:0; background:var(--bb-scrim);"></div>
       <div class="bb-folder-card" style="position:relative; width:100%; max-width:330px; background:var(--bb-folder-panel); border:1px solid var(--bb-glass-bd); border-radius:26px; padding:22px 20px; -webkit-backdrop-filter:blur(24px); backdrop-filter:blur(24px); box-shadow:0 30px 70px rgba(0,0,0,.4); animation:bbPop .25s var(--bb-ease);">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:18px;">
           <span style="width:46px;"></span>
@@ -449,7 +449,7 @@
           <button onclick="{{ toggleFolderEdit }}" style="flex-shrink:0; width:46px; text-align:right; border:none; background:transparent; color:var(--bb-accent); font-family:inherit; font-size:13px; font-weight:700; cursor:pointer;">{{ folderEditLabel }}</button>
         </div>
         <sc-if value="{{ folderEditing }}" hint-placeholder-val="{{ false }}">
-          <div style="text-align:center; font-size:11.5px; font-weight:600; color:var(--bb-fg-soft); margin:-6px 0 14px; line-height:1.4;">Drag a site off the card to take it out, or tap <b style="color:var(--bb-fg);">–</b>.</div>
+          <div style="text-align:center; font-size:11.5px; font-weight:600; color:var(--bb-fg-soft); margin:-6px 0 14px; line-height:1.4;">Drag a site off the card to take it out — drag to a side edge to drop it on another page. Or tap <b style="color:var(--bb-fg);">–</b>.</div>
         </sc-if>
         <div class="bb-folder-grid" style="display:grid; grid-template-columns:repeat(4,1fr); gap:18px 6px; justify-items:center;">
           <sc-for list="{{ folderApps }}" as="fa" hint-placeholder-count="6">
