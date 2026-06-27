@@ -1658,7 +1658,7 @@ class Component extends DCLogic {
       voiceExamples: ['open ' + fname, 'next page', 'add Notion'],
       folderOpen: !!folder, folderName: folder ? folder.name : '', folderCount: folder ? folder.items.length : 0,
       folderEditing: s.folderEdit, folderEditLabel: s.folderEdit ? 'Done' : 'Edit', toggleFolderEdit: () => this.toggleFolderEdit(),
-      folderApps: folder ? folder.items.map(id => { const bm = byId(id) || { id, name: '?', url: '' }; return { id, name: bm.name || this.hostCore(bm.url), icon: this.iconFor(bm), letter: this.letterOf(bm), grad: this.grad(bm.name || bm.url), tileClass: '', onTap: () => { if (s.folderEdit) return; this.openBookmark(bm, false); }, onRemove: () => this.removeFromFolder(folder, id) }; }) : [],
+      folderApps: folder ? folder.items.map(id => { const bm = byId(id) || { id, name: '?', url: '' }; return { id, name: bm.name || this.hostCore(bm.url), icon: this.iconFor(bm), letter: this.letterOf(bm), grad: this.grad(bm.name || bm.url), tileClass: '', onTap: () => { if (s.folderEdit) this.openEdit(id); else this.openBookmark(bm, false); }, onRemove: () => this.removeFromFolder(folder, id) }; }) : [],
       closeFolder: () => this.setState({ folderOpen: null, folderEdit: false }), openFolderAll: () => this.openFolderAllFn(),
       pageTitle: (s.pageNames[s.currentPage] || ''), onPageName: e => this.renamePage(e.target.value),
       shortcutLabel: (navigator.platform || '').toLowerCase().includes('mac') ? '⌘⇧M' : 'Ctrl ⇧ M',
