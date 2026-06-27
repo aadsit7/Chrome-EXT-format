@@ -2041,11 +2041,11 @@
         focusAfterRender('.vp');
       }
 
-      async function startListening(mode) {
+      async function startListening(mode, { auto = false } = {}) {
         const slot = STATE.slots[0];
-        if (slot.listenOn) return;
+        if (slot.listenOn) return 'ok';
         const r = ensureRecognition();
-        if (!r) { showToast('Randy needs Chrome or Edge to listen'); return; }
+        if (!r) { if (!auto) showToast('Randy needs Chrome or Edge to listen'); return 'unsupported'; }
 
         // Resolve the capture mode chosen in the "How should Randy listen?"
         // slider, falling back to the remembered preference, then two-way.
@@ -2117,9 +2117,27 @@
               t.onended = () => { VOICE.micStream = null; };
             });
           } catch (err) {
-            showToast('Randy needs the microphone. Click Allow and try again.');
+            const name = err && err.name ? err.name : '';
+            if (name === 'NotAllowedError' || name === 'SecurityError' || name === 'PermissionDeniedError') {
+              // A genuine denial — stop auto-retrying and tell the user how to
+              // fix it. A later open starts a fresh context and tries again.
+              VOICE.permissionDenied = true;
+              showToast('Randy needs the microphone. Click Allow and try again.');
+              render();
+              return 'denied';
+            }
+            if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError') {
+              if (!auto) showToast("Randy couldn't find a microphone — check that one is connected.");
+              render();
+              return 'no-device';
+            }
+            // Transient: the device is momentarily busy or the capture stack is
+            // still warming up in the instant the panel opens. Stay quiet on the
+            // auto path so the retry loop can recover without toast spam; the
+            // manual path keeps its original feedback.
+            if (!auto) showToast('Randy needs the microphone. Click Allow and try again.');
             render();
-            return;
+            return 'transient';
           }
         }
 
@@ -2138,6 +2156,33 @@
         });
         showToast(twoWay ? 'Randy is listening — your mic and computer audio' : 'Randy is listening to your microphone');
         render();
+        return 'ok';
+      }
+
+      // Reliable auto-start. The side panel reloads into a fresh context on
+      // every open, and the mic capture can transiently fail in the instant the
+      // panel appears (device momentarily busy, capture stack still warming up).
+      // A single attempt that quit on that error would leave Randy silent until
+      // the user taps the orb — so keep retrying with backoff until listening
+      // actually sticks, stopping only on success, a real mic denial, an
+      // unsupported browser, or no microphone present.
+      function autoStartListening(attempt = 0) {
+        if (STATE.slots[0].listenOn) return;                       // already listening
+        if (!VOICE.srSupported || VOICE.permissionDenied) return;  // can't / user said no
+        const retry = () => {
+          if (STATE.slots[0].listenOn || VOICE.permissionDenied) return;
+          if (attempt < 12) setTimeout(() => autoStartListening(attempt + 1), Math.min(2000, 300 + attempt * 250));
+        };
+        Promise.resolve()
+          .then(() => startListening('one-way', { auto: true }))
+          .then((status) => {
+            if (STATE.slots[0].listenOn) return;                   // it stuck — done
+            // Terminal outcomes don't get retried; everything else (transient
+            // capture failures) does.
+            if (status === 'denied' || status === 'unsupported' || status === 'no-device') return;
+            retry();
+          })
+          .catch(retry);
       }
 
       function stopListening({ silent = false } = {}) {
@@ -5245,7 +5290,7 @@
        * BOOT
        * ================================================================ */
 
-      document.addEventListener('DOMContentLoaded', () => {
+      function boot() {
         render();
         loadRemoteConfig().then(render);
         // Re-render once the browser loads its speech voice list (async in Chrome).
@@ -5257,13 +5302,25 @@
         // Auto-launch the mic on open. One-way (mic only) needs no screen-share
         // prompt, so Randy starts listening the moment the panel opens — the user
         // never picks a mic. Two-way / computer-audio capture stays opt-in from
-        // Settings (its share picker needs a click). If the browser blocks the
-        // mic, the toast and the orb let the user start it with one tap.
+        // Settings (its share picker needs a click). autoStartListening() retries
+        // through the transient capture failures that can happen right as the
+        // panel appears, so Randy reliably comes up listening on every open.
         if (VOICE.srSupported) {
-          setTimeout(() => { if (!STATE.slots[0].listenOn) { try { startListening('one-way'); } catch {} } }, 400);
+          setTimeout(() => { try { autoStartListening(); } catch {} }, 250);
         }
         // Auto-arm highlight capture on open too, so highlighting text on the
         // page (e.g. while copying something) goes straight to Randy — the
         // button still lets the user turn it off.
         setTimeout(() => { try { autoArmSelectionCapture(); } catch {} }, 600);
-      });
+      }
+
+      // Run boot once the DOM is ready. The script is the last element in the
+      // body, so DOMContentLoaded normally hasn't fired yet — but if this ever
+      // executes after the DOM is already parsed, addEventListener would never
+      // fire and Randy would never come up. Guard on readyState so boot always
+      // runs exactly once, on every open.
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot, { once: true });
+      } else {
+        boot();
+      }
