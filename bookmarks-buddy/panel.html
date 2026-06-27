@@ -354,6 +354,15 @@
         <div style="width:38px; height:5px; border-radius:3px; background:var(--bb-glass-bd); margin:0 auto 16px;"></div>
         <div style="font-size:19px; font-weight:800; letter-spacing:-.01em; color:var(--bb-fg); margin-bottom:16px;">Settings</div>
 
+        <button onclick="{{ openPages }}" style="display:flex; align-items:center; gap:13px; width:100%; text-align:left; padding:14px 0; border:none; border-top:1px solid var(--bb-input-bd); background:transparent; cursor:pointer; font-family:inherit;">
+          <div style="width:40px;height:40px;border-radius:11px;display:grid;place-items:center;background:var(--bb-input-bg);color:var(--bb-accent);flex-shrink:0;"><i data-lucide="layout-list" style="width:20px;height:20px;"></i></div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:14px; font-weight:700; color:var(--bb-fg);">Edit pages</div>
+            <div style="font-size:12px; font-weight:500; color:var(--bb-fg-soft); margin-top:1px;">See every page and drag to reorder</div>
+          </div>
+          <i data-lucide="chevron-right" style="width:20px;height:20px;color:var(--bb-fg-soft);flex-shrink:0;"></i>
+        </button>
+
         <div style="display:flex; align-items:center; gap:13px; padding:14px 0; border-top:1px solid var(--bb-input-bd);">
           <div style="width:40px;height:40px;border-radius:11px;display:grid;place-items:center;background:var(--bb-input-bg);color:var(--bb-accent);flex-shrink:0;"><i data-lucide="keyboard" style="width:20px;height:20px;"></i></div>
           <div style="flex:1; min-width:0;">
@@ -383,6 +392,48 @@
 
         <div style="font-size:11.5px; font-weight:500; color:var(--bb-fg-soft); line-height:1.55; margin-top:14px; padding-top:14px; border-top:1px solid var(--bb-input-bd);">{{ count }} sites saved · stored on this device. Say <b style="color:var(--bb-fg);">“open”</b> + a name, <b style="color:var(--bb-fg);">“next page”</b>, or <b style="color:var(--bb-fg);">“add Notion”</b>.</div>
         <button onclick="{{ closeSettings }}" style="width:100%; height:48px; margin-top:16px; border-radius:14px; border:none; background:var(--bb-accent); color:#fff; font-family:inherit; font-size:14px; font-weight:700; cursor:pointer;">Done</button>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ===== Pages manager (drag to reorder) ===== -->
+  <sc-if value="{{ pagesOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute; inset:0; z-index:152; display:flex; flex-direction:column; justify-content:flex-end; animation:bbFade .18s ease-out;">
+      <div onclick="{{ closePages }}" style="position:absolute; inset:0; background:var(--bb-scrim2);"></div>
+      <div style="position:relative; display:flex; flex-direction:column; max-height:82%; background:var(--bb-sheet); border-radius:24px 24px 0 0; padding:10px 18px calc(18px + env(safe-area-inset-bottom)); box-shadow:0 -10px 40px rgba(0,0,0,.3); animation:bbSheetUp .26s cubic-bezier(.16,1,.3,1);">
+        <div style="flex-shrink:0; width:38px; height:5px; border-radius:3px; background:var(--bb-glass-bd); margin:0 auto 14px;"></div>
+        <div style="flex-shrink:0; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:0 4px;">
+          <div style="min-width:0;">
+            <div style="font-size:19px; font-weight:800; letter-spacing:-.01em; color:var(--bb-fg);">Pages</div>
+            <div style="font-size:12.5px; font-weight:500; color:var(--bb-fg-soft); margin-top:2px;">Drag <i data-lucide="grip-vertical" style="width:13px;height:13px;vertical-align:-2px;"></i> to reorder · tap a page to jump there</div>
+          </div>
+          <button onclick="{{ addPage }}" style="flex-shrink:0; display:inline-flex; align-items:center; gap:6px; padding:8px 13px; border-radius:999px; border:1.5px solid var(--bb-input-bd); background:var(--bb-input-bg); color:var(--bb-accent); cursor:pointer; font-family:inherit; font-size:12.5px; font-weight:700;"><i data-lucide="plus" style="width:15px;height:15px;"></i>Add</button>
+        </div>
+        <div class="bb-plist" style="flex:1; min-height:0; overflow-y:auto; margin-top:14px; padding:2px;">
+          <sc-for list="{{ pagesManager }}" as="pm" hint-placeholder-count="3">
+            <div class="bb-prow" data-pageidx="{{ pm.idx }}" style="display:flex; align-items:center; gap:8px; height:64px; margin-bottom:9px; padding:0 6px 0 4px; border-radius:15px; border:1.5px solid var(--bb-input-bd); background:var(--bb-input-bg); box-sizing:border-box; {{ pm.rowStyle }}">
+              <span class="bb-phandle" style="flex-shrink:0; width:30px; height:100%; display:grid; place-items:center; cursor:grab; touch-action:none; color:var(--bb-fg-soft);"><i data-lucide="grip-vertical" style="width:19px;height:19px;pointer-events:none;"></i></span>
+              <button onclick="{{ pm.jump }}" style="flex:1; min-width:0; height:100%; display:flex; align-items:center; gap:10px; border:none; background:transparent; cursor:pointer; font-family:inherit; padding:0; text-align:left;">
+                <span style="flex:1; min-width:0;">
+                  <span style="display:block; font-size:14px; font-weight:700; color:var(--bb-fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ pm.label }}</span>
+                  <span style="display:block; font-size:11.5px; font-weight:600; color:var(--bb-fg-soft); margin-top:2px;">{{ pm.count }}</span>
+                </span>
+                <span style="flex-shrink:0; display:inline-flex; align-items:center;">
+                  <sc-for list="{{ pm.mini }}" as="m" hint-placeholder-count="3">
+                    <span style="width:26px; height:26px; margin-left:-6px; border-radius:7px; flex-shrink:0; display:grid; place-items:center; background:var(--bb-tile); border:1px solid var(--bb-tile-bd); box-shadow:var(--bb-tile-sh); overflow:hidden;"><img class="bb-ico" data-src="{{ m.src }}" data-letter="{{ m.letter }}" style="width:17px;height:17px;display:block;"></span>
+                  </sc-for>
+                  <sc-if value="{{ pm.hasMore }}" hint-placeholder-val="{{ false }}">
+                    <span style="margin-left:5px; font-size:11px; font-weight:700; color:var(--bb-fg-soft);">{{ pm.more }}</span>
+                  </sc-if>
+                  <sc-if value="{{ pm.empty }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-size:11.5px; font-weight:600; color:var(--bb-fg-soft);">empty</span>
+                  </sc-if>
+                </span>
+              </button>
+            </div>
+          </sc-for>
+        </div>
+        <button onclick="{{ closePages }}" style="flex-shrink:0; width:100%; height:48px; margin-top:12px; border-radius:14px; border:none; background:var(--bb-accent); color:#fff; font-family:inherit; font-size:14px; font-weight:700; cursor:pointer;">Done</button>
       </div>
     </div>
   </sc-if>
