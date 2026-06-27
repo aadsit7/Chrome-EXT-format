@@ -616,7 +616,7 @@ class Component extends DCLogic {
       setTimeout(() => { this.hideVoiceOverlay(); this.setState({ heard: '' }); }, 1400);
     }
   }
-  openFolderModal(f) { this.setState({ folderOpen: f, folderEdit: false, voiceOpen: false }); this.stopRec(); }
+  openFolderModal(f, edit) { this.setState({ folderOpen: f, folderEdit: !!edit, voiceOpen: false }); this.stopRec(); }
   // Voice "open <folder>" fans the folder out, opening every site it holds (web
   // app behaviour), while keeping the listener alive.
   openFolderVoice(f) {
@@ -823,7 +823,7 @@ class Component extends DCLogic {
     });
   }
   postRender() { this.applyTheme(); this.applyTransform(); this.applyEdit(); this.refreshIcons(); this.handleIcons(); this.applyHit(); }
-  componentDidMount() { this.postRender(); this.attachGestures(); this.attachKeys(); this.attachLifecycle(); this.sheetBoot(); this.autoStartMic(); }
+  componentDidMount() { this.postRender(); this.attachGestures(); this.attachFolderGestures(); this.attachKeys(); this.attachLifecycle(); this.sheetBoot(); this.autoStartMic(); }
   componentDidUpdate() { this.postRender(); }
   componentWillUnmount() { this.stopListen(); this.detachLifecycle(); if (this._hitT) clearTimeout(this._hitT); if (this._keyH) window.removeEventListener('keydown', this._keyH); }
 
@@ -967,12 +967,14 @@ class Component extends DCLogic {
     const bm = this.state.bookmarks.find(b => b.id === c.id); if (bm) this.openBookmark(bm, false);
   }
   // In edit mode a tap (rather than a drag) on a bookmark tile opens its edit
-  // panel. Folders keep their existing behaviour (drag to rearrange; rename via
-  // the folder overlay), so only app tiles are editable here.
+  // panel; a tap on a folder opens it straight into edit mode so its sites can
+  // be dragged out (or removed with –) right away.
   tapCellEdit(cell) {
     const idx = +cell.dataset.idx;
     const c = this.state.pages[this.state.currentPage][idx];
-    if (!c || c.type !== 'app') return;
+    if (!c) return;
+    if (c.type === 'folder') { this.openFolderModal(c, true); return; }
+    if (c.type !== 'app') return;
     this.openEdit(c.id);
   }
   // Lift the tile at `idx` into a drag from pointer (x,y). Returns false if the
@@ -1180,6 +1182,94 @@ class Component extends DCLogic {
     while (pages.length > 1 && !pages[pages.length - 1].length) pages.pop();
     const cur = Math.min(this.state.currentPage, pages.length - 1);
     this.setState({ pages, currentPage: cur }, () => { this.save(); this.clearReflow(); });
+  }
+  /* ---------- folder drag-out / reorder ----------
+   * Inside an open folder (in its edit mode) a site can be dragged: release it
+   * OFF the card to take it out onto the page, or drop it among the other tiles
+   * to reorder. This complements the existing "–" button. The springboard's own
+   * drag system is untouched — this is a separate, self-contained handler for
+   * the folder overlay (which lives outside the board's viewport). */
+  attachFolderGestures() {
+    if (this._fAttached) return; this._fAttached = true;
+    const root = document.querySelector('.bb-root'); if (!root) return;
+    let startX = 0, startY = 0, mode = null, fid = null;
+    const fappId = el => { const b = el && el.querySelector('button[data-id]'); return b ? b.dataset.id : null; };
+    const reset = () => {
+      mode = null; fid = null;
+      if (this._fGhost) { this._fGhost.remove(); this._fGhost = null; }
+      if (this._fDragEl) { this._fDragEl.style.opacity = ''; this._fDragEl = null; }
+      this._fOutside = false;
+      document.querySelectorAll('.bb-folder-card.bb-removearm').forEach(c => c.classList.remove('bb-removearm'));
+    };
+    root.addEventListener('pointerdown', (e) => {
+      if (!this.state.folderOpen || !this.state.folderEdit) return;
+      if (e.target.closest('button[aria-label="Take out"]')) return; // the – button
+      const el = e.target.closest('.bb-fapp'); if (!el) return;
+      fid = fappId(el); if (!fid) return;
+      this._fDragEl = el; startX = e.clientX; startY = e.clientY; mode = 'pending';
+      try { root.setPointerCapture(e.pointerId); } catch {}
+    });
+    root.addEventListener('pointermove', (e) => {
+      if (!mode) return;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      if (mode === 'pending') { if (Math.abs(dx) > 6 || Math.abs(dy) > 6) { this.beginFolderDrag(this._fDragEl, e); mode = 'drag'; } else return; }
+      if (mode === 'drag' && this._fGhost) {
+        this._fGhost.style.transform = 'translate(' + (e.clientX - 29) + 'px,' + (e.clientY - 29) + 'px)';
+        const card = document.querySelector('.bb-folder-card');
+        const r = card && card.getBoundingClientRect();
+        const outside = r ? (e.clientX < r.left - 10 || e.clientX > r.right + 10 || e.clientY < r.top - 10 || e.clientY > r.bottom + 10) : false;
+        this._fOutside = outside;
+        if (card) card.classList.toggle('bb-removearm', outside);
+      }
+    });
+    const end = (e) => {
+      if (mode === 'drag') {
+        // Swallow the click this pointer sequence would otherwise fire (which
+        // would open the tile or close the folder via the backdrop).
+        const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
+        root.addEventListener('click', swallow, { capture: true, once: true });
+        setTimeout(() => { try { root.removeEventListener('click', swallow, { capture: true }); } catch {} }, 60);
+        if (this._fOutside) { const folder = this.state.folderOpen; if (folder) this.removeFromFolder(folder, fid); }
+        else this.commitFolderReorder(fid, e);
+      }
+      reset();
+    };
+    root.addEventListener('pointerup', end);
+    root.addEventListener('pointercancel', () => reset());
+  }
+  beginFolderDrag(el, e) {
+    const tile = el.querySelector('.bb-tile');
+    const g = (tile || el).cloneNode(true);
+    g.style.cssText = 'position:fixed; left:0; top:0; z-index:10000; pointer-events:none; width:58px; height:58px; filter:drop-shadow(0 14px 24px rgba(0,0,0,.4)); opacity:.95;';
+    g.style.transform = 'translate(' + (e.clientX - 29) + 'px,' + (e.clientY - 29) + 'px)';
+    document.body.appendChild(g); this._fGhost = g; el.style.opacity = '.3';
+  }
+  // The first tile (in reading order) the pointer sits before; null → append.
+  computeInsertBefore(pt, cands) {
+    for (const el of cands) {
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2, rowTol = r.height * 0.6;
+      if (pt.clientY < cy - rowTol) return el;
+      if (Math.abs(pt.clientY - cy) <= rowTol && pt.clientX < cx) return el;
+    }
+    return null;
+  }
+  // Reorder the dragged site within the folder, based on where it was dropped.
+  commitFolderReorder(fid, e) {
+    const folder = this.state.folderOpen; if (!folder || folder.type !== 'folder') return;
+    const grid = document.querySelector('.bb-folder-grid'); if (!grid) return;
+    const cands = [...grid.querySelectorAll('.bb-fapp')].filter(el => el !== this._fDragEl);
+    const beforeEl = this.computeInsertBefore(e, cands);
+    const beforeId = beforeEl ? ((beforeEl.querySelector('button[data-id]') || {}).dataset || {}).id : null;
+    const items = folder.items.slice();
+    const from = items.indexOf(fid); if (from < 0) return;
+    const [moved] = items.splice(from, 1);
+    let to = beforeId ? items.indexOf(beforeId) : items.length; if (to < 0) to = items.length;
+    items.splice(to, 0, moved);
+    if (items.join('|') === folder.items.join('|')) return; // no change
+    const newFolder = Object.assign({}, folder, { items });
+    const pages = this.state.pages.map(p => p.map(c => c === folder ? newFolder : c));
+    this.setState({ pages, folderOpen: newFolder }, () => this.save());
   }
   // Remove one app from an open folder, dropping it back beside the folder.
   // When the folder is left with a single item (or none) it dissolves, exactly
