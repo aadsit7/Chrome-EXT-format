@@ -3795,8 +3795,8 @@
                   <button class="btn-outline${SELECTION_CAPTURE.armed ? ' armed' : ''}" data-action="ask-selection" data-idx="${idx}" style="padding:7px;min-height:0" aria-label="${SELECTION_CAPTURE.armed ? 'Capturing highlights — click to stop' : 'Ask about highlighted text'}" aria-pressed="${SELECTION_CAPTURE.armed}" title="${SELECTION_CAPTURE.armed ? 'Capturing — highlight text on the page and it goes to Randy. Click to stop.' : 'Click, then highlight text on the page — it goes straight to Randy.'}">
                     <i data-lucide="highlighter" class="w-4 h-4"></i>
                   </button>
-                  <button class="btn-outline" data-action="new-chat" style="padding:7px 14px;min-height:0;font-size:12.5px" title="Start a new chat — the current one is saved in the menu">
-                    <i data-lucide="square-pen" class="w-4 h-4"></i>New chat
+                  <button class="btn-outline" data-action="new-chat" style="padding:7px;min-height:0" aria-label="New chat" title="Start a new chat — the current one is saved in the menu">
+                    <i data-lucide="square-pen" class="w-4 h-4"></i>
                   </button>
                 </div>
                 <div class="composer">
