@@ -870,34 +870,44 @@ class Component extends DCLogic {
   }
   goPage(to) { const n = this.state.pages.length; to = Math.max(0, Math.min(n - 1, to)); if (to !== this.state.currentPage) this.setState({ currentPage: to }); }
 
-  /* ---------- gestures: swipe pages + drag reorder ---------- */
+  /* ---------- gestures: swipe pages + drag reorder ----------
+   * The drag engine aims for an iPhone-springboard feel: press-and-hold lifts a
+   * tile straight into a drag, the neighbours flow out of the way in real time
+   * (a measured FLIP reflow), hovering an app's centre offers to make a folder,
+   * and the lifted tile settles into its slot on release with no snap. */
   attachGestures() {
     if (this._attached) return; this._attached = true;
     const root = document.querySelector('.bb-root'); if (!root) return;
-    let vp = null, startX = 0, startY = 0, dx = 0, dy = 0, mode = null, cell = null, fromIdx = -1, fromPage = -1, ghost = null, pressT = null, downAt = 0;
+    let vp = null, startX = 0, startY = 0, dx = 0, dy = 0, mode = null, cell = null, idx = -1, downAt = 0, lastX = 0, lastY = 0, pressT = null;
     const getVp = () => document.querySelector('.bb-viewport');
     const track = () => document.querySelector('.bb-track');
-    const reset = () => { mode = null; cell = null; fromIdx = -1; fromPage = -1; this.cancelFlip(); if (ghost) { ghost.remove(); ghost = null; } if (pressT) { clearTimeout(pressT); pressT = null; } };
+    const reset = () => { mode = null; cell = null; idx = -1; this.cancelFlip(); this.cleanupDrag(); if (pressT) { clearTimeout(pressT); pressT = null; } };
 
     root.addEventListener('pointerdown', (e) => {
-      if (e.target.closest('.bb-badge') || e.target.closest('button:not(.bb-cell)') && !e.target.closest('.bb-cell')) {
-        if (!e.target.closest('.bb-cell')) return;
-      }
-      vp = getVp(); if (!vp || !vp.contains(e.target)) return;
       if (e.target.closest('.bb-badge')) return;
-      startX = e.clientX; startY = e.clientY; dx = 0; dy = 0; downAt = Date.now();
+      if (e.target.closest('button:not(.bb-cell)') && !e.target.closest('.bb-cell')) return;
+      vp = getVp(); if (!vp || !vp.contains(e.target)) return;
+      startX = e.clientX; startY = e.clientY; lastX = startX; lastY = startY; dx = 0; dy = 0; downAt = Date.now();
       cell = e.target.closest('.bb-cell');
+      idx = cell ? +cell.dataset.idx : -1;
       if (this.state.editMode && cell) {
         mode = 'pendingdrag';
       } else {
         mode = 'pendingswipe';
-        if (cell) pressT = setTimeout(() => { if (mode === 'pendingswipe' && Math.abs(dx) < 8 && Math.abs(dy) < 8) { this.setState({ editMode: true }); reset(); } }, 480);
+        // Press-and-hold lifts the tile straight into a drag (turning on edit
+        // mode at the same time) — one motion, exactly like picking up an app.
+        if (cell) pressT = setTimeout(() => {
+          if (mode !== 'pendingswipe' || Math.abs(dx) > 8 || Math.abs(dy) > 8) return;
+          pressT = null; mode = 'drag';
+          this.setState({ editMode: true }, () => { if (mode === 'drag' && !this.startDrag(idx, lastX, lastY)) mode = null; });
+        }, 420);
       }
-      try { vp.setPointerCapture(e.pointerId); } catch {}
+      try { root.setPointerCapture(e.pointerId); } catch {}
     });
 
     root.addEventListener('pointermove', (e) => {
       if (!mode) return;
+      lastX = e.clientX; lastY = e.clientY;
       dx = e.clientX - startX; dy = e.clientY - startY;
       if (mode === 'pendingswipe') {
         if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) { mode = 'swipe'; if (pressT) { clearTimeout(pressT); pressT = null; } const t = track(); if (t) t.style.transition = 'none'; }
@@ -910,12 +920,13 @@ class Component extends DCLogic {
         if (off > 0) off = off * 0.35; if (off < min) off = min + (off - min) * 0.35;
         t.style.transform = 'translateX(' + off + 'px)';
       } else if (mode === 'pendingdrag') {
-        if (Math.abs(dx) > 6 || Math.abs(dy) > 6) { this.beginDrag(cell, e); mode = 'drag'; ghost = this._ghost; fromIdx = +cell.dataset.idx; fromPage = this.state.currentPage; }
+        if (Math.abs(dx) > 5 || Math.abs(dy) > 5) { mode = this.startDrag(idx, e.clientX, e.clientY) ? 'drag' : null; }
+      } else if (mode === 'drag') {
+        this.dragMove(e.clientX, e.clientY, getVp());
       }
-      if (mode === 'drag' && ghost) { ghost.style.transform = 'translate(' + (e.clientX - 31) + 'px,' + (e.clientY - 31) + 'px)'; this.highlightDrop(e); this.edgeFlip(e, vp); }
     });
 
-    const end = (e) => {
+    const end = () => {
       if (!mode) { reset(); return; }
       if (pressT) { clearTimeout(pressT); pressT = null; }
       if (mode === 'swipe') {
@@ -930,12 +941,23 @@ class Component extends DCLogic {
         // A tap (no drag) on a tile while in edit mode opens its edit panel.
         this.tapCellEdit(cell);
       } else if (mode === 'drag') {
-        this.dropDrag(e, fromIdx, fromPage);
+        this.dropDrag();
       }
-      reset();
+      mode = null; cell = null; idx = -1; this.cancelFlip(); if (pressT) { clearTimeout(pressT); pressT = null; }
     };
     root.addEventListener('pointerup', end);
     root.addEventListener('pointercancel', () => reset());
+  }
+  // Per-move work while a tile is lifted: float the ghost, re-measure after an
+  // edge-flip, recompute the drop target, and flow the neighbours.
+  dragMove(x, y, vp) {
+    const d = this._drag; if (!d) return;
+    this.moveGhost(x, y);
+    if (d.flipping) return;
+    if (!d.board || d.board.page !== this.state.currentPage) { const b = this.measureBoard(); if (b) { d.board = b; this.prepBoardCells(b); } }
+    this.updateDragTarget(x, y);
+    this.applyReflow();
+    this.edgeFlip(x, y, vp);
   }
   tapCell(cell) {
     const idx = +cell.dataset.idx;
@@ -953,23 +975,124 @@ class Component extends DCLogic {
     if (!c || c.type !== 'app') return;
     this.openEdit(c.id);
   }
-  beginDrag(cell, e) {
-    const g = cell.cloneNode(true); g.style.position = 'fixed'; g.style.left = '0'; g.style.top = '0'; g.style.zIndex = '9999';
-    g.style.pointerEvents = 'none'; g.style.width = cell.offsetWidth + 'px'; g.style.margin = '0'; g.style.animation = '';
-    g.style.filter = 'drop-shadow(0 16px 28px rgba(22,31,91,.35))'; g.style.opacity = '.95';
-    g.style.transform = 'translate(' + (e.clientX - 31) + 'px,' + (e.clientY - 31) + 'px)';
-    // Append to <body>, not .bb-root, so the ghost survives the re-render that a
-    // cross-page edge-flip triggers mid-drag.
-    document.body.appendChild(g); this._ghost = g; cell.style.opacity = '.25';
-    this._dragCell = cell;
+  // Lift the tile at `idx` into a drag from pointer (x,y). Returns false if the
+  // board couldn't be measured (in which case the caller drops back to no-op).
+  startDrag(idx, x, y) {
+    const board = this.measureBoard(); if (!board) return false;
+    const cell = board.cells[idx]; if (!cell) return false;
+    const rect = cell.getBoundingClientRect();
+    // The ghost is a clone pinned to <body> so it survives the re-render an
+    // edge-flip triggers. We grab it exactly where the finger landed, so the
+    // tile stays glued under the pointer instead of jumping by a fixed offset.
+    const g = cell.cloneNode(true);
+    g.classList.add('bb-ghost');
+    g.style.position = 'fixed'; g.style.left = '0'; g.style.top = '0'; g.style.margin = '0';
+    g.style.width = rect.width + 'px'; g.style.zIndex = '9999'; g.style.pointerEvents = 'none'; g.style.animation = 'none';
+    g.style.filter = 'drop-shadow(0 18px 30px rgba(22,31,91,.34))';
+    g.style.transform = 'translate(' + rect.left + 'px,' + rect.top + 'px) scale(1)';
+    document.body.appendChild(g);
+    this._drag = { board, srcIdx: idx, srcKind: cell.dataset.kind, fromPage: this.state.currentPage, ghost: g, grabX: x - rect.left, grabY: y - rect.top, insertIdx: idx, mode: 'reorder', folderIdx: -1, flipping: false };
+    this.prepBoardCells(board);
+    // Lift on the next frame so the scale + shadow transition actually plays.
+    requestAnimationFrame(() => {
+      const d = this._drag; if (!d || !d.ghost) return;
+      d.ghost.style.transition = 'transform .16s cubic-bezier(.2,.8,.2,1), filter .16s';
+      this.moveGhost(x, y); this.updateDragTarget(x, y); this.applyReflow();
+    });
+    return true;
+  }
+  moveGhost(x, y) {
+    const d = this._drag; if (!d || !d.ghost) return;
+    d.ghost.style.transform = 'translate(' + (x - d.grabX) + 'px,' + (y - d.grabY) + 'px) scale(1.1)';
+  }
+  // Prime the current page's cells for live reflow: suspend the jiggle (its
+  // rotate transform would fight our translate) and arm a smooth slide.
+  prepBoardCells(board) {
+    if (!board) return;
+    board.cells.forEach(c => { c.style.animation = 'none'; c.style.transition = 'transform .24s cubic-bezier(.2,.85,.25,1)'; c.style.willChange = 'transform'; });
+  }
+  // Measure the visible page's grid so reflow can place a tile in any slot —
+  // including the one-past-the-end slot — without depending on column count.
+  measureBoard() {
+    const pageEls = document.querySelectorAll('.bb-root .bb-page');
+    const pageEl = pageEls[this.state.currentPage];
+    if (!pageEl) return null;
+    const cells = Array.prototype.slice.call(pageEl.querySelectorAll('.bb-cell'));
+    if (!cells.length) {
+      return { page: this.state.currentPage, pageEl, cells, rects: [], cols: 1, slotCenter: () => { const r = pageEl.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + 60 }; } };
+    }
+    const rects = cells.map(c => { const r = c.getBoundingClientRect(); return { left: r.left, top: r.top, w: r.width, h: r.height, cx: r.left + r.width / 2, cy: r.top + r.height / 2 }; });
+    const tol = rects[0].h * 0.5;
+    const rowYs = [];
+    rects.forEach(r => { if (!rowYs.some(y => Math.abs(y - r.cy) < tol)) rowYs.push(r.cy); });
+    rowYs.sort((a, b) => a - b);
+    let cols = 1;
+    rowYs.forEach(y => { const c = rects.filter(r => Math.abs(r.cy - y) < tol).length; if (c > cols) cols = c; });
+    const firstRow = rects.filter(r => Math.abs(r.cy - rowYs[0]) < tol).sort((a, b) => a.cx - b.cx);
+    const colX = firstRow.map(r => r.cx);
+    const pitchX = colX.length > 1 ? (colX[colX.length - 1] - colX[0]) / (colX.length - 1) : rects[0].w * 1.08;
+    while (colX.length < cols) colX.push(colX[colX.length - 1] + pitchX);
+    const pitchY = rowYs.length > 1 ? (rowYs[1] - rowYs[0]) : (rects[0].h + 24);
+    const y0 = rowYs[0];
+    const slotCenter = (k) => { k = Math.max(0, k); return { x: colX[k % cols], y: y0 + Math.floor(k / cols) * pitchY }; };
+    return { page: this.state.currentPage, pageEl, cells, rects, cols, slotCenter };
+  }
+  // From the pointer, decide whether we're making/joining a folder or where the
+  // tile would slot in. Hit-testing uses the static slot geometry so the live
+  // reflow can never feed back on itself and oscillate.
+  updateDragTarget(x, y) {
+    const d = this._drag; if (!d || !d.board) return;
+    const b = d.board, rects = b.rects, cells = b.cells, n = cells.length;
+    if (!n) { d.mode = 'reorder'; d.folderIdx = -1; d.insertIdx = 0; return; }
+    const srcOnPage = d.fromPage === this.state.currentPage;
+    let t = 0, bestD = Infinity;
+    for (let i = 0; i < n; i++) { const ddx = x - rects[i].cx, ddy = y - rects[i].cy; const dd = ddx * ddx + ddy * ddy; if (dd < bestD) { bestD = dd; t = i; } }
+    const r = rects[t];
+    const isSrc = srcOnPage && t === d.srcIdx;
+    const kind = cells[t].dataset.kind;
+    // Folder intent: an app dragged onto the centre of another app (→ new folder)
+    // or any folder (→ drop inside). Hysteresis stops it flickering at the edge.
+    if (!isSrc && d.srcKind === 'app' && (kind === 'app' || kind === 'folder')) {
+      const cdx = x - r.cx, cdy = y - r.cy, cdist = Math.sqrt(cdx * cdx + cdy * cdy);
+      const small = Math.min(r.w, r.h), active = d.mode === 'folder' && d.folderIdx === t;
+      if (cdist < small * (active ? 0.46 : 0.30)) { d.mode = 'folder'; d.folderIdx = t; return; }
+    }
+    d.mode = 'reorder'; d.folderIdx = -1;
+    const raw = (x < r.cx) ? t : t + 1;
+    const insertIdx = (srcOnPage && d.srcIdx < raw) ? raw - 1 : raw;
+    d.insertIdx = Math.max(0, Math.min(srcOnPage ? n - 1 : n, insertIdx));
+  }
+  // Flow the neighbours: slide every other tile to the slot it would occupy once
+  // the dragged tile lands, opening a gap at the insertion point (or, in folder
+  // mode, send everyone home and swell the target).
+  applyReflow() {
+    const d = this._drag; if (!d || !d.board) return;
+    const b = d.board, cells = b.cells, rects = b.rects, n = cells.length;
+    const srcOnPage = d.fromPage === this.state.currentPage;
+    cells.forEach((c, i) => { const tile = c.querySelector('.bb-tile'); if (tile) tile.classList.toggle('bb-folder-target', d.mode === 'folder' && i === d.folderIdx); });
+    if (d.mode === 'folder') {
+      for (let i = 0; i < n; i++) { if (srcOnPage && i === d.srcIdx) { cells[i].style.visibility = 'hidden'; continue; } cells[i].style.visibility = ''; cells[i].style.transform = ''; }
+      return;
+    }
+    const insertIdx = Math.max(0, Math.min(srcOnPage ? n - 1 : n, d.insertIdx));
+    let slot = 0;
+    for (let i = 0; i < n; i++) {
+      if (srcOnPage && i === d.srcIdx) { cells[i].style.visibility = 'hidden'; cells[i].style.transform = ''; continue; }
+      cells[i].style.visibility = '';
+      if (slot === insertIdx) slot++;           // hold the gap for the dragged tile
+      const c = b.slotCenter(slot);
+      const tx = c.x - rects[i].cx, ty = c.y - rects[i].cy;
+      cells[i].style.transform = (tx || ty) ? ('translate(' + tx + 'px,' + ty + 'px)') : '';
+      slot++;
+    }
   }
   // While dragging near the left/right edge of the board, flip to the adjacent
   // page after a short hover so tiles can be moved across pages.
-  edgeFlip(e, vp) {
+  edgeFlip(x, y, vp) {
     if (!vp) return;
-    const r = vp.getBoundingClientRect(), edge = 38;
-    if (e.clientX < r.left + edge && this.state.currentPage > 0) this.scheduleFlip(-1);
-    else if (e.clientX > r.right - edge && this.state.currentPage < this.state.pages.length - 1) this.scheduleFlip(1);
+    const r = vp.getBoundingClientRect(), edge = 42;
+    if (x < r.left + edge && this.state.currentPage > 0) this.scheduleFlip(-1);
+    else if (x > r.right - edge && this.state.currentPage < this.state.pages.length - 1) this.scheduleFlip(1);
     else this.cancelFlip();
   }
   scheduleFlip(dir) {
@@ -978,56 +1101,85 @@ class Component extends DCLogic {
     this._flipT = setTimeout(() => {
       this._flipT = null; this._flipDir = 0;
       const to = this.state.currentPage + dir;
-      if (to >= 0 && to < this.state.pages.length) this.goPage(to);
-    }, 650);
+      if (to < 0 || to >= this.state.pages.length) return;
+      const d = this._drag;
+      // Pause reflow and clear the old page's transforms while the track slides,
+      // then re-measure the new page and pick the drag back up there.
+      if (d) { d.flipping = true; this.clearBoardTransforms(d.board); }
+      this.goPage(to);
+      setTimeout(() => {
+        const dd = this._drag; if (!dd) return;
+        const b = this.measureBoard(); if (b) { dd.board = b; this.prepBoardCells(b); }
+        dd.flipping = false;
+      }, 380);
+    }, 600);
   }
   cancelFlip() { if (this._flipT) { clearTimeout(this._flipT); this._flipT = null; } this._flipDir = 0; }
-  highlightDrop(e) {
-    document.querySelectorAll('.bb-root .bb-cell').forEach(c => c.style.outline = '');
-    const el = document.elementFromPoint(e.clientX, e.clientY); const target = el && el.closest('.bb-cell');
-    if (target && target !== this._dragCell) { const tile = target.querySelector('.bb-tile'); if (tile) tile.style.outline = ''; target.style.outline = '2px dashed var(--bb-accent)'; target.style.outlineOffset = '2px'; }
+  clearBoardTransforms(board) {
+    if (!board) return;
+    board.cells.forEach(c => { c.style.transform = ''; c.style.transition = ''; c.style.visibility = ''; });
   }
-  dropDrag(e, fromIdx, fromPage) {
+  // Wipe every drag-time inline style so the freshly rendered grid is clean.
+  clearReflow() {
+    const root = document.querySelector('.bb-root'); if (!root) return;
+    root.querySelectorAll('.bb-cell').forEach(c => { c.style.transform = ''; c.style.transition = ''; c.style.visibility = ''; c.style.willChange = ''; });
+    root.querySelectorAll('.bb-tile.bb-folder-target').forEach(t => t.classList.remove('bb-folder-target'));
+  }
+  // Abort an in-flight drag (pointer cancel / interrupted) with no commit.
+  cleanupDrag() {
+    const d = this._drag; if (!d) return;
+    this._drag = null;
+    if (d.ghost) { try { d.ghost.remove(); } catch {} }
+    this.clearReflow();
+  }
+  // Release: commit the move, then settle the lifted ghost into its landing slot
+  // and fade it over the freshly rendered tile. Because the neighbours were
+  // already flowed to their final spots, the re-render lands without a snap.
+  dropDrag() {
+    const d = this._drag; if (!d) return;
     this.cancelFlip();
-    document.querySelectorAll('.bb-root .bb-cell').forEach(c => c.style.outline = '');
-    if (this._dragCell) this._dragCell.style.opacity = '';
-    this._dragCell = null;
-    if (fromPage == null) fromPage = this.state.currentPage;
-    const toPage = this.state.currentPage; // may differ from fromPage after an edge-flip
-    // Work on a deep-enough copy: clone every page array; cell objects stay by
-    // reference so we can locate them after the source is spliced out.
-    const pages = this.state.pages.map(p => p.slice());
-    if (!pages[fromPage]) return;
-    const src = pages[fromPage][fromIdx];
-    if (!src) return;
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    const targetEl = el && el.closest('.bb-cell');
-    const tIdx = targetEl ? +targetEl.dataset.idx : -1;
-    const targetCell = (targetEl && pages[toPage] && tIdx >= 0) ? pages[toPage][tIdx] : null;
-    if (targetCell === src) return; // dropped back on itself — no change
-
-    // Remove the dragged cell from its origin page first.
-    pages[fromPage].splice(fromIdx, 1);
-
-    if (targetCell && src.type === 'app' && targetCell.type === 'app') {
-      // App onto app → make a new folder holding both, where the target sat.
-      const ti = pages[toPage].indexOf(targetCell);
-      const folder = { type: 'folder', name: 'Folder', items: [targetCell.id, src.id] };
-      pages[toPage].splice(ti < 0 ? pages[toPage].length : ti, 1, folder);
-    } else if (targetCell && src.type === 'app' && targetCell.type === 'folder') {
-      // App onto folder → drop it inside.
-      targetCell.items = targetCell.items.concat([src.id]);
-    } else {
-      // Plain reorder / cross-page move (also when src is a folder, or dropped on
-      // empty space → append to the end of the destination page).
-      let ti = targetCell ? pages[toPage].indexOf(targetCell) : pages[toPage].length;
-      if (ti < 0) ti = pages[toPage].length;
-      pages[toPage].splice(ti, 0, src);
+    const ghost = d.ghost; d.ghost = null;
+    const b = d.board;
+    let center = null;
+    if (b && b.rects.length) {
+      if (d.mode === 'folder' && d.folderIdx >= 0 && b.rects[d.folderIdx]) center = { x: b.rects[d.folderIdx].cx, y: b.rects[d.folderIdx].cy };
+      else center = b.slotCenter(Math.max(0, Math.min(d.fromPage === this.state.currentPage ? b.cells.length - 1 : b.cells.length, d.insertIdx)));
     }
-    // Trim trailing empty pages but always keep at least one.
+    this.commitDrop(d);
+    this._drag = null;
+    if (ghost) {
+      if (center) {
+        const gw = ghost.offsetWidth, gh = ghost.offsetHeight;
+        ghost.style.transition = 'transform .2s cubic-bezier(.2,.8,.2,1), opacity .22s ease-out';
+        ghost.style.transform = 'translate(' + (center.x - gw / 2) + 'px,' + (center.y - gh / 2) + 'px) scale(1)';
+        ghost.style.opacity = '0';
+      } else { ghost.style.transition = 'opacity .18s'; ghost.style.opacity = '0'; }
+      setTimeout(() => { try { ghost.remove(); } catch {} }, 240);
+    }
+  }
+  // Apply the dragged tile's new home to the page model. Insertion indices are
+  // in the rendered order (source already excluded when it shares the page).
+  commitDrop(d) {
+    const pages = this.state.pages.map(p => p.slice());
+    const fromPage = d.fromPage, toPage = this.state.currentPage;
+    if (!pages[fromPage]) { this.clearReflow(); return; }
+    const src = pages[fromPage][d.srcIdx];
+    if (!src) { this.clearReflow(); return; }
+    pages[fromPage].splice(d.srcIdx, 1);
+    const dest = pages[toPage];
+    if (d.mode === 'folder' && d.folderIdx >= 0) {
+      let fi = d.folderIdx;
+      if (fromPage === toPage && d.srcIdx < fi) fi--;            // account for the removal above
+      const target = dest[fi];
+      if (target && src.type === 'app' && target.type === 'folder') target.items = target.items.concat([src.id]);
+      else if (target && src.type === 'app' && target.type === 'app') dest.splice(fi, 1, { type: 'folder', name: 'Folder', items: [target.id, src.id] });
+      else dest.splice(Math.max(0, Math.min(dest.length, fi)), 0, src);
+    } else {
+      dest.splice(Math.max(0, Math.min(dest.length, d.insertIdx)), 0, src);
+    }
     while (pages.length > 1 && !pages[pages.length - 1].length) pages.pop();
     const cur = Math.min(this.state.currentPage, pages.length - 1);
-    this.setState({ pages, currentPage: cur }, () => this.save());
+    this.setState({ pages, currentPage: cur }, () => { this.save(); this.clearReflow(); });
   }
   // Remove one app from an open folder, dropping it back beside the folder.
   // When the folder is left with a single item (or none) it dissolves, exactly
