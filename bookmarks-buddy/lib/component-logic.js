@@ -24,7 +24,7 @@ class Component extends DCLogic {
     ];
     this.state = {
       bookmarks: [], pages: [], pageNames: [], currentPage: 0,
-      search: '', adding: false, settingsOpen: false, folderOpen: null, folderEdit: false,
+      search: '', adding: false, settingsOpen: false, pagesOpen: false, folderOpen: null, folderEdit: false,
       editMode: false, voiceOpen: false, listening: false, interim: '', heard: '',
       draftName: '', draftUrl: '', dark: false, speak: false,
       editing: null, editName: '', editUrl: '', editIcon: '', editNotes: '', editConfirmDelete: false,
@@ -823,7 +823,7 @@ class Component extends DCLogic {
     });
   }
   postRender() { this.applyTheme(); this.applyTransform(); this.applyEdit(); this.refreshIcons(); this.handleIcons(); this.applyHit(); }
-  componentDidMount() { this.postRender(); this.attachGestures(); this.attachFolderGestures(); this.attachKeys(); this.attachLifecycle(); this.sheetBoot(); this.autoStartMic(); }
+  componentDidMount() { this.postRender(); this.attachGestures(); this.attachFolderGestures(); this.attachPageGestures(); this.attachKeys(); this.attachLifecycle(); this.sheetBoot(); this.autoStartMic(); }
   componentDidUpdate() { this.postRender(); }
   componentWillUnmount() { this.stopListen(); this.detachLifecycle(); if (this._hitT) clearTimeout(this._hitT); if (this._keyH) window.removeEventListener('keydown', this._keyH); }
 
@@ -1324,6 +1324,120 @@ class Component extends DCLogic {
     if (cur === i) cur = j; else if (cur === j) cur = i;
     this.setState({ pages, pageNames: names, currentPage: cur }, () => this.save());
   }
+  // Move a page from one index to another (drag-reorder in the Pages manager).
+  // `to` is the page's final index. Like movePage, this re-stamps the Page number
+  // on every affected bookmark through save() -> sheetSync, so the new order
+  // persists locally and syncs to the sheet (and other devices).
+  reorderPages(from, to) {
+    const n = this.state.pages.length;
+    if (from < 0 || from >= n) return;
+    to = Math.max(0, Math.min(n - 1, to));
+    if (from === to) return;
+    const pages = this.state.pages.map(p => p.slice());
+    const names = (this.state.pageNames || []).slice();
+    while (names.length < pages.length) names.push('');
+    const curRef = pages[this.state.currentPage];           // follow the live page by identity
+    const [pg] = pages.splice(from, 1);
+    const [nm] = names.splice(from, 1);
+    pages.splice(to, 0, pg);
+    names.splice(to, 0, nm);
+    let cur = pages.indexOf(curRef);
+    if (cur < 0) cur = Math.min(this.state.currentPage, pages.length - 1);
+    this.setState({ pages, pageNames: names, currentPage: cur }, () => this.save());
+  }
+
+  /* ---------- Pages manager drag-reorder ----------
+   * A self-contained pointer handler for the Pages manager overlay (a scrollable
+   * vertical list of page rows). Pressing a row's grip handle lifts the row into
+   * a drag; the other rows slide to open a gap (uniform-pitch FLIP, same feel as
+   * the springboard), and on release reorderPages() commits + syncs the new order.
+   * Active only while the manager is open; the springboard's own drag engine is
+   * untouched. */
+  attachPageGestures() {
+    if (this._pAttached) return; this._pAttached = true;
+    const root = document.querySelector('.bb-root'); if (!root) return;
+    let mode = null, startY = 0;
+    const reset = () => {
+      mode = null;
+      if (this._pGhost) { try { this._pGhost.remove(); } catch {} this._pGhost = null; }
+      const d = this._pDrag;
+      if (d && d.rows) d.rows.forEach(r => { r.style.transform = ''; r.style.transition = ''; r.style.visibility = ''; r.style.willChange = ''; });
+      this._pDrag = null; this._pInsert = -1;
+    };
+    root.addEventListener('pointerdown', (e) => {
+      if (!this.state.pagesOpen) return;
+      if (!e.target.closest('.bb-phandle')) return;
+      const row = e.target.closest('.bb-prow'); if (!row) return;
+      startY = e.clientY; mode = 'pending';
+      this._pDownRow = row; this._pInsert = +row.dataset.pageidx;
+      e.preventDefault();
+      try { root.setPointerCapture(e.pointerId); } catch {}
+    });
+    root.addEventListener('pointermove', (e) => {
+      if (!mode) return;
+      if (mode === 'pending') {
+        if (Math.abs(e.clientY - startY) > 4) { if (!this.beginPageDrag(this._pDownRow, e)) { mode = null; return; } mode = 'drag'; }
+        else return;
+      }
+      if (mode === 'drag') {
+        const d = this._pDrag; if (!d) return;
+        this._pGhost.style.transform = 'translateY(' + (e.clientY - d.grabDY) + 'px)';
+        this.pageDragReflow(e.clientY);
+      }
+    });
+    const end = (e) => {
+      if (mode === 'drag') {
+        const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
+        root.addEventListener('click', swallow, { capture: true, once: true });
+        setTimeout(() => { try { root.removeEventListener('click', swallow, { capture: true }); } catch {} }, 60);
+        const d = this._pDrag;
+        if (d && this._pInsert >= 0 && this._pInsert !== d.fromIdx) this.reorderPages(d.fromIdx, this._pInsert);
+      }
+      reset();
+    };
+    root.addEventListener('pointerup', end);
+    root.addEventListener('pointercancel', () => reset());
+  }
+  // Lift a page row: clone it to a body-pinned ghost, hide the original, and
+  // measure every row so the reflow can slide neighbours by a uniform pitch.
+  beginPageDrag(row, e) {
+    const list = document.querySelector('.bb-plist'); if (!list) return false;
+    const rows = Array.prototype.slice.call(list.querySelectorAll('.bb-prow'));
+    if (rows.length < 2) return false;
+    const rect = row.getBoundingClientRect();
+    const g = row.cloneNode(true);
+    g.classList.add('bb-pghost');
+    g.style.position = 'fixed'; g.style.left = rect.left + 'px'; g.style.top = '0';
+    g.style.width = rect.width + 'px'; g.style.margin = '0'; g.style.zIndex = '10001';
+    g.style.pointerEvents = 'none'; g.style.transform = 'translateY(' + rect.top + 'px)';
+    g.style.boxShadow = '0 16px 34px rgba(22,31,91,.32)';
+    document.body.appendChild(g);
+    const rects = rows.map(r => r.getBoundingClientRect());
+    const pitch = rects.length > 1 ? (rects[1].top - rects[0].top) : rects[0].height;
+    rows.forEach(r => { r.style.transition = 'transform .18s cubic-bezier(.2,.85,.25,1)'; r.style.willChange = 'transform'; });
+    this._pGhost = g;
+    this._pDrag = { rows, rects, pitch, fromIdx: +row.dataset.pageidx, grabDY: e.clientY - rect.top };
+    this._pInsert = this._pDrag.fromIdx;
+    this.pageDragReflow(e.clientY);
+    return true;
+  }
+  // Decide where the lifted row would land and flow the others to make room.
+  pageDragReflow(y) {
+    const d = this._pDrag; if (!d) return;
+    const { rows, rects, pitch, fromIdx } = d, n = rows.length;
+    let insert = 0;
+    for (let i = 0; i < n; i++) { if (i === fromIdx) continue; if (y > rects[i].top + rects[i].height / 2) insert++; }
+    insert = Math.max(0, Math.min(n - 1, insert));
+    this._pInsert = insert;
+    rows.forEach((r, i) => {
+      if (i === fromIdx) { r.style.visibility = 'hidden'; r.style.transform = ''; return; }
+      r.style.visibility = '';
+      const p = i < fromIdx ? i : i - 1;          // index once the dragged row is removed
+      const tv = p < insert ? p : p + 1;          // visual slot once it's re-inserted
+      const ty = (tv - i) * pitch;
+      r.style.transform = ty ? ('translateY(' + ty + 'px)') : '';
+    });
+  }
 
   /* ---------- toggles ---------- */
   toggleEditFn() { this.setState({ editMode: !this.state.editMode }); }
@@ -1367,6 +1481,25 @@ class Component extends DCLogic {
       showResults, showBoard: !showResults, noResults: showResults && results.length === 0, results,
       pages, dots, showDots: s.pages.length > 1 && !s.editMode, editMode: s.editMode,
       openSettings: () => this.setState({ settingsOpen: true }), closeSettings: () => this.setState({ settingsOpen: false }),
+      // ----- Pages manager (opened from Settings) -----
+      pagesOpen: s.pagesOpen,
+      openPages: () => this.setState({ settingsOpen: false, pagesOpen: true }),
+      closePages: () => this.setState({ pagesOpen: false }),
+      pagesManager: s.pages.map((pg, i) => {
+        const ids = [];
+        pg.forEach(c => { if (!c) return; if (c.type === 'folder') ids.push.apply(ids, c.items); else ids.push(c.id); });
+        const n = ids.length;
+        const mini = ids.slice(0, 5).map(id => { const bm = byId(id); return { src: bm ? this.iconFor(bm) : '', letter: bm ? this.letterOf(bm) : '?' }; });
+        const more = n - mini.length;
+        return {
+          idx: i, label: this.pageName(i),
+          count: n + (n === 1 ? ' site' : ' sites'),
+          mini, more: more > 0 ? ('+' + more) : '', hasMore: more > 0,
+          empty: n === 0, isCurrent: i === s.currentPage,
+          rowStyle: i === s.currentPage ? 'border-color:var(--bb-accent);' : '',
+          jump: () => this.setState({ currentPage: i, pagesOpen: false })
+        };
+      }),
       openAdd: () => this.setState({ adding: true, draftName: '', draftUrl: '' }), closeAdd: () => this.setState({ adding: false }),
       launchVoice: () => this.launchVoiceFn(), closeVoice: () => this.closeVoiceFn(), toggleListen: () => { if (s.listening) this.stopListen(); else this.startListen(); },
       // Dock mic button: pulses while the mic is live; tapping it pauses
