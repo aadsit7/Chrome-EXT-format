@@ -7,6 +7,18 @@ Google Chrome and Microsoft Edge. There is no API key inside the extension —
 Sharon sends the page text and your spoken instructions to a server that does
 the AI part.
 
+Sharon is a read-only voice reader for whatever is on your current tab. She
+only ever works with the single active tab in the current window, and she only
+reads what is actually visible there right now. She never reads other tabs,
+never navigates, and never clicks or opens anything. It isn't just for
+articles — if an email, document, message, thread, or post is open on screen,
+she reads that too. Because you click around the page yourself, every time you
+ask her something she re-reads the tab fresh, so she's always answering about
+what's on screen at that moment. She answers only from what's actually on the
+page: if something isn't there — say you ask about an email while only your
+list of messages is showing — she'll tell you what she can see and ask you to
+open it yourself rather than guess.
+
 
 How to load Sharon (for first-timers)
 -------------------------------------

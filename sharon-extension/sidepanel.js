@@ -23,22 +23,44 @@ const els = {
   changeShortcut: document.getElementById("changeShortcut"),
 };
 
+// Grounding rules sent with EVERY request. Sharon is a read-only voice
+// assistant for whatever is visible on the current tab right now: she uses only
+// the extracted page text, never invents anything, and can't click or open
+// things herself. (The networking is unchanged — this just shapes the
+// instruction text we already send in the request body.)
+const GROUNDING =
+  "You are Sharon, a read-only voice assistant. The only thing you can see is " +
+  "the text currently visible on the user's active browser tab, given to you " +
+  "below as the page content. Follow these rules strictly:\n" +
+  "1. Use ONLY that page content. Do not use outside knowledge to fill gaps.\n" +
+  "2. Talk only about what is actually in the page content. Never invent, " +
+  "guess, or assume anything that isn't there.\n" +
+  "3. You cannot click, scroll, open, or navigate anything. If the user asks " +
+  "for something that isn't in the page content — for example what's inside an " +
+  "email while only a list of messages is visible — say plainly what you can " +
+  "see and ask them to open it themselves, for example: \"I can see your list " +
+  "of messages but not what's inside them. Open the one you want and I'll read " +
+  "and summarize it.\"\n" +
+  "4. If the answer isn't in the page content, say so plainly instead of " +
+  "making something up. Honesty over helpfulness.\n\n" +
+  "Here is the task:\n";
+
 // The default instruction Sharon sends when she starts reading on her own.
 const DEFAULT_INSTRUCTION =
-  "Here is the main content of a web page. First, give me a one or two " +
-  "sentence overview of what this page is about. Then read the important " +
-  "parts aloud in a natural, listenable way — skip navigation, ads, " +
-  "boilerplate, and anything repetitive. If it's a long article, focus on " +
-  "the main points rather than every word. Keep it conversational since I'm " +
-  "listening, not reading.";
+  "Here is the text currently visible on the active browser tab. First, give " +
+  "me a one or two sentence overview of what's on screen. Then read the " +
+  "important parts aloud in a natural, listenable way — skip navigation, ads, " +
+  "boilerplate, and anything repetitive. If it's long, focus on the main " +
+  "points rather than every word. Keep it conversational since I'm listening, " +
+  "not reading.";
 
 // When a page has almost nothing to read, ask for a short honest reply
 // instead of letting the model invent content.
 const SHORT_PAGE_CHARS = 200;
 const SHORT_PAGE_INSTRUCTION =
-  "This web page has very little readable content. In one or two short, " +
-  "honest sentences, tell me what little is here. Do not invent, expand, or " +
-  "pad with anything that isn't actually on the page.";
+  "There is very little readable text on this tab right now. In one or two " +
+  "short, honest sentences, tell me what little is here. Do not invent, " +
+  "expand, or pad with anything that isn't actually on the page.";
 
 // A tab is restricted only when its URL starts with one of these. Any normal
 // http:// or https:// website is ALWAYS readable.
@@ -427,12 +449,58 @@ function extractPageText() {
     return c ? c.trim() : "";
   }
 
-  // Prefer the page's main content region; fall back to the body.
-  const main =
-    document.querySelector("article") ||
-    document.querySelector("main") ||
-    document.querySelector('[role="main"]') ||
-    document.body;
+  // Among a set of candidate regions, return the visible one whose filtered
+  // text is longest. Used to find the real content on web apps, not just
+  // articles.
+  function longestRegion(selectors) {
+    let best = null;
+    let bestLen = 0;
+    for (let s = 0; s < selectors.length; s++) {
+      const nodes = document.querySelectorAll(selectors[s]);
+      for (let i = 0; i < nodes.length; i++) {
+        const el = nodes[i];
+        if (isHidden(el)) continue;
+        const len = collapse(gather(el)).length;
+        if (len > bestLen) {
+          best = el;
+          bestLen = len;
+        }
+      }
+    }
+    return { el: best, len: bestLen };
+  }
+
+  // Pick the region to read. Works for web apps, not just articles: when a
+  // clear message / document / main region is open, prefer it over the
+  // surrounding menus and sidebars.
+  function pickMain() {
+    // 1) A focused message / document body — the strongest signal that the
+    //    user has an item open (an email, a doc, a single post/thread).
+    const focused = longestRegion([
+      '[itemprop="articleBody"]',
+      '[role="document"]',
+      ".a3s", // Gmail open-message body
+      ".message-body",
+      ".messageBody",
+      ".email-body",
+      ".mail-body",
+    ]);
+    if (focused.el && focused.len >= 20) return focused.el;
+
+    // 2) A semantic main-content region.
+    const region = longestRegion([
+      "article",
+      '[role="article"]',
+      "main",
+      '[role="main"]',
+    ]);
+    if (region.el && region.len >= 80) return region.el;
+
+    // 3) Nothing specific stood out — read the whole body.
+    return document.body;
+  }
+
+  const main = pickMain();
 
   // Capture the headline / title separately.
   const h1 =
@@ -565,6 +633,8 @@ async function sendInstruction(
   abortController = ac;
   busy = true;
 
+  // Re-extract the current tab's text at this moment — never reuse stale text,
+  // since the user clicks around the page themselves between requests.
   const ctx = await readPageContext();
   if (ac.signal.aborted) return;
   if (ctx.restricted) {
@@ -584,9 +654,13 @@ async function sendInstruction(
     prompt = SHORT_PAGE_INSTRUCTION;
   }
 
+  // Prepend the grounding rules so Sharon answers strictly from what's on the
+  // current tab and never invents anything. (Body shape is unchanged.)
+  const grounded = GROUNDING + prompt;
+
   const typing = showTyping();
   try {
-    const data = await askSharon(prompt, ctx, ac.signal);
+    const data = await askSharon(grounded, ctx, ac.signal);
     if (ac.signal.aborted) {
       typing.remove();
       return;
