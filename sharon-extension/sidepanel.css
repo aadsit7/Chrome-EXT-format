@@ -216,6 +216,20 @@ html[data-state="reading"] .orb-pulse {
   border: 1px solid var(--line);
   border-bottom-left-radius: 5px;
 }
+
+/* Opening overview line, shown above the body of Sharon's answer. */
+.bubble.sharon .lead {
+  margin: 0 0 8px;
+  padding: 0 0 8px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.bubble.sharon .body-text {
+  margin: 0;
+}
 .bubble.error {
   align-self: flex-start;
   background: #fff4f2;

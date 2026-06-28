@@ -29,6 +29,10 @@ How to test her
    The first time, your browser may ask for microphone permission — click
    Allow. (If you don't, Sharon will still read pages; she just won't hear you.)
 3. Sharon starts reading the page aloud on her own. You don't press anything.
+   She opens with a quick one- or two-sentence overview of what the page is
+   about (shown as an emphasized line at the top of her answer), then reads the
+   important parts and skips menus, ads, and other boilerplate. On a nearly
+   empty page she just says briefly what little is there.
 4. Switch to another article tab — Sharon follows you and starts reading the
    new page automatically.
 5. While she's reading, just talk:
@@ -47,6 +51,9 @@ How to test her
 
 Notes
 -----
+- Sharon cleans the page before reading: she pulls out the main content
+  (article / main region) and drops navigation, headers, footers, sidebars,
+  cookie/consent banners, ads, comments, and other repetitive boilerplate.
 - A normal http:// or https:// website is always readable. Only true browser
   pages (chrome://, edge://, about:, extension pages, devtools) and the web
   store are treated as "nothing to read".
