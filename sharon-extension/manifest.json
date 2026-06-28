@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Sharon",
-  "version": "4.0.0",
-  "description": "A voice assistant in your side panel that reads the current page aloud automatically and listens for your voice.",
+  "version": "5.0.0",
+  "description": "A read-only voice reader for your current tab: it reads aloud whatever is visible — articles, emails, docs, messages — and listens for your voice.",
   "action": {
     "default_title": "Sharon",
     "default_icon": {
