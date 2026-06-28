@@ -82,6 +82,7 @@ let lastReadKey = null; // tabId::url we last started reading
 let lastUserInstruction = null; // the most recent spoken instruction (if any)
 let abortController = null; // cancels an in-flight proxy request
 let evalSeq = 0; // guards against out-of-order tab evaluations
+let ready = false; // settings loaded — safe to auto-read
 
 // Speech synthesis (reading aloud)
 const synth = window.speechSynthesis;
@@ -450,33 +451,35 @@ function extractPageText() {
   }
 
   // Among a set of candidate regions, return the visible one whose filtered
-  // text is longest. Used to find the real content on web apps, not just
-  // articles.
-  function longestRegion(selectors) {
-    let best = null;
-    let bestLen = 0;
+  // text is longest, along with that text. Used to find the real content on web
+  // apps, not just articles. (Returning the text avoids re-gathering it later.)
+  function bestRegion(selectors) {
+    let bestEl = null;
+    let bestText = "";
     for (let s = 0; s < selectors.length; s++) {
       const nodes = document.querySelectorAll(selectors[s]);
       for (let i = 0; i < nodes.length; i++) {
         const el = nodes[i];
         if (isHidden(el)) continue;
-        const len = collapse(gather(el)).length;
-        if (len > bestLen) {
-          best = el;
-          bestLen = len;
+        const t = collapse(gather(el));
+        if (t.length > bestText.length) {
+          bestEl = el;
+          bestText = t;
         }
       }
     }
-    return { el: best, len: bestLen };
+    return { el: bestEl, text: bestText };
   }
 
   // Pick the region to read. Works for web apps, not just articles: when a
-  // clear message / document / main region is open, prefer it over the
-  // surrounding menus and sidebars.
+  // clear message / document body is open, prefer it over the surrounding menus
+  // and sidebars. Returns { el, text }.
   function pickMain() {
-    // 1) A focused message / document body — the strongest signal that the
-    //    user has an item open (an email, a doc, a single post/thread).
-    const focused = longestRegion([
+    // 1) A focused message / document body — the strongest signal that the user
+    //    has an item open (an email, a doc, an article body, a single post).
+    //    Require a substantial amount of text so a small incidental widget
+    //    (e.g. a chat box) can't hijack a real article.
+    const focused = bestRegion([
       '[itemprop="articleBody"]',
       '[role="document"]',
       ".a3s", // Gmail open-message body
@@ -485,29 +488,35 @@ function extractPageText() {
       ".email-body",
       ".mail-body",
     ]);
-    if (focused.el && focused.len >= 20) return focused.el;
+    if (focused.el && focused.text.length >= 200) return focused;
 
     // 2) A semantic main-content region.
-    const region = longestRegion([
+    const region = bestRegion([
       "article",
       '[role="article"]',
       "main",
       '[role="main"]',
     ]);
-    if (region.el && region.len >= 80) return region.el;
+    if (region.el && region.text.length >= 80) return region;
 
-    // 3) Nothing specific stood out — read the whole body.
-    return document.body;
+    // 3) A focused body that exists but was below the article threshold (e.g. a
+    //    short opened email) still beats reading the whole app chrome.
+    if (focused.el && focused.text.length >= 80) return focused;
+
+    // 4) Nothing specific stood out — read the whole body.
+    return { el: document.body, text: collapse(gather(document.body)) };
   }
 
-  const main = pickMain();
+  const picked = pickMain();
+  const main = picked.el || document.body;
 
   // Capture the headline / title separately.
   const h1 =
     (main && main.querySelector && main.querySelector("h1")) ||
     document.querySelector("h1");
+  const h1text = h1 ? (h1.innerText || h1.textContent || "").trim() : "";
   const title =
-    (h1 && h1.innerText && h1.innerText.trim()) ||
+    h1text ||
     metaContent('meta[property="og:title"]') ||
     (document.title || "").trim();
 
@@ -517,12 +526,15 @@ function extractPageText() {
     return { text: collapse(sel), title: title, url: location.href };
   }
 
-  let text = collapse(main ? gather(main) : "");
+  let text = picked.text || "";
 
-  // Safety fallback: if cleanup left almost nothing, send the full body text so
-  // a strangely-built page never ends up with nothing to read.
+  // Safety fallback: if cleanup left almost nothing — e.g. an oddly-built page
+  // where filtering removed the real content — fall back to the raw body text.
+  // Only swap when the body has substantially more, so a clean short extraction
+  // (a brief email/message) is kept as-is instead of being buried in chrome.
   if (text.length < 200) {
-    text = collapse((document.body && document.body.innerText) || "");
+    const bodyText = collapse((document.body && document.body.innerText) || "");
+    if (bodyText.length > text.length * 1.5) text = bodyText;
   }
 
   return { text: text, title: title, url: location.href };
@@ -715,6 +727,10 @@ async function evaluateActiveTab() {
 
   restricted = false;
   updateStatus();
+
+  // Wait until saved settings have loaded so a tab event during startup can't
+  // auto-read before we know whether the user disabled it.
+  if (!ready) return;
 
   // When auto-read is off, Sharon stays quiet: she never reads or sends page
   // text on her own. She'll only act when the user explicitly asks.
@@ -1047,12 +1063,29 @@ async function refreshShortcut() {
   if (els.shortcutValue) els.shortcutValue.textContent = label;
 }
 
+// While the sheet is open, make the rest of the panel inert so keyboard and
+// screen-reader users can't reach the controls hidden behind it.
+const backgroundEls = [
+  document.querySelector(".header"),
+  document.querySelector(".tab-card"),
+  document.querySelector(".conversation"),
+  document.querySelector(".mic-bar"),
+];
+function setBackgroundInert(on) {
+  for (const el of backgroundEls) {
+    if (!el) continue;
+    if (on) el.setAttribute("inert", "");
+    else el.removeAttribute("inert");
+  }
+}
+
 function openSettings() {
   applySettingsToUI();
   refreshShortcut();
   els.settings.hidden = false;
   els.settings.setAttribute("aria-hidden", "false");
   els.settingsBtn.setAttribute("aria-expanded", "true");
+  setBackgroundInert(true);
   els.settingsBack.focus();
 }
 
@@ -1060,6 +1093,7 @@ function closeSettings() {
   els.settings.hidden = true;
   els.settings.setAttribute("aria-hidden", "true");
   els.settingsBtn.setAttribute("aria-expanded", "false");
+  setBackgroundInert(false);
   els.settingsBtn.focus();
 }
 
@@ -1131,6 +1165,7 @@ if (chrome.tabs && chrome.tabs.onUpdated) {
   micBlocked = false;
   await ensureSessionId();
   await loadSettings(); // remembered settings survive closing & reopening
+  ready = true; // settings are in — auto-read may now proceed
   applySettingsToUI();
   updateStatus();
   startRecognition(); // mic is live the moment the panel opens
