@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Randy — Recast SE Assistant",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Voice assistant that listens during calls and answers Recast product questions on screen and aloud.",
   "action": {
     "default_title": "Randy — Recast SE Assistant",
