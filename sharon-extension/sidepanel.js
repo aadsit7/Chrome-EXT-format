@@ -18,7 +18,20 @@ const els = {
 
 // The default instruction Sharon sends when she starts reading on her own.
 const DEFAULT_INSTRUCTION =
-  "Read this page to me in a natural way I can listen to.";
+  "Here is the main content of a web page. First, give me a one or two " +
+  "sentence overview of what this page is about. Then read the important " +
+  "parts aloud in a natural, listenable way — skip navigation, ads, " +
+  "boilerplate, and anything repetitive. If it's a long article, focus on " +
+  "the main points rather than every word. Keep it conversational since I'm " +
+  "listening, not reading.";
+
+// When a page has almost nothing to read, ask for a short honest reply
+// instead of letting the model invent content.
+const SHORT_PAGE_CHARS = 200;
+const SHORT_PAGE_INSTRUCTION =
+  "This web page has very little readable content. In one or two short, " +
+  "honest sentences, tell me what little is here. Do not invent, expand, or " +
+  "pad with anything that isn't actually on the page.";
 
 // A tab is restricted only when its URL starts with one of these. Any normal
 // http:// or https:// website is ALWAYS readable.
@@ -181,6 +194,58 @@ function showTyping() {
   return div;
 }
 
+// Split Sharon's reply into a short opening overview ("lead") and the body, so
+// the summary can be shown at a glance above the rest.
+function splitLead(text) {
+  const t = (text || "").trim();
+  if (!t) return { lead: "", body: "" };
+
+  // Prefer an explicit paragraph break near the top.
+  let idx = t.search(/\n\s*\n/);
+  if (idx > 0 && idx < 400) {
+    const body = t.slice(idx).trim();
+    if (body) return { lead: t.slice(0, idx).trim(), body };
+  }
+
+  // Otherwise take the first sentence as the lead.
+  const m = t.match(/^([\s\S]+?[.!?])\s+([\s\S]+)$/);
+  if (m && m[1].length <= 300 && m[2].trim()) {
+    return { lead: m[1].trim(), body: m[2].trim() };
+  }
+
+  // Otherwise split on the first line break.
+  idx = t.indexOf("\n");
+  if (idx > 0 && idx < 300) {
+    const body = t.slice(idx).trim();
+    if (body) return { lead: t.slice(0, idx).trim(), body };
+  }
+
+  // Nothing to split (e.g. a short page) — show it as a single line.
+  return { lead: t, body: "" };
+}
+
+function addSharonBubble(text) {
+  clearWelcome();
+  const div = document.createElement("div");
+  div.className = "bubble sharon";
+  const { lead, body } = splitLead(text);
+  if (lead && body) {
+    const leadEl = document.createElement("p");
+    leadEl.className = "lead";
+    leadEl.textContent = lead;
+    const bodyEl = document.createElement("p");
+    bodyEl.className = "body-text";
+    bodyEl.textContent = body;
+    div.appendChild(leadEl);
+    div.appendChild(bodyEl);
+  } else {
+    div.textContent = text;
+  }
+  els.conversation.appendChild(div);
+  scrollToBottom();
+  return div;
+}
+
 /* ------------------------------------------------------------------ *
  * Active tab + page text extraction
  * ------------------------------------------------------------------ */
@@ -237,18 +302,122 @@ function extractPageText() {
       .replace(/[ \t]*\n[ \t]*/g, "\n")
       .trim();
   }
-  let text = "";
+
+  // Tags whose text is almost never the page's main content.
+  const EXCLUDE_TAGS = {
+    NAV: 1, HEADER: 1, FOOTER: 1, ASIDE: 1,
+    SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1,
+    SVG: 1, CANVAS: 1, FORM: 1, BUTTON: 1, INPUT: 1,
+    SELECT: 1, TEXTAREA: 1, LABEL: 1, IFRAME: 1,
+  };
+  // Tags that should introduce a line break in the reading order.
+  const BLOCK_TAGS = {
+    P: 1, DIV: 1, SECTION: 1, ARTICLE: 1, MAIN: 1, LI: 1, UL: 1, OL: 1,
+    H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, BLOCKQUOTE: 1, PRE: 1,
+    TABLE: 1, TR: 1, FIGURE: 1, FIGCAPTION: 1, DD: 1, DT: 1, DL: 1, HR: 1,
+  };
+  // Class / id / aria-label tokens that mark obvious boilerplate.
+  const BOILERPLATE =
+    /(^|[-_ ])(ads?|advert|advertisement|advertising|doubleclick|dfp|cookie|consent|gdpr|newsletter|subscribe|signup|sign-up|paywall|sponsored|promo|promotion|banner|related|recirc|recommended|recommendation|comments?|disqus|livefyre|share|sharing|social|breadcrumb|breadcrumbs|pagination|sidebar|popup|modal|overlay|cta|read-more|more-stories|trending|outbrain|taboola|navbar|navigation|menu|submenu|masthead|footer|topbar|skip-link|skip-to|widget|toolbar)([-_ ]|$)/i;
+  const SKIP_ROLES =
+    /^(navigation|banner|complementary|contentinfo|search|menu|menubar|tablist|dialog|alertdialog|toolbar)$/i;
+
+  function isHidden(el) {
+    let style;
+    try {
+      style = window.getComputedStyle(el);
+    } catch (_) {
+      return false;
+    }
+    if (!style) return false;
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      style.visibility === "collapse"
+    )
+      return true;
+    if (parseFloat(style.opacity) === 0) return true;
+    if (el.hidden) return true;
+    if (el.getAttribute && el.getAttribute("aria-hidden") === "true")
+      return true;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return true;
+    return false;
+  }
+
+  function shouldSkip(el) {
+    if (EXCLUDE_TAGS[el.tagName]) return true;
+    const role = (el.getAttribute && el.getAttribute("role")) || "";
+    if (role && SKIP_ROLES.test(role)) return true;
+    const id = el.id || "";
+    const cls = (el.getAttribute && el.getAttribute("class")) || "";
+    const aria = (el.getAttribute && el.getAttribute("aria-label")) || "";
+    if (BOILERPLATE.test(id + " " + cls + " " + aria)) return true;
+    if (isHidden(el)) return true;
+    return false;
+  }
+
+  // Walk the live DOM in document (top-to-bottom) order, collecting only the
+  // text that survives the filters above.
+  function gather(node) {
+    let out = "";
+    const kids = node.childNodes;
+    for (let i = 0; i < kids.length; i++) {
+      const child = kids[i];
+      if (child.nodeType === 3) {
+        out += child.nodeValue;
+      } else if (child.nodeType === 1) {
+        const tag = child.tagName;
+        if (tag === "BR") {
+          out += "\n";
+          continue;
+        }
+        if (shouldSkip(child)) continue;
+        const inner = gather(child);
+        if (BLOCK_TAGS[tag]) out += "\n" + inner + "\n";
+        else out += inner;
+      }
+    }
+    return out;
+  }
+
+  function metaContent(sel) {
+    const m = document.querySelector(sel);
+    const c = m && m.getAttribute && m.getAttribute("content");
+    return c ? c.trim() : "";
+  }
+
+  // Prefer the page's main content region; fall back to the body.
+  const main =
+    document.querySelector("article") ||
+    document.querySelector("main") ||
+    document.querySelector('[role="main"]') ||
+    document.body;
+
+  // Capture the headline / title separately.
+  const h1 =
+    (main && main.querySelector && main.querySelector("h1")) ||
+    document.querySelector("h1");
+  const title =
+    (h1 && h1.innerText && h1.innerText.trim()) ||
+    metaContent('meta[property="og:title"]') ||
+    (document.title || "").trim();
+
+  // If the user has selected text, honour that selection.
   const sel = window.getSelection ? window.getSelection().toString().trim() : "";
   if (sel) {
-    text = sel;
-  } else {
-    text = (document.body && document.body.innerText) || "";
+    return { text: collapse(sel), title: title, url: location.href };
   }
-  return {
-    text: collapse(text),
-    title: document.title || "",
-    url: location.href,
-  };
+
+  let text = collapse(main ? gather(main) : "");
+
+  // Safety fallback: if cleanup left almost nothing, send the full body text so
+  // a strangely-built page never ends up with nothing to read.
+  if (text.length < 200) {
+    text = collapse((document.body && document.body.innerText) || "");
+  }
+
+  return { text: text, title: title, url: location.href };
 }
 
 async function readPageContext() {
@@ -337,7 +506,10 @@ async function askSharon(question, ctx, signal) {
 /* ------------------------------------------------------------------ *
  * The send path — shared by auto-read and spoken instructions
  * ------------------------------------------------------------------ */
-async function sendInstruction(instruction, { remember = false } = {}) {
+async function sendInstruction(
+  instruction,
+  { remember = false, defaultRead = false } = {}
+) {
   instruction = (instruction || "").trim();
   if (!instruction) return;
 
@@ -365,9 +537,16 @@ async function sendInstruction(instruction, { remember = false } = {}) {
   }
   if (remember) lastUserInstruction = instruction;
 
+  // Don't break short pages: when reading automatically and there's barely
+  // anything to read, ask for a brief honest reply instead of the full read.
+  let prompt = instruction;
+  if (defaultRead && (ctx.text || "").trim().length < SHORT_PAGE_CHARS) {
+    prompt = SHORT_PAGE_INSTRUCTION;
+  }
+
   const typing = showTyping();
   try {
-    const data = await askSharon(instruction, ctx, ac.signal);
+    const data = await askSharon(prompt, ctx, ac.signal);
     if (ac.signal.aborted) {
       typing.remove();
       return;
@@ -375,7 +554,7 @@ async function sendInstruction(instruction, { remember = false } = {}) {
     typing.remove();
 
     if (data && data.ok) {
-      const bubble = addBubble("sharon", data.reply || "(no reply)");
+      const bubble = addSharonBubble(data.reply || "(no reply)");
       addSources(bubble, data.sources);
       if (data.reply) speakText(data.reply);
     } else {
@@ -431,7 +610,8 @@ async function evaluateActiveTab() {
 async function autoRead() {
   stopSpeaking();
   // Use the user's last spoken instruction if there is one; otherwise default.
-  await sendInstruction(lastUserInstruction || DEFAULT_INSTRUCTION);
+  const custom = lastUserInstruction;
+  await sendInstruction(custom || DEFAULT_INSTRUCTION, { defaultRead: !custom });
 }
 
 /* ------------------------------------------------------------------ *
