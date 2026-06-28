@@ -22,6 +22,10 @@ html[data-state="reading"] {
   --accent: var(--blue);
   --accent-soft: rgba(79, 123, 240, 0.12);
 }
+html[data-state="muted"] {
+  --accent: var(--muted);
+  --accent-soft: rgba(113, 119, 139, 0.12);
+}
 
 * {
   box-sizing: border-box;
@@ -142,72 +146,6 @@ html[data-state="reading"] .orb-pulse {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* ---------- Chips ---------- */
-.chips {
-  display: flex;
-  gap: 8px;
-}
-
-.chip {
-  flex: 1;
-  text-align: center;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 6px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--card);
-  color: var(--muted);
-  transition: background 0.18s, color 0.18s, border-color 0.18s;
-}
-
-html[data-state="idle"] .chip-ready {
-  background: var(--accent-soft);
-  border-color: var(--ink);
-  color: var(--ink);
-}
-html[data-state="listening"] .chip-listening {
-  background: rgba(255, 106, 90, 0.14);
-  border-color: var(--coral);
-  color: var(--coral);
-}
-html[data-state="reading"] .chip-reading {
-  background: rgba(79, 123, 240, 0.14);
-  border-color: var(--blue);
-  color: var(--blue);
-}
-
-/* ---------- Read this page ---------- */
-.read-page-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 11px;
-  border: none;
-  border-radius: 14px;
-  background: var(--coral);
-  color: #fff;
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: 0 4px 12px rgba(255, 106, 90, 0.3);
-  transition: filter 0.15s, transform 0.05s;
-}
-.read-page-btn:hover {
-  filter: brightness(1.04);
-}
-.read-page-btn:active {
-  transform: translateY(1px);
-}
-.read-page-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-  box-shadow: none;
 }
 
 /* ---------- Conversation ---------- */
@@ -334,139 +272,30 @@ html[data-state="reading"] .chip-reading {
   text-decoration: underline;
 }
 
-/* ---------- Dock ---------- */
-.dock {
+/* ---------- Microphone (the single control) ---------- */
+.mic-bar {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 8px 10px;
-}
-
-.wave {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  height: 22px;
-}
-.wave span {
-  width: 3px;
-  height: 6px;
-  border-radius: 2px;
-  background: var(--blue);
-}
-html[data-state="reading"] .wave span {
-  animation: wave 0.9s ease-in-out infinite;
-}
-.wave span:nth-child(2) {
-  animation-delay: 0.12s;
-}
-.wave span:nth-child(3) {
-  animation-delay: 0.24s;
-}
-.wave span:nth-child(4) {
-  animation-delay: 0.36s;
-}
-.wave span:nth-child(5) {
-  animation-delay: 0.48s;
-}
-@keyframes wave {
-  0%,
-  100% {
-    height: 6px;
-  }
-  50% {
-    height: 20px;
-  }
-}
-
-.dock-controls {
-  display: flex;
-  gap: 4px;
-}
-.dock-btn {
-  display: flex;
-  align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--ink);
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.dock-btn:hover {
-  background: #eef0f6;
-}
-.dock-label {
-  font-size: 12px;
-  color: var(--muted);
-  margin-left: auto;
-}
-
-/* ---------- Composer ---------- */
-.composer {
-  display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.composer-input {
-  flex: 1;
-  min-width: 0;
-  padding: 11px 14px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--card);
-  font-family: inherit;
-  font-size: 13.5px;
-  color: var(--ink);
-}
-.composer-input::placeholder {
-  color: var(--muted);
-}
-.composer-input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.send-btn {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: 1px solid var(--line);
-  background: var(--card);
-  color: var(--ink);
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.send-btn:hover {
-  background: #eef0f6;
+  padding: 6px 0 4px;
 }
 
 .mic-btn {
+  position: relative;
   flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 48px;
-  height: 48px;
+  width: 72px;
+  height: 72px;
   border-radius: 50%;
   border: none;
+  cursor: pointer;
   background: var(--coral);
   color: #fff;
-  cursor: pointer;
-  box-shadow: 0 4px 12px rgba(255, 106, 90, 0.3);
-  transition: filter 0.15s, transform 0.05s;
+  box-shadow: 0 6px 18px rgba(255, 106, 90, 0.35);
+  transition: filter 0.15s, transform 0.06s, background 0.2s, color 0.2s,
+    box-shadow 0.2s;
 }
 .mic-btn:hover {
   filter: brightness(1.05);
@@ -474,22 +303,46 @@ html[data-state="reading"] .wave span {
 .mic-btn:active {
   transform: scale(0.96);
 }
-.mic-btn.active {
-  animation: micpulse 1.2s ease-in-out infinite;
+
+/* Live — active coral mic with a soft pulse */
+html[data-mic="live"] .mic-btn {
+  background: var(--coral);
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(255, 106, 90, 0.35);
+  animation: micpulse 1.8s ease-in-out infinite;
 }
+
+/* Muted — slashed grey mic, no pulse */
+html[data-mic="muted"] .mic-btn {
+  background: #e7e9f0;
+  color: var(--muted);
+  box-shadow: none;
+  animation: none;
+}
+
+.mic-slash {
+  position: absolute;
+  width: 46px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--muted);
+  transform: rotate(-45deg);
+  display: none;
+}
+html[data-mic="muted"] .mic-slash {
+  display: block;
+}
+
 @keyframes micpulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(255, 106, 90, 0.5);
+    box-shadow: 0 6px 18px rgba(255, 106, 90, 0.35),
+      0 0 0 0 rgba(255, 106, 90, 0.5);
   }
   50% {
-    box-shadow: 0 0 0 9px rgba(255, 106, 90, 0);
+    box-shadow: 0 6px 18px rgba(255, 106, 90, 0.35),
+      0 0 0 12px rgba(255, 106, 90, 0);
   }
-}
-.mic-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  box-shadow: none;
 }
 
 /* ---------- Focus rings ---------- */
@@ -497,7 +350,7 @@ button:focus-visible,
 input:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: 3px;
 }
 
 /* ---------- Reduced motion ---------- */

@@ -1,4 +1,5 @@
-// sidepanel.js — Sharon's brains: read the page, talk, listen, speak.
+// sidepanel.js — Sharon's brains: follow the active tab, read it aloud,
+// and let the user talk to her at any time through one microphone.
 
 import { PROXY_URL, MAX_PAGE_TEXT } from "./config.js";
 
@@ -10,47 +11,89 @@ const els = {
   status: document.getElementById("status"),
   tabTitle: document.getElementById("tabTitle"),
   tabSite: document.getElementById("tabSite"),
-  readPageBtn: document.getElementById("readPageBtn"),
   conversation: document.getElementById("conversation"),
   welcome: document.getElementById("welcome"),
-  dock: document.getElementById("dock"),
-  playBtn: document.getElementById("playBtn"),
-  pauseBtn: document.getElementById("pauseBtn"),
-  stopBtn: document.getElementById("stopBtn"),
-  dockLabel: document.getElementById("dockLabel"),
-  composer: document.getElementById("composer"),
-  textInput: document.getElementById("textInput"),
-  sendBtn: document.getElementById("sendBtn"),
   micBtn: document.getElementById("micBtn"),
 };
 
+// The default instruction Sharon sends when she starts reading on her own.
+const DEFAULT_INSTRUCTION =
+  "Read this page to me in a natural way I can listen to.";
+
+// A tab is restricted only when its URL starts with one of these. Any normal
+// http:// or https:// website is ALWAYS readable.
 const RESTRICTED_PREFIXES = [
   "chrome://",
   "edge://",
   "about:",
   "chrome-extension://",
-  "moz-extension://",
   "devtools://",
-  "view-source:",
 ];
-const RESTRICTED_HOSTS = [
-  "chromewebstore.google.com",
-  "chrome.google.com", // legacy web store host
-  "microsoftedge.microsoft.com",
-];
-
-let sessionId = null;
-let busy = false; // a request is in flight
 
 /* ------------------------------------------------------------------ *
- * State management — drives the accent colour and chips
+ * Runtime state
  * ------------------------------------------------------------------ */
-function setState(state) {
-  // state: "idle" | "listening" | "reading"
-  els.html.setAttribute("data-state", state);
-}
+let sessionId = null;
+let busy = false; // a proxy request is in flight
+let restricted = true; // no readable page in view yet
+let lastReadKey = null; // tabId::url we last started reading
+let lastUserInstruction = null; // the most recent spoken instruction (if any)
+let abortController = null; // cancels an in-flight proxy request
+let evalSeq = 0; // guards against out-of-order tab evaluations
+
+// Speech synthesis (reading aloud)
+const synth = window.speechSynthesis;
+let currentUtterance = null;
+let currentSpokenText = ""; // what Sharon is reading right now (echo filter)
+let speaking = false;
+let paused = false;
+
+// Speech recognition (listening)
+const SpeechRecognition =
+  window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let recognizing = false;
+let micMuted = false; // user toggled mute
+let micBlocked = false; // browser denied mic access
+let interimBubble = null;
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* ------------------------------------------------------------------ *
+ * Status + state — single source of truth for the header + accent
+ * ------------------------------------------------------------------ */
 function setStatus(text) {
   els.status.textContent = text;
+}
+
+function updateStatus() {
+  els.html.setAttribute("data-mic", micMuted ? "muted" : "live");
+  els.micBtn.setAttribute("aria-pressed", String(!micMuted));
+  els.micBtn.title = micMuted ? "Unmute microphone" : "Mute microphone";
+  els.micBtn.setAttribute(
+    "aria-label",
+    micMuted ? "Unmute microphone" : "Mute microphone"
+  );
+
+  let state, text;
+  if (restricted) {
+    state = "idle";
+    text = "Open a website and I'll start reading";
+  } else if (paused) {
+    state = "reading";
+    text = "Paused";
+  } else if (speaking) {
+    state = "reading";
+    text = "Reading…";
+  } else if (micMuted) {
+    state = "muted";
+    text = "Muted";
+  } else {
+    state = "listening";
+    text = "Listening…";
+  }
+  els.html.setAttribute("data-state", state);
+  setStatus(text);
 }
 
 /* ------------------------------------------------------------------ *
@@ -95,7 +138,8 @@ function addBubble(role, text, { interim = false } = {}) {
   clearWelcome();
   const div = document.createElement("div");
   div.className =
-    "bubble " + (role === "user" ? "user" : role === "error" ? "error" : "sharon");
+    "bubble " +
+    (role === "user" ? "user" : role === "error" ? "error" : "sharon");
   if (interim) div.classList.add("interim");
   div.textContent = text;
   els.conversation.appendChild(div);
@@ -141,23 +185,46 @@ function showTyping() {
  * Active tab + page text extraction
  * ------------------------------------------------------------------ */
 async function getActiveTab() {
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
-  return tab || null;
+  try {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    return tab || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Get the active tab, but if its URL hasn't resolved yet (empty/undefined),
+// wait briefly and re-check rather than assuming the page is protected. A real
+// http/https page resolves quickly; a genuinely restricted page stays blank.
+async function getActiveTabReady() {
+  let tab = await getActiveTab();
+  for (let i = 0; i < 6 && (!tab || !tab.url); i++) {
+    await delay(180);
+    tab = await getActiveTab();
+  }
+  return tab;
 }
 
 function isRestricted(url) {
-  if (!url) return true;
+  if (!url) return true; // only reached after we've waited and re-checked
   const lower = url.toLowerCase();
   if (RESTRICTED_PREFIXES.some((p) => lower.startsWith(p))) return true;
+  let u;
   try {
-    const host = new URL(url).hostname;
-    if (RESTRICTED_HOSTS.includes(host)) return true;
+    u = new URL(url);
   } catch (_) {
     return true;
   }
+  const host = u.hostname.toLowerCase();
+  const path = u.pathname.toLowerCase();
+  // The Chrome / Edge web store.
+  if (host === "chromewebstore.google.com") return true;
+  if (host === "chrome.google.com" && path.startsWith("/webstore")) return true;
+  if (host === "microsoftedge.microsoft.com" && path.startsWith("/addons"))
+    return true;
   return false;
 }
 
@@ -186,15 +253,8 @@ function extractPageText() {
 
 async function readPageContext() {
   const tab = await getActiveTab();
-  if (!tab || !tab.id) {
-    return { error: "I can't find an active tab right now." };
-  }
-  if (isRestricted(tab.url)) {
-    return {
-      restricted: true,
-      error:
-        "I can't read this kind of page — open me on a normal website and I'll read it for you.",
-    };
+  if (!tab || !tab.id || isRestricted(tab.url)) {
+    return { restricted: true };
   }
   try {
     const [injection] = await chrome.scripting.executeScript({
@@ -210,29 +270,26 @@ async function readPageContext() {
       url: result.url || tab.url || "",
     };
   } catch (e) {
-    return {
-      restricted: true,
-      error:
-        "I can't read this kind of page — open me on a normal website and I'll read it for you.",
-    };
+    // Couldn't inject (e.g. an unexpected internal page) — treat calmly.
+    return { restricted: true };
   }
 }
 
 /* ------------------------------------------------------------------ *
  * Tab card — keep it current
  * ------------------------------------------------------------------ */
-async function refreshTabCard() {
-  const tab = await getActiveTab();
+function refreshTabCard(tab) {
   if (!tab) {
     els.tabTitle.textContent = "No active tab";
     els.tabSite.textContent = "—";
     return;
   }
-  els.tabTitle.textContent = tab.title || "Untitled page";
   if (isRestricted(tab.url)) {
-    els.tabSite.textContent = "A protected browser page";
+    els.tabTitle.textContent = tab.title || "A browser page";
+    els.tabSite.textContent = "Open a website and I'll start reading";
     return;
   }
+  els.tabTitle.textContent = tab.title || "This page";
   try {
     els.tabSite.textContent = new URL(tab.url).hostname.replace(/^www\./, "");
   } catch (_) {
@@ -242,8 +299,12 @@ async function refreshTabCard() {
 
 /* ------------------------------------------------------------------ *
  * Talking to the proxy
+ *
+ * IMPORTANT: keep this networking EXACTLY as is — text/plain (no CORS
+ * preflight that Apps Script can't answer), the same body shape, and no API
+ * key anywhere. Do NOT switch to application/json or add headers.
  * ------------------------------------------------------------------ */
-async function askSharon(question, ctx) {
+async function askSharon(question, ctx, signal) {
   const id = await ensureSessionId();
   const body = {
     action: "chat",
@@ -254,12 +315,11 @@ async function askSharon(question, ctx) {
     session_id: id,
   };
 
-  // IMPORTANT: text/plain avoids the CORS preflight that Apps Script can't
-  // answer. Do NOT switch this to application/json and add no other headers.
   const res = await fetch(PROXY_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=UTF-8" },
     body: JSON.stringify(body),
+    signal,
   });
 
   const raw = await res.text();
@@ -275,49 +335,57 @@ async function askSharon(question, ctx) {
 }
 
 /* ------------------------------------------------------------------ *
- * The main send path — shared by Read-page, voice, and typed input
+ * The send path — shared by auto-read and spoken instructions
  * ------------------------------------------------------------------ */
-async function handleQuestion(question, { speak = true } = {}) {
-  if (busy) return;
-  question = (question || "").trim();
-  if (!question) return;
+async function sendInstruction(instruction, { remember = false } = {}) {
+  instruction = (instruction || "").trim();
+  if (!instruction) return;
 
+  // Cancel anything already in flight — the newest request wins.
+  if (abortController) {
+    try {
+      abortController.abort();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  const ac = new AbortController();
+  abortController = ac;
   busy = true;
-  setBusyUI(true);
-  setStatus("Reading the page…");
 
   const ctx = await readPageContext();
-  if (ctx.restricted || (ctx.error && !ctx.text)) {
-    addBubble("error", ctx.error);
-    setStatus("Ready when you are.");
-    setState("idle");
+  if (ac.signal.aborted) return;
+  if (ctx.restricted) {
+    // Not an error — just nothing to read here.
+    restricted = true;
     busy = false;
-    setBusyUI(false);
+    if (abortController === ac) abortController = null;
+    updateStatus();
     return;
   }
+  if (remember) lastUserInstruction = instruction;
 
-  setStatus("Sharon is thinking…");
   const typing = showTyping();
-
   try {
-    const data = await askSharon(question, ctx);
+    const data = await askSharon(instruction, ctx, ac.signal);
+    if (ac.signal.aborted) {
+      typing.remove();
+      return;
+    }
     typing.remove();
 
     if (data && data.ok) {
       const bubble = addBubble("sharon", data.reply || "(no reply)");
       addSources(bubble, data.sources);
-      setStatus("Here's what I found.");
-      if (speak && data.reply) speakText(data.reply);
-      else setState("idle");
+      if (data.reply) speakText(data.reply);
     } else {
       const msg =
         (data && data.error) || "something went wrong with that request.";
       addBubble("error", "Sharon hit a snag: " + msg);
-      setStatus("Ready when you are.");
-      setState("idle");
     }
   } catch (err) {
     typing.remove();
+    if (err && err.name === "AbortError") return;
     addBubble(
       "error",
       "Sharon hit a snag: " +
@@ -325,51 +393,67 @@ async function handleQuestion(question, { speak = true } = {}) {
           ? err.message
           : "I couldn't reach the server. Check your connection and try again.")
     );
-    setStatus("Ready when you are.");
-    setState("idle");
   } finally {
-    busy = false;
-    setBusyUI(false);
+    if (abortController === ac) {
+      busy = false;
+      abortController = null;
+    }
+    updateStatus();
   }
 }
 
-function setBusyUI(isBusy) {
-  els.readPageBtn.disabled = isBusy;
-  els.sendBtn.disabled = isBusy;
+/* ------------------------------------------------------------------ *
+ * Auto-read: whenever a readable tab becomes active, start reading it.
+ * ------------------------------------------------------------------ */
+async function evaluateActiveTab() {
+  const seq = ++evalSeq;
+  const tab = await getActiveTabReady();
+  if (seq !== evalSeq) return; // a newer evaluation superseded this one
+
+  refreshTabCard(tab);
+
+  if (!tab || isRestricted(tab.url)) {
+    restricted = true;
+    lastReadKey = null;
+    stopSpeaking(); // we've left the page she was reading
+    updateStatus();
+    return;
+  }
+
+  restricted = false;
+  updateStatus();
+  const key = tab.id + "::" + tab.url;
+  if (key === lastReadKey) return; // already reading / read this exact page
+  lastReadKey = key;
+  autoRead();
+}
+
+async function autoRead() {
+  stopSpeaking();
+  // Use the user's last spoken instruction if there is one; otherwise default.
+  await sendInstruction(lastUserInstruction || DEFAULT_INSTRUCTION);
 }
 
 /* ------------------------------------------------------------------ *
- * Speech synthesis (reading aloud) with play / pause / stop
+ * Speech synthesis (reading aloud)
  * ------------------------------------------------------------------ */
-const synth = window.speechSynthesis;
-let currentUtterance = null;
-
 function pickEnglishVoice() {
   if (!synth) return null;
   const voices = synth.getVoices() || [];
   if (!voices.length) return null;
   return (
-    voices.find((v) => /^en[-_]US/i.test(v.lang) && /female|Samantha|Google US/i.test(v.name)) ||
+    voices.find(
+      (v) =>
+        /^en[-_]US/i.test(v.lang) && /female|Samantha|Google US/i.test(v.name)
+    ) ||
     voices.find((v) => /^en[-_]US/i.test(v.lang)) ||
     voices.find((v) => /^en/i.test(v.lang)) ||
     voices[0]
   );
 }
 
-function showDock(label) {
-  els.dock.hidden = false;
-  els.dockLabel.textContent = label;
-}
-function hideDock() {
-  els.dock.hidden = true;
-}
-
 function speakText(text) {
-  if (!synth) {
-    // No speech support — just leave the answer on screen.
-    setState("idle");
-    return;
-  }
+  if (!synth) return; // no speech support — leave the answer on screen
   synth.cancel();
   const utt = new SpeechSynthesisUtterance(text);
   const voice = pickEnglishVoice();
@@ -383,27 +467,58 @@ function speakText(text) {
   utt.pitch = 1;
 
   utt.onstart = () => {
-    setState("reading");
-    showDock("Reading aloud…");
+    speaking = true;
+    paused = false;
+    updateStatus();
   };
   utt.onresume = () => {
-    setState("reading");
-    showDock("Reading aloud…");
+    paused = false;
+    updateStatus();
   };
   utt.onpause = () => {
-    showDock("Paused");
+    paused = true;
+    updateStatus();
   };
   const finish = () => {
-    setState("idle");
-    setStatus("Ready when you are.");
-    hideDock();
+    speaking = false;
+    paused = false;
     currentUtterance = null;
+    currentSpokenText = "";
+    updateStatus();
   };
   utt.onend = finish;
   utt.onerror = finish;
 
   currentUtterance = utt;
+  currentSpokenText = text;
+  speaking = true; // set now so the echo filter is active immediately
+  paused = false;
   synth.speak(utt);
+  updateStatus();
+}
+
+function stopSpeaking() {
+  if (synth) synth.cancel();
+  speaking = false;
+  paused = false;
+  currentUtterance = null;
+  currentSpokenText = "";
+}
+
+function pauseSpeaking() {
+  if (synth && synth.speaking && !synth.paused) {
+    synth.pause();
+    paused = true;
+    updateStatus();
+  }
+}
+
+function resumeSpeaking() {
+  if (synth && synth.paused) {
+    synth.resume();
+    paused = false;
+    updateStatus();
+  }
 }
 
 // Voices can load asynchronously; warm them up.
@@ -411,48 +526,81 @@ if (synth) {
   synth.onvoiceschanged = () => pickEnglishVoice();
 }
 
-els.playBtn.addEventListener("click", () => {
-  if (!synth) return;
-  if (synth.paused) {
-    synth.resume();
-  } else if (!synth.speaking && currentUtterance) {
-    // Re-speak the last answer from the top.
-    speakText(currentUtterance.text);
-  }
-});
-els.pauseBtn.addEventListener("click", () => {
-  if (synth && synth.speaking && !synth.paused) synth.pause();
-});
-els.stopBtn.addEventListener("click", () => {
-  if (synth) synth.cancel();
-  setState("idle");
-  setStatus("Ready when you are.");
-  hideDock();
-});
+/* ------------------------------------------------------------------ *
+ * Echo filter — ignore the mic transcribing Sharon's own voice
+ * ------------------------------------------------------------------ */
+function normalize(s) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isEchoOfSpeech(phrase) {
+  if (!speaking || !currentSpokenText) return false;
+  const p = normalize(phrase);
+  if (!p) return true;
+  const full = normalize(currentSpokenText);
+  if (!full) return false;
+  if (full.includes(p)) return true; // a contiguous chunk of what she's saying
+  // Otherwise, if most of the words are words she's currently reading, it's echo.
+  const words = p.split(" ");
+  const matched = words.filter((w) => full.includes(w)).length;
+  return matched / words.length >= 0.6;
+}
 
 /* ------------------------------------------------------------------ *
- * Speech recognition (listening)
+ * Acting on what the user said
  * ------------------------------------------------------------------ */
-const SpeechRecognition =
-  window.SpeechRecognition || window.webkitSpeechRecognition;
-let recognition = null;
-let listening = false;
-let interimBubble = null;
+function handleUserUtterance(text) {
+  text = (text || "").trim();
+  if (!text) return;
+  // While Sharon is talking, ignore the mic echoing her own voice.
+  if (speaking && isEchoOfSpeech(text)) return;
 
-function initRecognition() {
+  const cmd = text
+    .toLowerCase()
+    .replace(/[.!?,]+$/g, "")
+    .trim();
+
+  if (cmd === "stop" || cmd === "stop reading" || cmd === "be quiet" || cmd === "quiet") {
+    addBubble("user", text);
+    stopSpeaking();
+    updateStatus();
+    return;
+  }
+  if (cmd === "pause") {
+    addBubble("user", text);
+    pauseSpeaking();
+    return;
+  }
+  if (cmd === "resume" || cmd === "continue" || cmd === "keep going") {
+    addBubble("user", text);
+    resumeSpeaking();
+    return;
+  }
+
+  // Anything else is an instruction about what to read or focus on.
+  addBubble("user", text);
+  if (speaking) stopSpeaking(); // barge-in: pause the reading first
+  sendInstruction(text, { remember: true });
+}
+
+/* ------------------------------------------------------------------ *
+ * Speech recognition (listening) — continuous while the mic is live
+ * ------------------------------------------------------------------ */
+function ensureRecognition() {
+  if (recognition) return recognition;
   if (!SpeechRecognition) return null;
   const rec = new SpeechRecognition();
   rec.lang = "en-US";
   rec.interimResults = true;
-  rec.continuous = false;
+  rec.continuous = true;
   rec.maxAlternatives = 1;
 
   rec.onstart = () => {
-    listening = true;
-    setState("listening");
-    setStatus("Listening… speak now.");
-    els.micBtn.classList.add("active");
-    interimBubble = null;
+    recognizing = true;
   };
 
   rec.onresult = (event) => {
@@ -463,129 +611,141 @@ function initRecognition() {
       if (event.results[i].isFinal) final += transcript;
       else interim += transcript;
     }
-    const shown = (final || interim).trim();
-    if (shown) {
+
+    const show = interim.trim();
+    if (show && !(speaking && isEchoOfSpeech(show))) {
       if (!interimBubble) {
-        interimBubble = addBubble("user", shown, { interim: true });
+        interimBubble = addBubble("user", show, { interim: true });
       } else {
-        interimBubble.textContent = shown;
+        interimBubble.textContent = show;
         scrollToBottom();
       }
     }
+
     if (final.trim()) {
       const text = final.trim();
       if (interimBubble) {
-        interimBubble.textContent = text;
-        interimBubble.classList.remove("interim");
+        interimBubble.remove();
         interimBubble = null;
       }
-      // Finalised: ask Sharon.
-      stopListening();
-      handleQuestion(text, { speak: true });
+      handleUserUtterance(text);
     }
   };
 
   rec.onerror = (event) => {
-    listening = false;
-    els.micBtn.classList.remove("active");
+    recognizing = false;
     if (interimBubble) {
       interimBubble.remove();
       interimBubble = null;
     }
-    setState("idle");
-    if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+    if (
+      event.error === "not-allowed" ||
+      event.error === "service-not-allowed"
+    ) {
+      micBlocked = true;
+      micMuted = true;
       addBubble(
         "error",
-        "I couldn't access the microphone. Check the browser's mic permission, or just type your question below."
+        "I couldn't access the microphone. Check the browser's mic permission, then tap the mic to try again. I'll keep reading pages in the meantime."
       );
-      setStatus("Mic blocked — type instead.");
-    } else if (event.error === "no-speech") {
-      setStatus("I didn't catch that. Try again.");
-    } else {
-      setStatus("Ready when you are.");
+      updateStatus();
     }
+    // Other errors (no-speech, network, aborted) are handled by onend's restart.
   };
 
   rec.onend = () => {
-    listening = false;
-    els.micBtn.classList.remove("active");
-    if (els.html.getAttribute("data-state") === "listening") setState("idle");
+    recognizing = false;
+    if (interimBubble) {
+      interimBubble.remove();
+      interimBubble = null;
+    }
+    // Keep recognition alive while the mic is live.
+    if (!micMuted && !micBlocked) {
+      setTimeout(() => {
+        if (!micMuted && !micBlocked) startRecognition();
+      }, 250);
+    }
   };
 
+  recognition = rec;
   return rec;
 }
 
-function startListening() {
+function startRecognition() {
+  if (micMuted || micBlocked) return;
+  const rec = ensureRecognition();
+  if (!rec || recognizing) return;
+  try {
+    rec.start();
+    recognizing = true;
+  } catch (_) {
+    // start() throws if it's already running; ignore.
+  }
+}
+
+function stopRecognition() {
+  if (!recognition) return;
+  try {
+    recognition.stop();
+  } catch (_) {
+    /* ignore */
+  }
+  recognizing = false;
+  if (interimBubble) {
+    interimBubble.remove();
+    interimBubble = null;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * The microphone button — the single control (mute / unmute)
+ * ------------------------------------------------------------------ */
+els.micBtn.addEventListener("click", () => {
   if (!SpeechRecognition) {
     addBubble(
       "error",
-      "Voice input isn't available in this browser. You can type your question below instead."
+      "Voice input isn't available in this browser, but I'll still read pages aloud automatically."
     );
     return;
   }
-  if (busy) return;
-  if (synth) synth.cancel(); // don't talk over the user
-  hideDock();
-  if (!recognition) recognition = initRecognition();
-  try {
-    recognition.start();
-  } catch (_) {
-    // start() throws if already started; ignore.
+  if (micBlocked) {
+    // Let the user retry granting permission.
+    micBlocked = false;
+    micMuted = false;
+    startRecognition();
+    updateStatus();
+    return;
   }
-}
-
-function stopListening() {
-  if (recognition && listening) {
-    try {
-      recognition.stop();
-    } catch (_) {
-      /* ignore */
-    }
-  }
-}
-
-els.micBtn.addEventListener("click", () => {
-  if (listening) stopListening();
-  else startListening();
+  micMuted = !micMuted;
+  if (micMuted) stopRecognition();
+  else startRecognition();
+  updateStatus();
 });
 
 if (!SpeechRecognition) {
-  els.micBtn.title = "Voice input not supported — type instead";
+  els.micBtn.title = "Voice input not supported";
 }
 
 /* ------------------------------------------------------------------ *
- * Buttons & form wiring
- * ------------------------------------------------------------------ */
-els.readPageBtn.addEventListener("click", () => {
-  handleQuestion("Please read and summarize this page for me.", { speak: true });
-});
-
-els.composer.addEventListener("submit", (e) => {
-  e.preventDefault();
-  const text = els.textInput.value.trim();
-  if (!text) return;
-  els.textInput.value = "";
-  addBubble("user", text);
-  handleQuestion(text, { speak: true });
-});
-
-/* ------------------------------------------------------------------ *
- * Keep the tab card fresh as the user moves around
+ * Follow the user as they switch tabs / pages
  * ------------------------------------------------------------------ */
 if (chrome.tabs && chrome.tabs.onActivated) {
-  chrome.tabs.onActivated.addListener(refreshTabCard);
+  chrome.tabs.onActivated.addListener(() => evaluateActiveTab());
 }
 if (chrome.tabs && chrome.tabs.onUpdated) {
-  chrome.tabs.onUpdated.addListener((_id, info) => {
-    if (info.status === "complete" || info.title) refreshTabCard();
+  chrome.tabs.onUpdated.addListener((_tabId, info, tab) => {
+    if (info.status === "complete" && tab && tab.active) evaluateActiveTab();
   });
 }
 
 /* ------------------------------------------------------------------ *
- * Boot
+ * Boot — the panel is activated: mic goes LIVE and reading starts.
  * ------------------------------------------------------------------ */
 (async function init() {
-  setState("idle");
+  micMuted = false;
+  micBlocked = false;
   await ensureSessionId();
-  await refreshTabCard();
+  updateStatus();
+  startRecognition(); // mic is live the moment the panel opens
+  evaluateActiveTab(); // start reading if we're on a readable page
 })();

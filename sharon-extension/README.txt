@@ -1,10 +1,11 @@
 Sharon — a voice assistant for your browser side panel
 ======================================================
 
-Sharon reads the page you're on, listens to your questions, answers them,
-and reads the answers back to you out loud. She works in both Google Chrome
-and Microsoft Edge. There is no API key inside the extension — Sharon sends
-your question and the page text to a server that does the AI part.
+Sharon reads the web page you're on out loud, all on her own, and listens for
+your voice the whole time so you can talk to her hands-free. She works in both
+Google Chrome and Microsoft Edge. There is no API key inside the extension —
+Sharon sends the page text and your spoken instructions to a server that does
+the AI part.
 
 
 How to load Sharon (for first-timers)
@@ -25,22 +26,31 @@ How to test her
 ---------------
 1. Open a normal article or web page (not a browser settings page).
 2. Click the Sharon icon in your toolbar — her panel slides out on the side.
-3. Click "Read this page". Sharon summarizes the page and reads it aloud.
-4. Click the round coral microphone button and ask, out loud,
-   "What is this page about?" Your words appear in the conversation and
-   Sharon answers and reads the answer aloud.
-5. Or just type a question in the box at the bottom and press the send arrow.
-6. While she's reading, use the play / pause / stop buttons to control the
-   voice.
-7. Try her on a protected page like  chrome://settings  — she'll politely
-   tell you she can't read that kind of page instead of breaking.
+   The first time, your browser may ask for microphone permission — click
+   Allow. (If you don't, Sharon will still read pages; she just won't hear you.)
+3. Sharon starts reading the page aloud on her own. You don't press anything.
+4. Switch to another article tab — Sharon follows you and starts reading the
+   new page automatically.
+5. While she's reading, just talk:
+     - Say "stop" to stop reading.
+     - Say "pause" and "resume" to control the voice.
+     - Say anything else, like "just give me the key points" or "what does it
+       say about pricing?", and she'll pause, take your instruction, and read
+       you the answer.
+6. The big microphone at the bottom is the only control. Tap it to mute
+   (it turns grey with a slash and stops listening); tap again to go live
+   (coral with a soft pulse). When muted, Sharon just reads and ignores you.
+7. Open a protected page like  chrome://settings  — instead of breaking, she
+   shows a calm "Open a website and I'll start reading" line and begins again
+   the moment you switch to a real website.
 
 
 Notes
 -----
-- Sharon only reads a page after you click. Nothing is sent before that.
-- The microphone uses your browser's built-in speech recognition. The first
-  time, your browser may ask for microphone permission — click Allow.
-  If voice isn't available, just type your question instead.
+- A normal http:// or https:// website is always readable. Only true browser
+  pages (chrome://, edge://, about:, extension pages, devtools) and the web
+  store are treated as "nothing to read".
+- The microphone uses your browser's built-in speech recognition. While Sharon
+  is talking she ignores her own voice, so only your interruptions count.
 - If you ever see "Sharon hit a snag…", it just means the server reported a
-  problem; try again in a moment.
+  problem; switch tabs or speak again in a moment.
