@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-state="idle">
+<html lang="en" data-state="idle" data-mic="muted">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -21,7 +21,7 @@
         </div>
         <div class="header-text">
           <h1 class="brand">Sharon</h1>
-          <p class="status" id="status">Ready when you are.</p>
+          <p class="status" id="status" aria-live="polite">Open a website and I'll start reading</p>
         </div>
       </header>
 
@@ -32,75 +32,36 @@
         <p class="tab-site" id="tabSite">—</p>
       </section>
 
-      <!-- State chips -->
-      <div class="chips" role="status" aria-live="polite">
-        <span class="chip chip-ready" data-chip="idle">Ready</span>
-        <span class="chip chip-listening" data-chip="listening">Listening</span>
-        <span class="chip chip-reading" data-chip="reading">Reading</span>
-      </div>
-
-      <!-- Primary action -->
-      <button class="read-page-btn" id="readPageBtn" type="button">
-        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-          <path
-            fill="currentColor"
-            d="M6 4h9l5 5v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm8 1.5V9h3.5L14 5.5zM8 12h8v1.6H8V12zm0 3h8v1.6H8V15z"
-          />
-        </svg>
-        Read this page
-      </button>
-
       <!-- Conversation -->
       <main class="conversation" id="conversation" aria-live="polite" aria-label="Conversation">
         <div class="welcome" id="welcome">
           <p class="welcome-title">Hi, I'm Sharon.</p>
           <p class="welcome-body">
-            Tap <strong>Read this page</strong> for a summary, press the mic to
-            ask out loud, or just type a question below. I'll read my answers to
-            you.
+            Open any website and I'll start reading it to you on my own. Tap the
+            mic and just talk — say <strong>stop</strong> to stop me,
+            <strong>pause</strong> or <strong>resume</strong> to control the
+            voice, or tell me what to focus on. Tap the mic again to mute me.
           </p>
         </div>
       </main>
 
-      <!-- Read-aloud dock -->
-      <div class="dock" id="dock" hidden>
-        <div class="wave" id="wave" aria-hidden="true">
-          <span></span><span></span><span></span><span></span><span></span>
-        </div>
-        <div class="dock-controls">
-          <button class="dock-btn" id="playBtn" type="button" title="Play" aria-label="Play">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-          </button>
-          <button class="dock-btn" id="pauseBtn" type="button" title="Pause" aria-label="Pause">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-          </button>
-          <button class="dock-btn" id="stopBtn" type="button" title="Stop" aria-label="Stop">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
-          </button>
-        </div>
-        <span class="dock-label" id="dockLabel">Reading aloud…</span>
-      </div>
-
-      <!-- Composer -->
-      <form class="composer" id="composer">
-        <input
-          class="composer-input"
-          id="textInput"
-          type="text"
-          autocomplete="off"
-          placeholder="Type a question for Sharon…"
-          aria-label="Type a question for Sharon"
-        />
-        <button class="send-btn" id="sendBtn" type="submit" title="Send" aria-label="Send question">
-          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M3 11l18-8-8 18-2-7-8-3z"/></svg>
-        </button>
-        <button class="mic-btn" id="micBtn" type="button" title="Hold to speak" aria-label="Speak to Sharon">
-          <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+      <!-- Single control: the microphone -->
+      <div class="mic-bar">
+        <button
+          class="mic-btn"
+          id="micBtn"
+          type="button"
+          aria-pressed="false"
+          title="Mute microphone"
+          aria-label="Mute microphone"
+        >
+          <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
             <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/>
             <path fill="currentColor" d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21a1 1 0 0 0 2 0v-3.08A7 7 0 0 0 19 11z"/>
           </svg>
+          <span class="mic-slash" aria-hidden="true"></span>
         </button>
-      </form>
+      </div>
     </div>
 
     <script type="module" src="sidepanel.js"></script>
