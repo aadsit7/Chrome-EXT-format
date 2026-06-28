@@ -46,6 +46,7 @@ body {
 }
 
 .app {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -112,6 +113,36 @@ html[data-state="reading"] .orb-pulse {
   margin: 2px 0 0;
   font-size: 12.5px;
   color: var(--muted);
+}
+
+/* Header icon buttons (e.g. the gear) sit to the right of the title. */
+.header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.icon-btn:hover {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+.icon-btn:active {
+  transform: scale(0.94);
 }
 
 /* ---------- Tab card ---------- */
@@ -357,6 +388,146 @@ html[data-mic="muted"] .mic-slash {
     box-shadow: 0 6px 18px rgba(255, 106, 90, 0.35),
       0 0 0 12px rgba(255, 106, 90, 0);
   }
+}
+
+/* ---------- Settings sheet ---------- */
+.settings {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  padding: 14px;
+  gap: 14px;
+  overflow-y: auto;
+  animation: sheet-in 0.18s ease-out;
+}
+
+.settings[hidden] {
+  display: none;
+}
+
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-title {
+  margin: 0;
+  font-family: "Bricolage Grotesque", "Inter", sans-serif;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: -0.01em;
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.setting-group {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.checkbox-row input[type="checkbox"] {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  accent-color: var(--coral);
+  cursor: pointer;
+}
+
+.checkbox-text {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.setting-help {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.setting-heading {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.setting-line {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+}
+
+.shortcut-key {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  font-family: "Inter", system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 16px;
+  border: none;
+  border-radius: 11px;
+  background: var(--ink);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.06s;
+}
+.btn:hover {
+  filter: brightness(1.12);
+}
+.btn:active {
+  transform: scale(0.97);
+}
+
+.setting-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
 }
 
 /* ---------- Focus rings ---------- */
