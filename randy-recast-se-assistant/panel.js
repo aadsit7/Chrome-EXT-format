@@ -1006,22 +1006,43 @@
       // returns whatever is selected right now so arming also catches a
       // selection the user made before clicking the button.
       function installRandySelectionWatcher() {
+        // Read whatever is selected right now. window.getSelection() only sees
+        // selections in the normal document — it returns "" for text selected
+        // inside a focused <input> or <textarea> (e.g. a search box), so check
+        // the active form field first and fall back to the page selection.
+        function currentSelection() {
+          let text = '';
+          try {
+            const el = document.activeElement;
+            if (el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') &&
+                typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number' &&
+                el.selectionEnd > el.selectionStart) {
+              text = (el.value || '').substring(el.selectionStart, el.selectionEnd);
+            }
+          } catch (e) {}
+          if (!text) {
+            try { text = window.getSelection().toString(); } catch (e) {}
+          }
+          return (text || '').trim();
+        }
         if (!window.__randySelWatcher) {
           window.__randySelWatcher = true;
           let last = '';
-          document.addEventListener('mouseup', () => {
+          const report = () => {
             // Let the browser finalize the selection before we read it.
             setTimeout(() => {
-              let text = '';
-              try { text = (window.getSelection().toString() || '').trim(); } catch (e) {}
+              const text = currentSelection();
               if (!text) { last = ''; return; }      // deselect → allow re-sending the same text later
               if (text === last) return;             // ignore the duplicate selectionchange/mouseup pair
               last = text;
               try { chrome.runtime.sendMessage({ type: 'randy-selection', text }); } catch (e) {}
             }, 0);
-          }, true);
+          };
+          // Fire at the end of a highlight gesture (drag, double-click word,
+          // triple-click). One send per finished selection, de-duped above.
+          document.addEventListener('mouseup', report, true);
         }
-        try { return (window.getSelection().toString() || '').trim(); } catch (e) { return ''; }
+        return currentSelection();
       }
 
       async function injectSelectionListener(tabId) {
