@@ -14,6 +14,13 @@ const els = {
   conversation: document.getElementById("conversation"),
   welcome: document.getElementById("welcome"),
   micBtn: document.getElementById("micBtn"),
+  // Settings
+  settingsBtn: document.getElementById("settingsBtn"),
+  settings: document.getElementById("settings"),
+  settingsBack: document.getElementById("settingsBack"),
+  autoReadToggle: document.getElementById("autoReadToggle"),
+  shortcutValue: document.getElementById("shortcutValue"),
+  changeShortcut: document.getElementById("changeShortcut"),
 };
 
 // The default instruction Sharon sends when she starts reading on her own.
@@ -73,6 +80,35 @@ let interimBubble = null;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ------------------------------------------------------------------ *
+ * Settings — persisted in chrome.storage.local so they survive reopening
+ * ------------------------------------------------------------------ */
+const SETTINGS_KEY = "sharon_settings";
+const DEFAULT_SETTINGS = {
+  autoRead: true, // read pages automatically on activation / tab change
+};
+let settings = { ...DEFAULT_SETTINGS };
+
+async function loadSettings() {
+  try {
+    const stored = await chrome.storage.local.get(SETTINGS_KEY);
+    const saved = stored && stored[SETTINGS_KEY];
+    if (saved && typeof saved === "object") {
+      settings = { ...DEFAULT_SETTINGS, ...saved };
+    }
+  } catch (_) {
+    // storage unavailable — keep the in-memory defaults
+  }
+}
+
+async function saveSettings() {
+  try {
+    await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
+  } catch (_) {
+    /* ignore — the setting still applies for this session */
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Status + state — single source of truth for the header + accent
  * ------------------------------------------------------------------ */
 function setStatus(text) {
@@ -101,6 +137,10 @@ function updateStatus() {
   } else if (micMuted) {
     state = "muted";
     text = "Muted";
+  } else if (!settings.autoRead) {
+    // Auto-read is off: stay calm and wait to be asked, mic still live.
+    state = "listening";
+    text = "Ask me to read this page";
   } else {
     state = "listening";
     text = "Listening…";
@@ -601,6 +641,11 @@ async function evaluateActiveTab() {
 
   restricted = false;
   updateStatus();
+
+  // When auto-read is off, Sharon stays quiet: she never reads or sends page
+  // text on her own. She'll only act when the user explicitly asks.
+  if (!settings.autoRead) return;
+
   const key = tab.id + "::" + tab.url;
   if (key === lastReadKey) return; // already reading / read this exact page
   lastReadKey = key;
@@ -907,6 +952,92 @@ if (!SpeechRecognition) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Settings view — a clean sheet over the conversation
+ * ------------------------------------------------------------------ */
+function applySettingsToUI() {
+  if (els.autoReadToggle) els.autoReadToggle.checked = !!settings.autoRead;
+}
+
+// Read the current shortcut Chrome has assigned and show it (or "Not set").
+async function refreshShortcut() {
+  let label = "Not set";
+  try {
+    if (chrome.commands && chrome.commands.getAll) {
+      const cmds = await chrome.commands.getAll();
+      const cmd = (cmds || []).find((c) => c.name === "activate-sharon");
+      if (cmd && cmd.shortcut) label = cmd.shortcut;
+    }
+  } catch (_) {
+    /* leave "Not set" */
+  }
+  if (els.shortcutValue) els.shortcutValue.textContent = label;
+}
+
+function openSettings() {
+  applySettingsToUI();
+  refreshShortcut();
+  els.settings.hidden = false;
+  els.settings.setAttribute("aria-hidden", "false");
+  els.settingsBtn.setAttribute("aria-expanded", "true");
+  els.settingsBack.focus();
+}
+
+function closeSettings() {
+  els.settings.hidden = true;
+  els.settings.setAttribute("aria-hidden", "true");
+  els.settingsBtn.setAttribute("aria-expanded", "false");
+  els.settingsBtn.focus();
+}
+
+if (els.settingsBtn) els.settingsBtn.addEventListener("click", openSettings);
+if (els.settingsBack) els.settingsBack.addEventListener("click", closeSettings);
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && els.settings && !els.settings.hidden) {
+    closeSettings();
+  }
+});
+
+if (els.autoReadToggle) {
+  els.autoReadToggle.addEventListener("change", () => {
+    settings.autoRead = els.autoReadToggle.checked;
+    saveSettings();
+    if (settings.autoRead) {
+      // Turned back on while on a readable page — let her start reading.
+      lastReadKey = null;
+      evaluateActiveTab();
+    } else {
+      // Turned off — stay quiet; just refresh the calm status line.
+      updateStatus();
+    }
+  });
+}
+
+if (els.changeShortcut) {
+  els.changeShortcut.addEventListener("click", () => {
+    try {
+      chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
+    } catch (_) {
+      /* fail quietly */
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Activation from the keyboard shortcut — wake the mic if already open
+ * ------------------------------------------------------------------ */
+if (chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === "sharon-activate") {
+      micMuted = false;
+      micBlocked = false;
+      startRecognition();
+      updateStatus();
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * Follow the user as they switch tabs / pages
  * ------------------------------------------------------------------ */
 if (chrome.tabs && chrome.tabs.onActivated) {
@@ -925,7 +1056,9 @@ if (chrome.tabs && chrome.tabs.onUpdated) {
   micMuted = false;
   micBlocked = false;
   await ensureSessionId();
+  await loadSettings(); // remembered settings survive closing & reopening
+  applySettingsToUI();
   updateStatus();
   startRecognition(); // mic is live the moment the panel opens
-  evaluateActiveTab(); // start reading if we're on a readable page
+  evaluateActiveTab(); // start reading if we're on a readable page (and allowed)
 })();

@@ -49,6 +49,27 @@ How to test her
    the moment you switch to a real website.
 
 
+Settings (the gear in the top-right)
+------------------------------------
+Click the small gear icon in Sharon's header to open Settings. A clean sheet
+slides over the conversation; the back arrow returns you to it. Your settings
+are remembered, so they stay the way you left them after you close and reopen
+the panel.
+
+- "Let Sharon read what's on my screen automatically." (on by default)
+  When ON, Sharon reads each page on her own and follows you as you switch
+  tabs — her usual behavior. When OFF, she stays quiet: she won't read or send
+  any page text on her own. The mic stays live and the header says "Ask me to
+  read this page" — just say "read this page" or ask a question about it and
+  she'll read or answer then.
+
+- Keyboard shortcut. Settings shows the current shortcut for launching Sharon
+  (Ctrl+Shift+Y on Windows/Linux, Command+Shift+Y on Mac by default), or
+  "Not set". The "Change shortcut" button opens Chrome's own shortcuts page —
+  Chrome handles shortcut changes there, an extension can't assign its own key.
+  Press the shortcut anywhere and Sharon's side panel opens with the mic live.
+
+
 Notes
 -----
 - Sharon cleans the page before reading: she pulls out the main content
