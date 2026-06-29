@@ -1283,6 +1283,16 @@ class Component extends DCLogic {
           if (this.state.currentPage !== this._fHomePage) this.setState({ currentPage: this._fHomePage });
           this.commitFolderReorder(fid, e);
         }
+      } else if (mode === 'pending' && fid) {
+        // A tap (no drag) on a site while the folder is in edit mode opens its
+        // edit panel. pointerdown captured the pointer to root, and Chromium
+        // retargets the would-be click to the capture element — so the tile
+        // button's own onclick never fires. We open the editor explicitly here
+        // (mirroring the springboard's tap-to-edit) and swallow the stray click.
+        const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
+        root.addEventListener('click', swallow, { capture: true, once: true });
+        setTimeout(() => { try { root.removeEventListener('click', swallow, { capture: true }); } catch {} }, 60);
+        this.openEdit(fid);
       }
       reset();
     };
@@ -1606,7 +1616,12 @@ class Component extends DCLogic {
       // overlay pop-out. (startListen still falls back to the overlay only when
       // speech recognition isn't supported, to show the explainer.)
       toggleMic: () => { if (this.state.listening) this.stopListen(); else this.startListen(); },
-      micIcon: 'mic', micLabel: s.listening ? 'Stop listening' : 'Start voice',
+      // When listening the dock mic glows blue and pulses; when muted/off it
+      // shows the slashed mic-off icon in red so the off state is unmistakable.
+      micIcon: s.listening ? 'mic' : 'mic-off', micLabel: s.listening ? 'Stop listening' : 'Start voice',
+      micBtnStyle: s.listening
+        ? 'color:#fff; background:linear-gradient(140deg,var(--bb-accent),var(--bb-accent2)); box-shadow:0 8px 22px rgba(3,114,255,.45);'
+        : 'color:#ef4444; background:var(--bb-tile); box-shadow:0 8px 22px rgba(239,68,68,.30); border:2px solid #ef4444;',
       micRingStyle: s.listening ? 'position:absolute; inset:-5px; border-radius:50%; border:2px solid var(--bb-accent2); pointer-events:none; animation:bbRing 1.6s ease-out infinite;' : 'display:none;',
       micBtnAnim: s.listening ? 'animation:bbMicPulse 1.6s ease-in-out infinite;' : '',
       toggleEdit: () => this.toggleEditFn(), exitEdit: () => this.setState({ editMode: false }),
