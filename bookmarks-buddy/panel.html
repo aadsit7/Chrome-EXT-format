@@ -234,12 +234,12 @@
         <button onclick="{{ clearSearch }}" aria-label="Clear" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); width:28px; height:28px; border:none; border-radius:50%; cursor:pointer; display:grid; place-items:center; background:var(--bb-glass-bd); color:var(--bb-fg);"><i data-lucide="x" style="width:15px;height:15px;"></i></button>
       </sc-if>
     </div>
-    <!-- dock -->
-    <div style="display:flex; align-items:center; justify-content:center; gap:16px; margin:0 18px 18px; padding:11px 16px; border-radius:24px; background:var(--bb-glass); border:1px solid var(--bb-glass-bd); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px); box-shadow:var(--bb-glass-sh);">
-      <button onclick="{{ openAdd }}" aria-label="Add site" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="plus" style="width:23px;height:23px;"></i></button>
+    <!-- dock — microphone on the left-hand side, plus (add site) on the right -->
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:0 18px 18px; padding:11px 16px; border-radius:24px; background:var(--bb-glass); border:1px solid var(--bb-glass-bd); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px); box-shadow:var(--bb-glass-sh);">
       <button onclick="{{ toggleMic }}" aria-label="{{ micLabel }}" style="position:relative; width:62px; height:62px; border-radius:50%; border:none; cursor:pointer; display:grid; place-items:center; margin-top:-14px; {{ micBtnStyle }} {{ micBtnAnim }}"><span class="bb-mic-ring" style="{{ micRingStyle }}"></span><span style="{{ micIconOnStyle }}"><i data-lucide="mic" style="width:27px;height:27px;"></i></span><span style="{{ micIconOffStyle }}"><i data-lucide="mic-off" style="width:27px;height:27px;"></i></span></button>
       <button onclick="{{ toggleEdit }}" aria-label="Rearrange" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="layout-grid" style="width:22px;height:22px;"></i></button>
       <button onclick="{{ openSettings }}" aria-label="Settings" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="settings-2" style="width:22px;height:22px;"></i></button>
+      <button onclick="{{ openAdd }}" aria-label="Add site" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="plus" style="width:23px;height:23px;"></i></button>
     </div>
   </div>
 
