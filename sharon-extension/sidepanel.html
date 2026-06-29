@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-state="idle" data-mic="muted">
+<html lang="en" data-state="idle" data-mic="muted" data-readaloud="on">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -56,12 +56,14 @@
             Open any website and I'll start reading it to you on my own. Tap the
             mic and just talk — say <strong>stop</strong> to stop me,
             <strong>pause</strong> or <strong>resume</strong> to control the
-            voice, or tell me what to focus on. Tap the mic again to mute me.
+            voice, or tell me what to focus on. Tap the mic to mute the
+            microphone, or the speaker button beside it to mute my voice.
           </p>
         </div>
       </main>
 
-      <!-- Single control: the microphone -->
+      <!-- Bottom controls: mute the microphone (listening) and mute Sharon's
+           read-aloud voice (speaking). -->
       <div class="mic-bar">
         <button
           class="mic-btn"
@@ -76,6 +78,23 @@
             <path fill="currentColor" d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21a1 1 0 0 0 2 0v-3.08A7 7 0 0 0 19 11z"/>
           </svg>
           <span class="mic-slash" aria-hidden="true"></span>
+        </button>
+
+        <button
+          class="aloud-btn"
+          id="aloudBtn"
+          type="button"
+          aria-pressed="false"
+          title="Mute Sharon's voice"
+          aria-label="Mute Sharon's voice"
+        >
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M4 9v6h4l5 5V4L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4.03v8.06A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06a9 9 0 0 0 0-17.54z"
+            />
+          </svg>
+          <span class="aloud-slash" aria-hidden="true"></span>
         </button>
       </div>
 

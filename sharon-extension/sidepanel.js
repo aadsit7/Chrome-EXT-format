@@ -14,6 +14,7 @@ const els = {
   conversation: document.getElementById("conversation"),
   welcome: document.getElementById("welcome"),
   micBtn: document.getElementById("micBtn"),
+  aloudBtn: document.getElementById("aloudBtn"),
   // Settings
   settingsBtn: document.getElementById("settingsBtn"),
   settings: document.getElementById("settings"),
@@ -139,6 +140,7 @@ const SETTINGS_KEY = "sharon_settings";
 const DEFAULT_SETTINGS = {
   autoRead: true, // read pages automatically on activation / tab change
   allowScroll: true, // may Sharon scroll the active tab when asked? (saved approval)
+  readAloud: true, // speak answers out loud? (user can mute Sharon's voice)
 };
 let settings = { ...DEFAULT_SETTINGS };
 
@@ -201,6 +203,18 @@ function updateStatus() {
   }
   els.html.setAttribute("data-state", state);
   setStatus(text);
+}
+
+// Reflect the read-aloud (voice output) mute state on the speaker button.
+function updateReadAloudUI() {
+  const on = !!settings.readAloud;
+  els.html.setAttribute("data-readaloud", on ? "on" : "off");
+  if (els.aloudBtn) {
+    els.aloudBtn.setAttribute("aria-pressed", String(!on));
+    const label = on ? "Mute Sharon's voice" : "Unmute Sharon's voice";
+    els.aloudBtn.title = label;
+    els.aloudBtn.setAttribute("aria-label", label);
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -953,6 +967,8 @@ function pickEnglishVoice() {
 
 function speakText(text) {
   if (!synth) return; // no speech support — leave the answer on screen
+  // The user has muted Sharon's voice — show the answer but don't read it aloud.
+  if (!settings.readAloud) return;
   synth.cancel();
   const utt = new SpeechSynthesisUtterance(text);
   const voice = pickEnglishVoice();
@@ -1304,11 +1320,25 @@ if (!SpeechRecognition) {
 }
 
 /* ------------------------------------------------------------------ *
+ * The read-aloud button — mute / unmute Sharon's spoken voice
+ * ------------------------------------------------------------------ */
+if (els.aloudBtn) {
+  els.aloudBtn.addEventListener("click", () => {
+    settings.readAloud = !settings.readAloud;
+    saveSettings();
+    if (!settings.readAloud) stopSpeaking(); // silence her right away
+    updateReadAloudUI();
+    updateStatus();
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * Settings view — a clean sheet over the conversation
  * ------------------------------------------------------------------ */
 function applySettingsToUI() {
   if (els.autoReadToggle) els.autoReadToggle.checked = !!settings.autoRead;
   if (els.scrollToggle) els.scrollToggle.checked = !!settings.allowScroll;
+  updateReadAloudUI();
 }
 
 // Read the current shortcut Chrome has assigned and show it (or "Not set").
