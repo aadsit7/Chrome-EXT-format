@@ -450,7 +450,12 @@
       <div class="bb-folder-card" style="position:relative; width:100%; max-width:330px; background:var(--bb-folder-panel); border:1px solid var(--bb-glass-bd); border-radius:26px; padding:22px 20px; -webkit-backdrop-filter:blur(24px); backdrop-filter:blur(24px); box-shadow:0 30px 70px rgba(0,0,0,.4); animation:bbPop .25s var(--bb-ease);">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:18px;">
           <span style="width:46px;"></span>
-          <div style="flex:1; text-align:center; font-size:18px; font-weight:800; letter-spacing:-.01em; color:var(--bb-fg);">{{ folderName }}</div>
+          <sc-if value="{{ folderEditing }}" hint-placeholder-val="{{ false }}">
+            <input type="text" value="{{ folderName }}" oninput="{{ onFolderName }}" placeholder="Folder name" spellcheck="false" style="flex:1; min-width:0; text-align:center; height:34px; padding:0 12px; border-radius:11px; border:1px solid var(--bb-glass-bd); background:var(--bb-search-bg); color:var(--bb-fg); font-family:inherit; font-size:16px; font-weight:800; letter-spacing:-.01em; outline:none;">
+          </sc-if>
+          <sc-if value="{{ folderNotEditing }}" hint-placeholder-val="{{ true }}">
+            <div style="flex:1; text-align:center; font-size:18px; font-weight:800; letter-spacing:-.01em; color:var(--bb-fg);">{{ folderName }}</div>
+          </sc-if>
           <button onclick="{{ toggleFolderEdit }}" style="flex-shrink:0; width:46px; text-align:right; border:none; background:transparent; color:var(--bb-accent); font-family:inherit; font-size:13px; font-weight:700; cursor:pointer;">{{ folderEditLabel }}</button>
         </div>
         <sc-if value="{{ folderEditing }}" hint-placeholder-val="{{ false }}">
