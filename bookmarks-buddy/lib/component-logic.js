@@ -1616,9 +1616,16 @@ class Component extends DCLogic {
       // overlay pop-out. (startListen still falls back to the overlay only when
       // speech recognition isn't supported, to show the explainer.)
       toggleMic: () => { if (this.state.listening) this.stopListen(); else this.startListen(); },
-      // When listening the dock mic glows blue and pulses; when muted/off it
-      // shows the slashed mic-off icon in red so the off state is unmistakable.
-      micIcon: s.listening ? 'mic' : 'mic-off', micLabel: s.listening ? 'Stop listening' : 'Start voice',
+      // When listening the dock mic glows blue and pulses with a plain mic icon;
+      // when muted/off it shows the slashed mic-off icon in red so the off state
+      // is unmistakable. Both icons are rendered once and toggled by visibility
+      // rather than one <i data-lucide="{{ ... }}"> whose value flips: lucide
+      // rewrites each <i> into an <svg> outside React's control, so a value that
+      // changes after first paint goes stale (the button would turn blue but
+      // keep the slashed icon). Showing/hiding fixed icons avoids that entirely.
+      micLabel: s.listening ? 'Stop listening' : 'Start voice',
+      micIconOnStyle: s.listening ? 'position:relative; z-index:1; display:grid; place-items:center;' : 'display:none;',
+      micIconOffStyle: s.listening ? 'display:none;' : 'position:relative; z-index:1; display:grid; place-items:center;',
       micBtnStyle: s.listening
         ? 'color:#fff; background:linear-gradient(140deg,var(--bb-accent),var(--bb-accent2)); box-shadow:0 8px 22px rgba(3,114,255,.45);'
         : 'color:#ef4444; background:var(--bb-tile); box-shadow:0 8px 22px rgba(239,68,68,.30); border:2px solid #ef4444;',
