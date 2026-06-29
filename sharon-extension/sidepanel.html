@@ -171,6 +171,42 @@
           </section>
 
           <section class="setting-group">
+            <div class="switch-row">
+              <span class="switch-text" id="actionsToggleLabel"
+                >Let Sharon act on the page (click &amp; type).</span
+              >
+              <label class="switch" for="actionsToggle">
+                <input
+                  type="checkbox"
+                  id="actionsToggle"
+                  aria-labelledby="actionsToggleLabel"
+                />
+                <span class="switch-track" aria-hidden="true">
+                  <span class="switch-thumb"></span>
+                </span>
+              </label>
+            </div>
+            <p class="setting-help">
+              When this is on, you can ask Sharon to do things on the page — like
+              “reply and say I'll be there”, “search for blue shoes”, or “open
+              the first result” — and she'll click, type, and scroll to carry it
+              out, one step at a time. This is powerful, so it's off by default.
+              She never enters passwords or payment details. Say “stop” at any
+              time to halt her.
+            </p>
+
+            <label class="checkbox-row" for="confirmToggle">
+              <input type="checkbox" id="confirmToggle" />
+              <span class="checkbox-text">Ask me before each action.</span>
+            </label>
+            <p class="setting-help">
+              When on (recommended), Sharon tells you what she's about to do and
+              waits for you to say “yes” before clicking or typing. Turn it off
+              to let her act without asking each time.
+            </p>
+          </section>
+
+          <section class="setting-group">
             <h3 class="setting-heading">Keyboard shortcut</h3>
             <p class="setting-line">
               Launch Sharon:

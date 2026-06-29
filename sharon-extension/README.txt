@@ -7,14 +7,15 @@ Google Chrome and Microsoft Edge. There is no API key inside the extension —
 Sharon sends the page text and your spoken instructions to a server that does
 the AI part.
 
-Sharon is a voice reader for whatever is on your current tab. She only ever
+Sharon is a voice assistant for whatever is on your current tab. She only ever
 works with the single active tab in the current window, and she only reads what
-is actually visible there right now. She never reads other tabs, never
-navigates, and never clicks or opens anything. The one page action she can take
-— and only when you allow it in Settings — is to scroll: ask her to "scroll
-down", "scroll up", "go to the top/bottom", or "read more" and she'll scroll the
-page and read what comes into view, so you can work your way down a long article
-or message thread hands-free. It isn't just for articles — if an email,
+is actually visible there right now; she never touches your other tabs. By
+default she's a reader and won't click or type anything. Two opt-in settings let
+her do more on that one tab: "Let Sharon scroll the page" lets her scroll on
+command ("scroll down", "go to the top/bottom", "read more") so you can work
+through a long article or thread, and "Let Sharon act on the page" lets her
+click, type, and select to actually carry out tasks you ask for — both are off
+or limited until you turn them on. It isn't just for articles — if an email,
 document, message, thread, or post is open on screen, she reads that too.
 Because you click around the page yourself, every time you ask her something she
 re-reads the tab fresh, so she's always answering about what's on screen at that
@@ -86,6 +87,28 @@ the panel.
   any page text on her own. The mic stays live and the header says "Ask me to
   read this page" — just say "read this page" or ask a question about it and
   she'll read or answer then.
+
+- "Let Sharon act on the page (click & type)." (OFF by default)
+  This is the big one: with it on, Sharon can actually operate the page for you,
+  not just read it. Ask her to do something — "reply and say I'll be there",
+  "search for blue shoes", "open the first result", "tick the agree box" — and
+  she works toward it one small step at a time: she looks at the buttons, links,
+  and text boxes on the page, decides the next action, and clicks / types /
+  scrolls to do it, then looks again and continues until it's done. Because this
+  is powerful, it ships turned off; turn it on only when you want it. Sharon will
+  never type or submit passwords, card numbers, or security codes. Say "stop" at
+  any time to halt her.
+
+    - "Ask me before each action." (on by default, shown under the setting above)
+      When on, Sharon says what she's about to do and waits for you to say "yes"
+      before she clicks or types; say "no" to cancel. Turn it off to let her act
+      without asking each time. She still stops the moment you say "stop".
+
+    Notes on acting: Sharon takes a limited number of steps per request before
+    pausing so she can't run away with a task — just tell her to continue. She
+    acts only on the one active tab, the same one she reads. This works best on
+    ordinary pages; very complex web apps may not always expose a button or field
+    in a way she can find, and she'll tell you when she can't.
 
 - "Let Sharon scroll the page for me." (on by default)
   This is the slider that approves Sharon's one page action. When ON, you can
