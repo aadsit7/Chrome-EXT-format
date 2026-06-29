@@ -136,20 +136,13 @@
 </helmet>
 <div class="bb-root" style="position:relative; width:100%; max-width:100%; height:100dvh; margin:0; display:flex; flex-direction:column; overflow:hidden; font-family:'DM Sans',system-ui,sans-serif; color:var(--bb-fg); background:var(--bb-wall); -webkit-font-smoothing:antialiased;">
 
-  <!-- ===== Header: greeting + search ===== -->
+  <!-- ===== Header: greeting ===== -->
   <header style="flex-shrink:0; padding:18px 22px 8px;">
     <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
       <div style="min-width:0;">
         <div style="font-size:21px; font-weight:800; letter-spacing:-.02em; line-height:1.1;">Bookmarks <span style="color:var(--bb-accent2);">Buddy</span></div>
         <div style="font-size:12.5px; font-weight:600; color:var(--bb-fg-soft); margin-top:3px;">{{ subtitle }}</div>
       </div>
-    </div>
-    <div style="position:relative; margin-top:14px;">
-      <i data-lucide="search" style="position:absolute; left:14px; top:50%; transform:translateY(-50%); width:17px; height:17px; color:var(--bb-fg-soft); pointer-events:none;"></i>
-      <input type="text" data-no-dictate value="{{ search }}" oninput="{{ onSearch }}" placeholder="Search sites or say “open…”" spellcheck="false" style="width:100%; height:42px; padding:0 38px 0 40px; border-radius:14px; border:1px solid var(--bb-glass-bd); background:var(--bb-search-bg); color:var(--bb-fg); font-family:inherit; font-size:14px; font-weight:600; outline:none; -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px);">
-      <sc-if value="{{ hasSearch }}" hint-placeholder-val="{{ false }}">
-        <button onclick="{{ clearSearch }}" aria-label="Clear" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); width:28px; height:28px; border:none; border-radius:50%; cursor:pointer; display:grid; place-items:center; background:var(--bb-glass-bd); color:var(--bb-fg);"><i data-lucide="x" style="width:15px;height:15px;"></i></button>
-      </sc-if>
     </div>
   </header>
 
@@ -229,14 +222,26 @@
       </sc-if>
     </div>
 
-    <!-- ===== Dock ===== -->
-    <div style="flex-shrink:0; display:flex; align-items:center; justify-content:center; gap:16px; margin:6px 18px 18px; padding:11px 16px; border-radius:24px; background:var(--bb-glass); border:1px solid var(--bb-glass-bd); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px); box-shadow:var(--bb-glass-sh);">
+  </sc-if>
+
+  <!-- ===== Bottom bar: search + dock (always visible) ===== -->
+  <div style="flex-shrink:0;">
+    <!-- search -->
+    <div style="position:relative; margin:0 18px 10px;">
+      <i data-lucide="search" style="position:absolute; left:14px; top:50%; transform:translateY(-50%); width:17px; height:17px; color:var(--bb-fg-soft); pointer-events:none;"></i>
+      <input type="text" data-no-dictate value="{{ search }}" oninput="{{ onSearch }}" placeholder="Search sites or say “open…”" spellcheck="false" style="width:100%; height:42px; padding:0 38px 0 40px; border-radius:14px; border:1px solid var(--bb-glass-bd); background:var(--bb-search-bg); color:var(--bb-fg); font-family:inherit; font-size:14px; font-weight:600; outline:none; -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px);">
+      <sc-if value="{{ hasSearch }}" hint-placeholder-val="{{ false }}">
+        <button onclick="{{ clearSearch }}" aria-label="Clear" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); width:28px; height:28px; border:none; border-radius:50%; cursor:pointer; display:grid; place-items:center; background:var(--bb-glass-bd); color:var(--bb-fg);"><i data-lucide="x" style="width:15px;height:15px;"></i></button>
+      </sc-if>
+    </div>
+    <!-- dock -->
+    <div style="display:flex; align-items:center; justify-content:center; gap:16px; margin:0 18px 18px; padding:11px 16px; border-radius:24px; background:var(--bb-glass); border:1px solid var(--bb-glass-bd); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px); box-shadow:var(--bb-glass-sh);">
       <button onclick="{{ openAdd }}" aria-label="Add site" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="plus" style="width:23px;height:23px;"></i></button>
-      <button onclick="{{ toggleMic }}" aria-label="{{ micLabel }}" style="position:relative; width:62px; height:62px; border-radius:50%; border:none; cursor:pointer; display:grid; place-items:center; color:#fff; background:linear-gradient(140deg,var(--bb-accent),var(--bb-accent2)); box-shadow:0 8px 22px rgba(3,114,255,.45); margin-top:-14px; {{ micBtnAnim }}"><span class="bb-mic-ring" style="{{ micRingStyle }}"></span><i data-lucide="{{ micIcon }}" style="width:27px;height:27px; position:relative; z-index:1;"></i></button>
+      <button onclick="{{ toggleMic }}" aria-label="{{ micLabel }}" style="position:relative; width:62px; height:62px; border-radius:50%; border:none; cursor:pointer; display:grid; place-items:center; margin-top:-14px; {{ micBtnStyle }} {{ micBtnAnim }}"><span class="bb-mic-ring" style="{{ micRingStyle }}"></span><i data-lucide="{{ micIcon }}" style="width:27px;height:27px; position:relative; z-index:1;"></i></button>
       <button onclick="{{ toggleEdit }}" aria-label="Rearrange" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="layout-grid" style="width:22px;height:22px;"></i></button>
       <button onclick="{{ openSettings }}" aria-label="Settings" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="settings-2" style="width:22px;height:22px;"></i></button>
     </div>
-  </sc-if>
+  </div>
 
   <!-- ===== Voice overlay ===== -->
   <sc-if value="{{ voiceOpen }}" hint-placeholder-val="{{ false }}">
@@ -449,7 +454,7 @@
           <button onclick="{{ toggleFolderEdit }}" style="flex-shrink:0; width:46px; text-align:right; border:none; background:transparent; color:var(--bb-accent); font-family:inherit; font-size:13px; font-weight:700; cursor:pointer;">{{ folderEditLabel }}</button>
         </div>
         <sc-if value="{{ folderEditing }}" hint-placeholder-val="{{ false }}">
-          <div style="text-align:center; font-size:11.5px; font-weight:600; color:var(--bb-fg-soft); margin:-6px 0 14px; line-height:1.4;">Tap a site to edit it. Drag it off the card to take it out — drag to a side edge to drop it on another page. Or tap <b style="color:var(--bb-fg);">–</b> to remove.</div>
+          <div style="text-align:center; font-size:11.5px; font-weight:600; color:var(--bb-fg-soft); margin:-6px 0 14px; line-height:1.4;">Tap a site to edit it. Click the minus <b style="color:var(--bb-fg);">–</b> to remove it from a folder.</div>
         </sc-if>
         <div class="bb-folder-grid" style="display:grid; grid-template-columns:repeat(4,1fr); gap:18px 6px; justify-items:center;">
           <sc-for list="{{ folderApps }}" as="fa" hint-placeholder-count="6">
@@ -498,7 +503,7 @@
 
   <!-- ===== Toast ===== -->
   <sc-if value="{{ toast }}" hint-placeholder-val="{{ false }}">
-    <div style="position:absolute; left:50%; bottom:92px; transform:translateX(-50%); z-index:200; display:inline-flex; align-items:center; gap:9px; max-width:86%; padding:11px 18px; border-radius:14px; background:var(--bb-toast); color:#fff; font-size:13px; font-weight:600; box-shadow:0 16px 40px rgba(0,0,0,.34); animation:bbToast .22s ease-out; pointer-events:none;"><i data-lucide="{{ toastIcon }}" style="width:16px;height:16px;flex-shrink:0;"></i><span>{{ toast }}</span></div>
+    <div style="position:absolute; left:50%; bottom:150px; transform:translateX(-50%); z-index:200; display:inline-flex; align-items:center; gap:9px; max-width:86%; padding:11px 18px; border-radius:14px; background:var(--bb-toast); color:#fff; font-size:13px; font-weight:600; box-shadow:0 16px 40px rgba(0,0,0,.34); animation:bbToast .22s ease-out; pointer-events:none;"><i data-lucide="{{ toastIcon }}" style="width:16px;height:16px;flex-shrink:0;"></i><span>{{ toast }}</span></div>
   </sc-if>
 </div>
 </x-dc>
