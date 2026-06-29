@@ -3824,12 +3824,9 @@
       }
 
       function renderHomeEmpty(slot) {
-        return `
-          <div style="max-width:520px;margin:0 auto;text-align:center;padding:7vh 20px 24px;display:flex;flex-direction:column;align-items:center;gap:14px">
-            <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--n400)">Recast · SE Assistant</div>
-            <h2 style="font-size:26px;font-weight:700;letter-spacing:-0.02em;color:var(--navy-deep);margin:0">Hey, I&rsquo;m ${escHtml(slot.voiceName || slot.label)}.</h2>
-            <p style="font-size:14.5px;line-height:1.65;color:var(--gray);margin:0;text-wrap:pretty">Your Recast product expert. Use the mic below and I&rsquo;ll listen to your call, catch the technical questions, and answer them right here &mdash; or just type to me anytime.</p>
-          </div>`;
+        // The empty home view is intentionally blank — the listening card above
+        // carries the messaging, so no "Hey, I'm Randy" hero/description here.
+        return '';
       }
 
       function renderChat(slot, idx) {
