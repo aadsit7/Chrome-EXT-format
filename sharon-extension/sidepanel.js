@@ -21,6 +21,8 @@ const els = {
   settingsBack: document.getElementById("settingsBack"),
   autoReadToggle: document.getElementById("autoReadToggle"),
   scrollToggle: document.getElementById("scrollToggle"),
+  actionsToggle: document.getElementById("actionsToggle"),
+  confirmToggle: document.getElementById("confirmToggle"),
   shortcutValue: document.getElementById("shortcutValue"),
   changeShortcut: document.getElementById("changeShortcut"),
 };
@@ -93,6 +95,49 @@ function scrollReadInstruction(direction) {
   );
 }
 
+// Sent on every step when Sharon is allowed to act on the page. She is given
+// the user's goal, the visible page text (as page content), and a numbered list
+// of the interactive elements currently on the page, and must reply with ONE
+// JSON action plan. The whole loop runs inside the extension; this just shapes
+// the instruction text we put in the request body, which is otherwise unchanged.
+const AGENT_GROUNDING =
+  "You are Sharon, a hands-free voice assistant that can BOTH read the user's " +
+  "active browser tab AND act on it for them — clicking, typing, selecting, and " +
+  "scrolling — to carry out what they ask.\n\n" +
+  "Each step you are given: the user's goal, the page content (visible text), " +
+  "a numbered list of the interactive elements on the page right now, and a log " +
+  "of actions you've already taken this task. Decide the SINGLE next step and " +
+  "reply with ONE JSON object inside a ```json code block, and nothing else:\n" +
+  "```json\n" +
+  "{\n" +
+  '  "say": "what to tell the user — one short sentence when you are acting; ' +
+  'the full answer or reading when there are no actions",\n' +
+  '  "actions": [\n' +
+  '    {"type": "click", "id": 3},\n' +
+  '    {"type": "type", "id": 5, "text": "hello", "append": false},\n' +
+  '    {"type": "clear", "id": 5},\n' +
+  '    {"type": "select", "id": 8, "option": "Option label"},\n' +
+  '    {"type": "key", "key": "Enter"},\n' +
+  '    {"type": "scroll", "direction": "down"}\n' +
+  "  ],\n" +
+  '  "done": false\n' +
+  "}\n" +
+  "```\n" +
+  "Rules:\n" +
+  "1. Use ONLY element ids that appear in the provided list. Never invent ids.\n" +
+  "2. If the user only wants information or to have something read, set " +
+  '"actions" to [] , put the answer/reading in "say", and set "done": true.\n' +
+  "3. Take SMALL steps — usually one to three actions — then you'll get the " +
+  'updated page to decide the next step. Set "done": false while more steps '+
+  "remain.\n" +
+  '4. When the goal is achieved, set "done": true with a brief confirmation in ' +
+  '"say".\n' +
+  "5. NEVER type or submit passwords, payment card numbers, security codes, or " +
+  "other secret credentials. If the goal needs those, stop and say so plainly " +
+  '("done": true).\n' +
+  "6. Talk only about what is actually on the page; never invent content. If " +
+  "you can't find a suitable element, say so plainly and set \"done\": true.\n\n";
+
 // A tab is restricted only when its URL starts with one of these. Any normal
 // http:// or https:// website is ALWAYS readable.
 const RESTRICTED_PREFIXES = [
@@ -141,6 +186,8 @@ const DEFAULT_SETTINGS = {
   autoRead: true, // read pages automatically on activation / tab change
   allowScroll: true, // may Sharon scroll the active tab when asked? (saved approval)
   readAloud: true, // speak answers out loud? (user can mute Sharon's voice)
+  allowActions: false, // may Sharon click/type/act on the page? (opt-in, off by default)
+  confirmActions: true, // ask for a spoken "yes" before each set of actions
 };
 let settings = { ...DEFAULT_SETTINGS };
 
@@ -763,6 +810,517 @@ async function handleScroll(direction) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Acting on the page — full assistant control (opt-in)
+ *
+ * When the user enables "Let Sharon act on the page", spoken instructions run
+ * through an agentic loop that lives entirely inside the extension:
+ *   perceive (map the interactive elements) → reason (ask the model for a JSON
+ *   action plan) → act (inject clicks / typing / etc.) → observe → repeat.
+ * The request body to the proxy is unchanged; the action protocol travels
+ * inside the model's text reply, which we parse here.
+ * ------------------------------------------------------------------ */
+
+const MAX_AGENT_STEPS = 8; // stop runaway loops; the user can ask to continue
+let agentTask = null; // { goal, log: [], steps } while a task is running
+let pendingPlan = null; // an action plan awaiting the user's spoken "yes"
+
+// Injected. Build a numbered map of the interactive elements on the page and
+// tag each with data-sharon-id so we can act on it later. Self-contained.
+function collectInteractive(opts) {
+  var MAX = (opts && opts.max) || 120;
+
+  function visible(el) {
+    var s;
+    try {
+      s = window.getComputedStyle(el);
+    } catch (e) {
+      return false;
+    }
+    if (!s || s.display === "none" || s.visibility === "hidden") return false;
+    if (parseFloat(s.opacity) === 0) return false;
+    if (el.disabled) return false;
+    var r = el.getBoundingClientRect();
+    if (r.width <= 1 || r.height <= 1) return false;
+    // Keep things on or near the screen (allow a generous below-the-fold band).
+    if (r.bottom < -200 || r.top > (window.innerHeight || 0) + 3000) return false;
+    return true;
+  }
+
+  function esc(id) {
+    try {
+      return window.CSS && CSS.escape ? CSS.escape(id) : id;
+    } catch (e) {
+      return id;
+    }
+  }
+
+  function nameOf(el) {
+    var n = (el.getAttribute && el.getAttribute("aria-label")) || "";
+    if (!n && el.getAttribute) {
+      var lb = el.getAttribute("aria-labelledby");
+      if (lb) {
+        n = lb
+          .split(/\s+/)
+          .map(function (id) {
+            var e = document.getElementById(id);
+            return e ? e.innerText || e.textContent || "" : "";
+          })
+          .join(" ");
+      }
+    }
+    if (!n && el.id) {
+      var lab = document.querySelector('label[for="' + esc(el.id) + '"]');
+      if (lab) n = lab.innerText || lab.textContent || "";
+    }
+    if (!n && el.closest) {
+      var pl = el.closest("label");
+      if (pl) n = pl.innerText || pl.textContent || "";
+    }
+    if (!n && el.getAttribute) n = el.getAttribute("placeholder") || "";
+    if (!n && el.getAttribute) n = el.getAttribute("title") || "";
+    if (!n && el.getAttribute) n = el.getAttribute("alt") || "";
+    if (!n && typeof el.value === "string") n = el.value;
+    if (!n) n = el.innerText || el.textContent || "";
+    return (n || "").replace(/\s+/g, " ").trim().slice(0, 120);
+  }
+
+  var sel =
+    'a[href], button, input, textarea, select, [role="button"], [role="link"], ' +
+    '[role="textbox"], [role="checkbox"], [role="radio"], [role="tab"], ' +
+    '[role="menuitem"], [contenteditable=""], [contenteditable="true"]';
+  var nodes = document.querySelectorAll(sel);
+  var out = [];
+  var idx = 0;
+
+  for (var i = 0; i < nodes.length && out.length < MAX; i++) {
+    var el = nodes[i];
+    var tag = el.tagName;
+    var inputType =
+      tag === "INPUT" ? (el.getAttribute("type") || "text").toLowerCase() : "";
+    if (inputType === "hidden") continue;
+    if (!visible(el)) continue;
+
+    idx++;
+    el.setAttribute("data-sharon-id", String(idx));
+
+    var role = ((el.getAttribute && el.getAttribute("role")) || "").toLowerCase();
+    var kind = "other";
+    var value = "";
+    if (tag === "A" || role === "link") kind = "link";
+    else if (tag === "BUTTON" || role === "button" || role === "tab" || role === "menuitem")
+      kind = "button";
+    else if (tag === "TEXTAREA" || el.isContentEditable || role === "textbox")
+      kind = "textbox";
+    else if (tag === "SELECT") kind = "select";
+    else if (tag === "INPUT") {
+      if (inputType === "checkbox") {
+        kind = "checkbox";
+        value = el.checked ? "checked" : "unchecked";
+      } else if (inputType === "radio") {
+        kind = "radio";
+        value = el.checked ? "selected" : "not selected";
+      } else if (inputType === "submit" || inputType === "button") {
+        kind = "button";
+      } else if (inputType === "password") {
+        kind = "password";
+      } else {
+        kind = "textbox";
+      }
+    }
+    if (kind === "textbox" && !value) {
+      var v = el.isContentEditable ? el.innerText || "" : el.value || "";
+      value = v ? "has text" : "empty";
+    }
+
+    out.push({ id: idx, kind: kind, name: nameOf(el), value: value });
+  }
+
+  return { elements: out };
+}
+
+// Injected. Carry out an ordered list of actions on elements tagged by
+// collectInteractive, and report back what happened. Self-contained.
+function doActions(opts) {
+  var actions = (opts && opts.actions) || [];
+
+  function byId(id) {
+    return document.querySelector('[data-sharon-id="' + id + '"]');
+  }
+  function ev(type, init) {
+    if (type.indexOf("key") === 0) return new KeyboardEvent(type, init);
+    if (type === "click" || type.indexOf("mouse") === 0)
+      return new MouseEvent(type, init);
+    return new Event(type, init);
+  }
+  function fire(el, type, init) {
+    el.dispatchEvent(ev(type, Object.assign({ bubbles: true, cancelable: true }, init || {})));
+  }
+  function setValue(el, val) {
+    var proto =
+      el.tagName === "TEXTAREA"
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+    var desc = Object.getOwnPropertyDescriptor(proto, "value");
+    if (desc && desc.set) desc.set.call(el, val);
+    else el.value = val;
+  }
+
+  var results = [];
+  for (var i = 0; i < actions.length; i++) {
+    var a = actions[i] || {};
+    var r = { type: a.type, ok: false };
+    try {
+      if (a.type === "scroll") {
+        var amt = Math.round((window.innerHeight || 600) * 0.85);
+        if (a.direction === "up") window.scrollBy({ top: -amt, behavior: "smooth" });
+        else if (a.direction === "top") window.scrollTo({ top: 0, behavior: "smooth" });
+        else if (a.direction === "bottom")
+          window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+        else window.scrollBy({ top: amt, behavior: "smooth" });
+        r.ok = true;
+        results.push(r);
+        continue;
+      }
+      if (a.type === "key") {
+        var tgt = document.activeElement || document.body;
+        var k = a.key || "Enter";
+        fire(tgt, "keydown", { key: k });
+        fire(tgt, "keypress", { key: k });
+        fire(tgt, "keyup", { key: k });
+        r.ok = true;
+        results.push(r);
+        continue;
+      }
+
+      var el = a.id != null ? byId(a.id) : null;
+      if (!el) {
+        r.error = "no element " + a.id;
+        results.push(r);
+        continue;
+      }
+      try {
+        el.scrollIntoView({ block: "center" });
+      } catch (e) {
+        /* ignore */
+      }
+
+      if (a.type === "click") {
+        fire(el, "mousedown");
+        fire(el, "mouseup");
+        if (typeof el.click === "function") el.click();
+        else fire(el, "click");
+        r.ok = true;
+      } else if (a.type === "type") {
+        var text = a.text || "";
+        el.focus();
+        if (el.isContentEditable) {
+          if (!a.append) el.textContent = "";
+          var ok = false;
+          try {
+            ok = document.execCommand && document.execCommand("insertText", false, text);
+          } catch (e) {
+            ok = false;
+          }
+          if (!ok && el.textContent.indexOf(text) < 0)
+            el.textContent = (a.append ? el.textContent : "") + text;
+          fire(el, "input");
+          r.value = el.textContent;
+        } else {
+          setValue(el, (a.append ? el.value || "" : "") + text);
+          fire(el, "input");
+          fire(el, "change");
+          r.value = el.value;
+        }
+        r.ok = true;
+      } else if (a.type === "clear") {
+        if (el.isContentEditable) el.textContent = "";
+        else setValue(el, "");
+        fire(el, "input");
+        fire(el, "change");
+        r.ok = true;
+      } else if (a.type === "select") {
+        var want = (a.option || a.text || "").toLowerCase();
+        var done = false;
+        if (el.options) {
+          for (var j = 0; j < el.options.length; j++) {
+            var o = el.options[j];
+            var ot = (o.textContent || "").trim().toLowerCase();
+            if (ot === want || (o.value || "").toLowerCase() === want) {
+              el.selectedIndex = j;
+              done = true;
+              break;
+            }
+          }
+          if (!done) {
+            for (var m = 0; m < el.options.length; m++) {
+              if ((el.options[m].textContent || "").toLowerCase().indexOf(want) >= 0) {
+                el.selectedIndex = m;
+                done = true;
+                break;
+              }
+            }
+          }
+        }
+        fire(el, "input");
+        fire(el, "change");
+        r.ok = done;
+        if (!done) r.error = "no matching option";
+      } else {
+        r.error = "unknown action";
+      }
+    } catch (e) {
+      r.error = String((e && e.message) || e);
+    }
+    results.push(r);
+  }
+  return { results: results };
+}
+
+// Show a status line while Sharon is acting, then fall back to normal status.
+function setActing(on, text) {
+  if (on) {
+    els.html.setAttribute("data-state", "reading");
+    setStatus(text || "Working…");
+  } else {
+    updateStatus();
+  }
+}
+
+async function getActionTab() {
+  const tab = await getActiveTab();
+  if (!tab || !tab.id || isRestricted(tab.url)) return null;
+  return tab;
+}
+
+async function extractElements(tab) {
+  try {
+    const [inj] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: collectInteractive,
+      args: [{ max: 120 }],
+    });
+    return (inj && inj.result && inj.result.elements) || [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function elementsToText(list) {
+  if (!list.length) return "(no interactive elements detected)";
+  return list
+    .map(
+      (e) =>
+        "[" +
+        e.id +
+        "] " +
+        e.kind +
+        (e.name ? ' "' + e.name + '"' : "") +
+        (e.value ? " (" + e.value + ")" : "")
+    )
+    .join("\n");
+}
+
+function buildAgentPrompt(goal, log, list) {
+  let s = AGENT_GROUNDING + "User goal: " + goal + "\n\n";
+  if (log.length) {
+    s +=
+      "Actions you have already taken this task:\n" +
+      log.map((l, i) => i + 1 + ". " + l).join("\n") +
+      "\n\n";
+  }
+  s += "Interactive elements on the page right now:\n" + elementsToText(list);
+  return s;
+}
+
+// Pull the JSON action plan out of the model's reply. Returns
+// { say, actions, done } or null when there's no parseable plan (in which case
+// we treat the reply as an ordinary spoken answer).
+function parseAgentReply(reply) {
+  if (!reply) return null;
+  let jsonStr = null;
+  const fence = reply.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) jsonStr = fence[1];
+  else {
+    const a = reply.indexOf("{");
+    const b = reply.lastIndexOf("}");
+    if (a >= 0 && b > a) jsonStr = reply.slice(a, b + 1);
+  }
+  if (!jsonStr) return null;
+  let o;
+  try {
+    o = JSON.parse(jsonStr);
+  } catch (_) {
+    return null;
+  }
+  if (!o || typeof o !== "object") return null;
+  const actions = Array.isArray(o.actions) ? o.actions : [];
+  return {
+    say: (o.say || "").trim(),
+    actions,
+    done: o.done === true || actions.length === 0,
+  };
+}
+
+// Describe an action plan in plain words, for the spoken confirmation prompt.
+function describePlan(actions, list) {
+  const nameById = {};
+  for (const e of list) nameById[e.id] = e.name;
+  const parts = [];
+  for (const a of actions) {
+    const who = a.id != null && nameById[a.id] ? ' "' + nameById[a.id] + '"' : "";
+    if (a.type === "click") parts.push("click" + who);
+    else if (a.type === "type") parts.push("type into" + who);
+    else if (a.type === "clear") parts.push("clear" + who);
+    else if (a.type === "select") parts.push("choose " + (a.option || a.text || "") + who);
+    else if (a.type === "key") parts.push("press " + (a.key || "Enter"));
+    else if (a.type === "scroll") parts.push("scroll " + (a.direction || "down"));
+  }
+  return parts.join(", then ");
+}
+
+function startAgentTask(goal) {
+  agentTask = { goal, log: [], steps: 0 };
+  agentStep();
+}
+
+function cancelAgentTask() {
+  agentTask = null;
+  pendingPlan = null;
+}
+
+async function agentStep() {
+  if (!agentTask) return;
+  if (agentTask.steps >= MAX_AGENT_STEPS) {
+    sharonSay(
+      "I've taken several steps, so I'll pause here rather than run away with " +
+        "it. Tell me how you'd like to continue."
+    );
+    cancelAgentTask();
+    setActing(false);
+    return;
+  }
+
+  const tab = await getActionTab();
+  if (!tab) {
+    sharonSay("There's nothing here I can act on. Open a website and I'll help.");
+    cancelAgentTask();
+    return;
+  }
+
+  const ctx = await readPageContext();
+  if (ctx.restricted) {
+    sharonSay("I can't act on this page.");
+    cancelAgentTask();
+    return;
+  }
+
+  setActing(true, "Looking at the page…");
+  const list = await extractElements(tab);
+  const content = buildAgentPrompt(agentTask.goal, agentTask.log, list);
+
+  const typing = showTyping();
+  let data;
+  try {
+    data = await askSharon(content, ctx);
+  } catch (err) {
+    typing.remove();
+    addBubble(
+      "error",
+      "Sharon hit a snag: " + ((err && err.message) || "I couldn't reach the server.")
+    );
+    cancelAgentTask();
+    setActing(false);
+    return;
+  }
+  typing.remove();
+
+  if (!data || !data.ok) {
+    addBubble("error", "Sharon hit a snag: " + ((data && data.error) || "something went wrong."));
+    cancelAgentTask();
+    setActing(false);
+    return;
+  }
+
+  const plan = parseAgentReply(data.reply);
+  if (!plan) {
+    // Not an action reply — treat it as a normal spoken answer.
+    const bubble = addSharonBubble(data.reply || "(no reply)");
+    addSources(bubble, data.sources);
+    if (data.reply) speakText(data.reply);
+    cancelAgentTask();
+    setActing(false);
+    return;
+  }
+
+  if (plan.say) {
+    addSharonBubble(plan.say);
+    speakText(plan.say);
+  }
+
+  if (!plan.actions.length) {
+    // Sharon answered / decided she's done — no page action needed.
+    cancelAgentTask();
+    setActing(false);
+    return;
+  }
+
+  if (settings.confirmActions) {
+    pendingPlan = { actions: plan.actions };
+    const desc = describePlan(plan.actions, list);
+    setActing(true, "Waiting for your okay…");
+    sharonSay(
+      "I'm about to " +
+        (desc || "act on the page") +
+        '. Say "yes" to go ahead, or "no" to stop.'
+    );
+    return;
+  }
+
+  await runPlan(plan.actions);
+}
+
+async function runPlan(actions) {
+  if (!agentTask) return;
+  const tab = await getActionTab();
+  if (!tab) {
+    sharonSay("The page went away before I could act.");
+    cancelAgentTask();
+    setActing(false);
+    return;
+  }
+
+  setActing(true, "Working…");
+  let res = {};
+  try {
+    const [inj] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: doActions,
+      args: [{ actions }],
+    });
+    res = (inj && inj.result) || {};
+  } catch (e) {
+    res = { results: [{ ok: false, error: String((e && e.message) || e) }] };
+  }
+
+  const results = res.results || [];
+  results.forEach((r, i) => {
+    const a = actions[i] || {};
+    agentTask.log.push(
+      a.type +
+        (a.id != null ? " #" + a.id : "") +
+        (a.text ? ' "' + String(a.text).slice(0, 40) + '"' : "") +
+        " → " +
+        (r.ok ? "ok" : "failed" + (r.error ? " (" + r.error + ")" : ""))
+    );
+  });
+  agentTask.steps++;
+
+  // Let the page settle (navigation, re-render) before the next observation.
+  await delay(800);
+  agentStep();
+}
+
+/* ------------------------------------------------------------------ *
  * Tab card — keep it current
  * ------------------------------------------------------------------ */
 function refreshTabCard(tab) {
@@ -1136,10 +1694,37 @@ function handleUserUtterance(text) {
     .replace(/[.!?,]+$/g, "")
     .trim();
 
+  // If an action plan is waiting for the user's okay, this utterance answers it.
+  if (pendingPlan) {
+    const yes = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|confirm|go for it|sounds good)$/.test(
+      cmd
+    );
+    const no = /^(no|nope|nah|stop|cancel|don'?t|do not|never ?mind|wait|hold on)$/.test(
+      cmd
+    );
+    if (yes) {
+      addBubble("user", text);
+      const actions = pendingPlan.actions;
+      pendingPlan = null;
+      runPlan(actions);
+      return;
+    }
+    if (no) {
+      addBubble("user", text);
+      cancelAgentTask();
+      sharonSay("Okay, I'll leave it.");
+      updateStatus();
+      return;
+    }
+    // Neither yes nor no — treat it as a brand-new request; drop the plan.
+    cancelAgentTask();
+  }
+
   if (cmd === "stop" || cmd === "stop reading" || cmd === "be quiet" || cmd === "quiet") {
     addBubble("user", text);
+    cancelAgentTask(); // abort any task in progress
     stopSpeaking();
-    updateStatus();
+    setActing(false);
     return;
   }
   if (cmd === "pause") {
@@ -1174,10 +1759,16 @@ function handleUserUtterance(text) {
     return;
   }
 
-  // Anything else is an instruction about what to read or focus on.
+  // Anything else is an instruction. When Sharon is allowed to act on the page,
+  // it runs through the agentic loop (which still just answers/reads when no
+  // page action is needed); otherwise it's a normal read/answer request.
   addBubble("user", text);
   if (speaking) stopSpeaking(); // barge-in: pause the reading first
-  sendInstruction(text, { remember: true });
+  if (settings.allowActions) {
+    startAgentTask(text);
+  } else {
+    sendInstruction(text, { remember: true });
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1338,6 +1929,8 @@ if (els.aloudBtn) {
 function applySettingsToUI() {
   if (els.autoReadToggle) els.autoReadToggle.checked = !!settings.autoRead;
   if (els.scrollToggle) els.scrollToggle.checked = !!settings.allowScroll;
+  if (els.actionsToggle) els.actionsToggle.checked = !!settings.allowActions;
+  if (els.confirmToggle) els.confirmToggle.checked = !!settings.confirmActions;
   updateReadAloudUI();
 }
 
@@ -1417,6 +2010,22 @@ if (els.autoReadToggle) {
 if (els.scrollToggle) {
   els.scrollToggle.addEventListener("change", () => {
     settings.allowScroll = els.scrollToggle.checked;
+    saveSettings();
+  });
+}
+
+if (els.actionsToggle) {
+  els.actionsToggle.addEventListener("change", () => {
+    settings.allowActions = els.actionsToggle.checked;
+    saveSettings();
+    if (!settings.allowActions) cancelAgentTask(); // stop any task in flight
+    updateStatus();
+  });
+}
+
+if (els.confirmToggle) {
+  els.confirmToggle.addEventListener("change", () => {
+    settings.confirmActions = els.confirmToggle.checked;
     saveSettings();
   });
 }
