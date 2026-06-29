@@ -226,7 +226,7 @@ class Component extends DCLogic {
       'Owner (Profile ID)': bm._owner != null ? bm._owner : '',
       'Date Added': bm._dateAdded, 'Last Opened': bm._lastOpened != null ? bm._lastOpened : '', 'Times Opened': bm._timesOpened != null ? bm._timesOpened : '',
       'Notes': bm.notes != null ? bm.notes : '',
-      'Icon': /^https?:\/\//i.test(String(bm.icon || '').trim()) ? String(bm.icon).trim() : ''
+      'Icon': String(bm.icon || '').trim()
     };
   }
   // Diff the current list against the last-known sheet state; queue only changes.
