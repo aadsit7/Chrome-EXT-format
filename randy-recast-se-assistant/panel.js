@@ -3858,12 +3858,10 @@
                 </div>
               </div>
               <div class="composer-zone">
-                <div class="composer-tools" style="max-width:768px;margin:0 auto 8px;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
-                  <button class="btn-outline" data-action="new-chat" aria-label="New chat" title="Start a new chat — the current one is saved in the menu">
-                    <i data-lucide="square-pen" class="w-4 h-4"></i><span>New chat</span>
-                  </button>
-                </div>
                 <div class="composer">
+                  <button class="comp-newchat" data-action="new-chat" aria-label="New chat" title="Start a new chat — the current one is saved in the menu">
+                    <i data-lucide="square-pen" class="w-5 h-5"></i>
+                  </button>
                   <textarea id="home-input-${idx}" class="composer-input" rows="1" placeholder="Message ${escAttr(slot.label)}…" ${slot.loading ? 'disabled' : ''}>${escHtml(slot.inputText || '')}</textarea>
                   <button class="comp-capture${SELECTION_CAPTURE.armed ? ' armed' : ''}" data-action="ask-selection" data-idx="${idx}" aria-label="${SELECTION_CAPTURE.armed ? 'Capturing highlights — click to stop' : 'Ask about highlighted text'}" aria-pressed="${SELECTION_CAPTURE.armed}" title="${SELECTION_CAPTURE.armed ? 'Capturing — highlight text on the page and it goes to Randy. Click to stop.' : 'Click, then highlight text on the page — it goes straight to Randy.'}">
                     <i data-lucide="highlighter" class="w-5 h-5"></i>

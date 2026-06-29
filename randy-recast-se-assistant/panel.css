@@ -327,6 +327,13 @@
       .comp-capture.armed { background: rgba(3,114,255,0.10); border-color: var(--primary); color: var(--primary); }
       .comp-capture.armed:hover { background: rgba(3,114,255,0.16); }
 
+      /* New-chat button — icon only, pinned to the left of the input so the
+         composer reads as one clean, modern bar. Same circular language as
+         the mic/capture buttons. */
+      .comp-newchat { width: 38px; height: 38px; border-radius: 50%; background: transparent; color: var(--navy); border: 1.5px solid var(--n200); display: grid; place-items: center; cursor: pointer; flex-shrink: 0; transition: background 0.12s, border-color 0.12s, color 0.12s, transform 0.12s; }
+      .comp-newchat:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+      .comp-newchat:active:not(:disabled) { transform: scale(0.94); }
+
       /* ===== Saved-conversation view (read-only, in place) ===== */
       .saved-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
       .saved-note { align-self: center; display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 600; color: var(--n500); background: var(--n100); border-radius: 999px; padding: 6px 14px; margin-bottom: 4px; }
@@ -531,6 +538,7 @@
         .comp-send { width: 44px; height: 44px; }
         .comp-mic { width: 44px; height: 44px; }
         .comp-capture { width: 44px; height: 44px; }
+        .comp-newchat { width: 44px; height: 44px; }
       }
       @media (prefers-reduced-motion: reduce) {
         .orb-wrap .orb-ring, .sound-wave-bar, .typing-dot, .vp .vp-dot, .chat-avatar .status-dot, .interim-caret, .voice-toast, .vp-spin, .comp-mic.live { animation: none !important; }
@@ -710,7 +718,7 @@
       .icon-btn { border-radius: 14px; box-shadow: 0 2px 10px rgba(30,40,90,0.07); }
 
       /* Composer — clean rounded frosted pill at the bottom. */
-      .composer { border-radius: 28px; padding: 8px 8px 8px 22px; }
+      .composer { border-radius: 28px; padding: 8px; }
       .msg-col { gap: 18px; }
 
       /* Chat bubbles — a touch softer, still float gently. */
