@@ -61,9 +61,13 @@ How to test her
      - Say anything else, like "just give me the key points" or "what does it
        say about pricing?", and she'll pause, take your instruction, and read
        you the answer.
-6. The big microphone at the bottom is the only control. Tap it to mute
-   (it turns grey with a slash and stops listening); tap again to go live
-   (coral with a soft pulse). When muted, Sharon just reads and ignores you.
+6. There are two controls at the bottom. The big microphone mutes/unmutes
+   listening: tap it to mute (it turns grey with a slash and stops listening);
+   tap again to go live (coral with a soft pulse). When muted, Sharon just reads
+   and ignores you. The smaller speaker button beside it mutes/unmutes Sharon's
+   own voice: tap it to silence her reading aloud (her answers still appear on
+   screen, she just won't speak them); tap again to let her speak. Your choice
+   is remembered after you close and reopen.
 7. Open a protected page like  chrome://settings  — instead of breaking, she
    shows a calm "Open a website and I'll start reading" line and begins again
    the moment you switch to a real website.

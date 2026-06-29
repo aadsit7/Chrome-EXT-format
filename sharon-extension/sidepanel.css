@@ -317,8 +317,9 @@ html[data-state="reading"] .orb-pulse {
   text-decoration: underline;
 }
 
-/* ---------- Microphone (the single control) ---------- */
+/* ---------- Bottom controls (microphone + read-aloud) ---------- */
 .mic-bar {
+  position: relative;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -388,6 +389,50 @@ html[data-mic="muted"] .mic-slash {
     box-shadow: 0 6px 18px rgba(255, 106, 90, 0.35),
       0 0 0 12px rgba(255, 106, 90, 0);
   }
+}
+
+/* Read-aloud mute — a smaller secondary icon to the right of the mic. */
+.aloud-btn {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  background: var(--card);
+  color: var(--ink);
+  transition: filter 0.15s, transform 0.06s, background 0.2s, color 0.2s;
+}
+.aloud-btn:hover {
+  filter: brightness(0.98);
+}
+.aloud-btn:active {
+  transform: translateY(-50%) scale(0.94);
+}
+
+/* Muted — grey it out and show the slash. */
+html[data-readaloud="off"] .aloud-btn {
+  background: #e7e9f0;
+  color: var(--muted);
+}
+
+.aloud-slash {
+  position: absolute;
+  width: 30px;
+  height: 2.5px;
+  border-radius: 2px;
+  background: var(--muted);
+  transform: rotate(-45deg);
+  display: none;
+}
+html[data-readaloud="off"] .aloud-slash {
+  display: block;
 }
 
 /* ---------- Settings sheet ---------- */
