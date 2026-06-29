@@ -360,6 +360,108 @@ class Component extends DCLogic {
       'note book lm': 'notebooklm', 'cal andar': 'calendar'
     });
   }
+  // Concept → site synonyms. Lets a request phrased by *purpose* ("open my
+  // email", "the repo", "music") find a bookmark by what it IS, not just by a
+  // literal name/host match. Each key is a spoken/generic word; the values are
+  // tokens that, when present in a bookmark's name / host / url / notes, mean
+  // that bookmark satisfies the concept. Curated, on-device — no network.
+  conceptMap() {
+    return this._conceptMap || (this._conceptMap = {
+      email: ['gmail', 'outlook', 'proton', 'protonmail', 'yahoo', 'hotmail', 'icloud', 'fastmail', 'mail'],
+      mail: ['gmail', 'outlook', 'proton', 'yahoo', 'hotmail', 'icloud', 'mail'],
+      inbox: ['gmail', 'outlook', 'mail'],
+      video: ['youtube', 'vimeo', 'twitch'], videos: ['youtube', 'vimeo', 'twitch'],
+      movies: ['netflix', 'hulu', 'disney', 'primevideo', 'max', 'youtube'],
+      tv: ['netflix', 'hulu', 'disney', 'max', 'youtube'],
+      streaming: ['netflix', 'hulu', 'disney', 'youtube', 'twitch', 'spotify'],
+      music: ['spotify', 'soundcloud', 'applemusic', 'pandora', 'tidal', 'youtubemusic'],
+      songs: ['spotify', 'soundcloud', 'applemusic', 'tidal'],
+      code: ['github', 'gitlab', 'bitbucket'], repo: ['github', 'gitlab', 'bitbucket'],
+      repository: ['github', 'gitlab', 'bitbucket'], git: ['github', 'gitlab', 'bitbucket'],
+      docs: ['docs', 'notion', 'word', 'onedrive', 'confluence'],
+      document: ['docs', 'notion', 'word', 'onedrive'], documents: ['docs', 'notion', 'word', 'onedrive'],
+      spreadsheet: ['sheets', 'excel', 'airtable'], spreadsheets: ['sheets', 'excel', 'airtable'],
+      sheet: ['sheets', 'excel', 'airtable'],
+      slides: ['slides', 'powerpoint', 'keynote'], presentation: ['slides', 'powerpoint', 'keynote'],
+      calendar: ['calendar', 'cal', 'calendly'], schedule: ['calendar', 'calendly'],
+      chat: ['chatgpt', 'claude', 'gemini', 'copilot', 'slack', 'discord'],
+      ai: ['chatgpt', 'claude', 'gemini', 'copilot', 'openai', 'bard', 'perplexity'],
+      assistant: ['chatgpt', 'claude', 'gemini', 'copilot'],
+      gpt: ['chatgpt', 'openai'], chatbot: ['chatgpt', 'claude', 'gemini'],
+      shopping: ['amazon', 'ebay', 'etsy', 'walmart', 'target'], shop: ['amazon', 'ebay', 'etsy'],
+      buy: ['amazon', 'ebay', 'etsy', 'walmart'],
+      social: ['facebook', 'instagram', 'twitter', 'threads', 'tiktok', 'linkedin', 'reddit'],
+      photos: ['photos', 'flickr', 'instagram', 'imgur', 'pinterest'], pictures: ['photos', 'flickr', 'imgur'],
+      images: ['photos', 'flickr', 'imgur', 'pinterest'],
+      maps: ['maps', 'googlemaps', 'waze'], directions: ['maps', 'waze'], navigation: ['maps', 'waze'],
+      design: ['figma', 'canva', 'sketch', 'adobe', 'dribbble'],
+      storage: ['drive', 'dropbox', 'box', 'onedrive', 'icloud'],
+      files: ['drive', 'dropbox', 'box', 'onedrive'], cloud: ['drive', 'dropbox', 'onedrive', 'icloud'],
+      meeting: ['zoom', 'meet', 'teams', 'webex', 'skype'], meet: ['zoom', 'meet', 'teams'],
+      call: ['zoom', 'meet', 'teams', 'webex', 'skype'], zoom: ['zoom'],
+      notes: ['notion', 'evernote', 'keep', 'onenote', 'obsidian', 'bear'],
+      note: ['notion', 'evernote', 'keep', 'onenote', 'obsidian'],
+      todo: ['todoist', 'notion', 'asana', 'trello'], tasks: ['todoist', 'asana', 'trello', 'jira', 'linear'],
+      project: ['jira', 'asana', 'trello', 'linear', 'monday', 'clickup', 'notion'],
+      tracker: ['jira', 'asana', 'trello', 'linear', 'monday'], tickets: ['jira', 'zendesk', 'linear'],
+      work: ['slack', 'jira', 'asana', 'salesforce', 'notion'],
+      crm: ['salesforce', 'hubspot'], bank: ['chase', 'wellsfargo', 'bankofamerica', 'paypal'],
+      banking: ['chase', 'wellsfargo', 'bankofamerica'], money: ['paypal', 'venmo', 'mint', 'stripe'],
+      pay: ['paypal', 'venmo', 'stripe'], payment: ['paypal', 'venmo', 'stripe'],
+      news: ['news', 'cnn', 'bbc', 'nytimes', 'reuters', 'guardian'],
+      weather: ['weather', 'accuweather', 'wunderground'],
+      search: ['google', 'bing', 'duckduckgo'], maps2: ['maps'],
+      gaming: ['steam', 'twitch', 'epicgames', 'xbox', 'playstation'], games: ['steam', 'epicgames', 'twitch']
+    });
+  }
+  // Words that carry no matching signal — dropped before concept analysis.
+  conceptStops() {
+    return this._conceptStops || (this._conceptStops = new Set(
+      ('a an the my our your to up on in of for me us please go goto open show get find launch ' +
+       'pull bring load start visit head and or it that this these those page site website web app ' +
+       'com www http https new tab window thing stuff some any my').split(' ')));
+  }
+  // The searchable text for one bookmark: name + spoken host + core domain +
+  // url path tokens + notes/description. Returned as a blob string and a word
+  // set so the concept scorer can analyse title, URL, and description together.
+  bmKeywords(bm) {
+    const name = this.normalize(bm.name);
+    const host = this.normalize(this.hostOf(bm.url).replace(/\./g, ' '));
+    const core = this.normalize(this.hostCore(bm.url));
+    const urlToks = this.normalize(String(bm.url || '').replace(/[\/._\-?=&#]+/g, ' '));
+    const notes = this.normalize(bm.notes);
+    const blob = [name, host, core, urlToks, notes].filter(Boolean).join(' ');
+    return { blob, words: new Set(blob.split(' ').filter(Boolean)) };
+  }
+  // Score a bookmark by how well the request's meaningful words are covered by
+  // its title / URL / description — directly, via concept synonyms, or fuzzily.
+  // Full coverage yields a confident score (can auto-open when it's the clear
+  // winner); partial coverage only ever surfaces the bookmark as an option.
+  conceptScore(prep, bm) {
+    const toks = (prep && prep.tokens) || [];
+    if (!toks.length) return 0;
+    const { blob, words } = this.bmKeywords(bm);
+    if (!blob) return 0;
+    const cmap = this.conceptMap();
+    let sum = 0, covered = 0;
+    for (const t of toks) {
+      let tScore = 0;
+      if (words.has(t) || (t.length >= 3 && blob.includes(t))) {
+        tScore = 1; // literal hit in name / host / url / notes
+      } else if (cmap[t]) {
+        for (const g of cmap[t]) { if (words.has(g) || blob.includes(g)) { tScore = 0.92; break; } } // concept synonym
+      }
+      if (!tScore && t.length >= 4) {
+        let bestSim = 0;
+        for (const w of words) { if (w.length >= 4) { const sm = this.sim(t, w); if (sm > bestSim) bestSim = sm; } }
+        if (bestSim >= 0.84) tScore = 0.85 * bestSim; // fuzzy / misheard
+      }
+      if (tScore > 0) covered++;
+      sum += tScore;
+    }
+    const coverage = covered / toks.length, avg = sum / toks.length;
+    return coverage >= 1 ? 0.78 + 0.14 * avg : 0.5 * avg;
+  }
   // A compact Soundex-style key, used only as a last-resort tie-breaker for
   // consonant-preserving mis-hears (e.g. "figma" vs "fig mah").
   phon(s) {
@@ -389,7 +491,10 @@ class Component extends DCLogic {
     // Extra phrases come from the engine's alternative hypotheses; they enrich
     // matching but the primary phrase still drives phon/raw (and variants[0]).
     if (Array.isArray(extra)) for (const p of extra) fold(p);
-    return { variants: [...variants], phon: this.phon(base.replace(/\s+/g, '')), raw: base };
+    // Meaningful words (stopwords removed) drive concept/coverage analysis.
+    const stops = this.conceptStops();
+    const tokens = base.split(' ').filter(w => w.length >= 2 && !stops.has(w));
+    return { variants: [...variants], phon: this.phon(base.replace(/\s+/g, '')), raw: base, tokens };
   }
   scoreBookmark(prep, bm) {
     // Accept a raw string for backward-compatibility.
@@ -411,6 +516,10 @@ class Component extends DCLogic {
     }
     // Phonetic last resort — only a mild boost, never enough to beat a real match.
     if (best < 0.86 && prep.phon) { for (const c of [nameFlat, core]) { if (c && this.phon(c) === prep.phon) { best = Math.max(best, 0.85); break; } } }
+    // Concept / coverage analysis over title + URL + description. Only raises the
+    // score (recall), never lowers it, so exact-match behaviour is preserved.
+    const cs = this.conceptScore(prep, bm);
+    if (cs > best) best = cs;
     return best;
   }
   // Rank every bookmark for a prepared query, best first.
@@ -1581,8 +1690,20 @@ class Component extends DCLogic {
     const nq = this.normalize(s.search);
     const showResults = !!s.search.trim();
     let results = [];
-    if (showResults) results = s.bookmarks.filter(b => this.normalize(b.name).includes(nq) || this.normalize(this.hostOf(b.url)).includes(nq) || this.normalize(b.notes).includes(nq))
-      .map(b => ({ id: b.id, name: b.name || this.hostCore(b.url), host: this.hostOf(b.url), icon: this.iconFor(b), letter: this.letterOf(b), onTap: () => this.openBookmark(b, false) }));
+    if (showResults) {
+      // Rank by the same smart scorer the voice assistant uses (title + URL +
+      // description + concept synonyms), while still keeping every literal
+      // substring hit so nothing the user typed verbatim disappears.
+      const prep = this.prepQuery(s.search);
+      results = s.bookmarks
+        .map(b => {
+          const sub = this.normalize(b.name).includes(nq) || this.normalize(this.hostOf(b.url)).includes(nq) || this.normalize(b.notes).includes(nq);
+          return { b, sub, sc: this.scoreBookmark(prep, b) };
+        })
+        .filter(x => x.sub || x.sc >= 0.55)
+        .sort((a, b) => b.sc - a.sc || (a.sub === b.sub ? 0 : a.sub ? -1 : 1))
+        .map(({ b }) => ({ id: b.id, name: b.name || this.hostCore(b.url), host: this.hostOf(b.url), icon: this.iconFor(b), letter: this.letterOf(b), onTap: () => this.openBookmark(b, false) }));
+    }
 
     const have = new Set(s.bookmarks.map(b => this.hostOf(b.url)));
     const suggestions = this.STARTERS.filter(x => !have.has(this.hostOf(x.url))).slice(0, 6).map(x => ({ name: x.name, icon: this.favicon(x.url), letter: x.name[0], add: () => this.addBookmark(x.name, x.url) }));
