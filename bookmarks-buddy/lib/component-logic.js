@@ -1333,6 +1333,15 @@ class Component extends DCLogic {
     const pages = this.state.pages.map(p => p.map(c => c === folder ? newFolder : c));
     this.setState({ pages, folderOpen: newFolder }, () => this.save());
   }
+  // Rename the open folder. The name is the folder's sync key (see toLayout),
+  // so editing it re-groups its items under the new name on save, mirroring
+  // renamePage. Empty falls back to 'Folder' at display/sync time.
+  renameFolder(name) {
+    const folder = this.state.folderOpen; if (!folder || folder.type !== 'folder') return;
+    const newFolder = Object.assign({}, folder, { name: String(name || '') });
+    const pages = this.state.pages.map(p => p.map(c => c === folder ? newFolder : c));
+    this.setState({ pages, folderOpen: newFolder }, () => this.save());
+  }
   // Remove one app from an open folder, dropping it back beside the folder.
   // When the folder is left with a single item (or none) it dissolves, exactly
   // like dragging the last tile out on iOS.
@@ -1679,7 +1688,7 @@ class Component extends DCLogic {
       caretStyle: s.listening && !s.heard ? 'display:inline-block;width:3px;height:1em;background:var(--bb-accent2);margin-left:3px;vertical-align:text-bottom;animation:bbCaret 1s step-end infinite;' : 'display:none;',
       voiceExamples: ['open ' + fname, 'next page', 'add Notion'],
       folderOpen: !!folder, folderName: folder ? folder.name : '', folderCount: folder ? folder.items.length : 0,
-      folderEditing: s.folderEdit, folderEditLabel: s.folderEdit ? 'Done' : 'Edit', toggleFolderEdit: () => this.toggleFolderEdit(),
+      folderEditing: s.folderEdit, folderNotEditing: !s.folderEdit, folderEditLabel: s.folderEdit ? 'Done' : 'Edit', toggleFolderEdit: () => this.toggleFolderEdit(), onFolderName: e => this.renameFolder(e.target.value),
       folderApps: folder ? folder.items.map(id => { const bm = byId(id) || { id, name: '?', url: '' }; return { id, name: bm.name || this.hostCore(bm.url), icon: this.iconFor(bm), letter: this.letterOf(bm), grad: this.grad(bm.name || bm.url), tileClass: '', onTap: () => { if (s.folderEdit) this.openEdit(id); else this.openBookmark(bm, false); }, onRemove: () => this.removeFromFolder(folder, id) }; }) : [],
       closeFolder: () => this.setState({ folderOpen: null, folderEdit: false }), openFolderAll: () => this.openFolderAllFn(),
       pageTitle: (s.pageNames[s.currentPage] || ''), onPageName: e => this.renamePage(e.target.value),
