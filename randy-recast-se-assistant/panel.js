@@ -3716,7 +3716,6 @@
               <div class="conv-sub">${sub}</div>
             </div>
             <div class="head-actions">
-              ${renderVoicePill(vm, idx)}
               <button class="icon-btn" data-action="switch-tab" data-tab="settings" title="Settings" aria-label="Settings">
                 <i data-lucide="more-horizontal" class="w-5 h-5"></i>
               </button>
