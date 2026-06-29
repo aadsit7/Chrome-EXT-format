@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Sharon",
   "version": "5.0.0",
-  "description": "A read-only voice reader for your current tab: it reads aloud whatever is visible — articles, emails, docs, messages — and listens for your voice.",
+  "description": "A voice reader for your current tab: it reads aloud whatever is visible — articles, emails, docs, messages — listens for your voice, and can scroll the page when you ask so it can read further.",
   "action": {
     "default_title": "Sharon",
     "default_icon": {

@@ -7,17 +7,21 @@ Google Chrome and Microsoft Edge. There is no API key inside the extension —
 Sharon sends the page text and your spoken instructions to a server that does
 the AI part.
 
-Sharon is a read-only voice reader for whatever is on your current tab. She
-only ever works with the single active tab in the current window, and she only
-reads what is actually visible there right now. She never reads other tabs,
-never navigates, and never clicks or opens anything. It isn't just for
-articles — if an email, document, message, thread, or post is open on screen,
-she reads that too. Because you click around the page yourself, every time you
-ask her something she re-reads the tab fresh, so she's always answering about
-what's on screen at that moment. She answers only from what's actually on the
-page: if something isn't there — say you ask about an email while only your
-list of messages is showing — she'll tell you what she can see and ask you to
-open it yourself rather than guess.
+Sharon is a voice reader for whatever is on your current tab. She only ever
+works with the single active tab in the current window, and she only reads what
+is actually visible there right now. She never reads other tabs, never
+navigates, and never clicks or opens anything. The one page action she can take
+— and only when you allow it in Settings — is to scroll: ask her to "scroll
+down", "scroll up", "go to the top/bottom", or "read more" and she'll scroll the
+page and read what comes into view, so you can work your way down a long article
+or message thread hands-free. It isn't just for articles — if an email,
+document, message, thread, or post is open on screen, she reads that too.
+Because you click around the page yourself, every time you ask her something she
+re-reads the tab fresh, so she's always answering about what's on screen at that
+moment. She answers only from what's actually on the page: if something isn't
+there — say you ask about an email while only your list of messages is showing —
+she'll tell you what she can see and offer to scroll for more or ask you to open
+it yourself rather than guess.
 
 
 How to load Sharon (for first-timers)
@@ -50,6 +54,10 @@ How to test her
 5. While she's reading, just talk:
      - Say "stop" to stop reading.
      - Say "pause" and "resume" to control the voice.
+     - Say "scroll down", "scroll up", "go to the top", "go to the bottom", or
+       "read more", and (when scrolling is allowed in Settings) she'll scroll
+       the page and read what's now in view — great for reading further down a
+       long article or message thread.
      - Say anything else, like "just give me the key points" or "what does it
        say about pricing?", and she'll pause, take your instruction, and read
        you the answer.
@@ -74,6 +82,14 @@ the panel.
   any page text on her own. The mic stays live and the header says "Ask me to
   read this page" — just say "read this page" or ask a question about it and
   she'll read or answer then.
+
+- "Let Sharon scroll the page for me." (on by default)
+  This is the slider that approves Sharon's one page action. When ON, you can
+  say "scroll down", "scroll up", "go to the top/bottom", or "read more" and she
+  scrolls the active tab and reads whatever comes into view — useful for moving
+  further down a long article or message thread. When OFF, she never touches the
+  page: she stays a pure reader and, if you ask her to scroll, she'll tell you
+  it's switched off. Your choice is remembered after you close and reopen.
 
 - Keyboard shortcut. Settings shows the current shortcut for launching Sharon
   (Ctrl+Shift+Y on Windows/Linux, Command+Shift+Y on Mac by default), or

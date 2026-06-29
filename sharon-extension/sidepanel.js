@@ -19,6 +19,7 @@ const els = {
   settings: document.getElementById("settings"),
   settingsBack: document.getElementById("settingsBack"),
   autoReadToggle: document.getElementById("autoReadToggle"),
+  scrollToggle: document.getElementById("scrollToggle"),
   shortcutValue: document.getElementById("shortcutValue"),
   changeShortcut: document.getElementById("changeShortcut"),
 };
@@ -35,12 +36,16 @@ const GROUNDING =
   "1. Use ONLY that page content. Do not use outside knowledge to fill gaps.\n" +
   "2. Talk only about what is actually in the page content. Never invent, " +
   "guess, or assume anything that isn't there.\n" +
-  "3. You cannot click, scroll, open, or navigate anything. If the user asks " +
-  "for something that isn't in the page content — for example what's inside an " +
-  "email while only a list of messages is visible — say plainly what you can " +
-  "see and ask them to open it themselves, for example: \"I can see your list " +
-  "of messages but not what's inside them. Open the one you want and I'll read " +
-  "and summarize it.\"\n" +
+  "3. You cannot click, open, or navigate to other pages, and you only ever " +
+  "see the text currently extracted from the tab. You CAN scroll this page " +
+  "when the user asks — they can say \"scroll down\", \"scroll up\", \"go to " +
+  "the top/bottom\", or \"read more\" and the app scrolls and then gives you " +
+  "the newly visible text to read. If the user asks about something that isn't " +
+  "in the page content — for example what's inside an email while only a list " +
+  "of messages is visible — say plainly what you can see and offer to scroll " +
+  "for more or ask them to open it themselves, for example: \"I can see your " +
+  "list of messages but not what's inside them. Open the one you want, or ask " +
+  "me to scroll, and I'll read it.\"\n" +
   "4. If the answer isn't in the page content, say so plainly instead of " +
   "making something up. Honesty over helpfulness.\n\n" +
   "Here is the task:\n";
@@ -61,6 +66,31 @@ const SHORT_PAGE_INSTRUCTION =
   "There is very little readable text on this tab right now. In one or two " +
   "short, honest sentences, tell me what little is here. Do not invent, " +
   "expand, or pad with anything that isn't actually on the page.";
+
+// After Sharon scrolls the page on the user's behalf, read the part that's now
+// in view. Each request is sent without history, so we can't say "continue from
+// where you left off" — instead we point her at the freshly-revealed part.
+function scrollReadInstruction(direction) {
+  if (direction === "up" || direction === "top") {
+    return (
+      "I've just scrolled back " +
+      (direction === "top" ? "to the top of " : "up ") +
+      "the page. Briefly and naturally read the content that's now visible " +
+      "here. Skip menus, ads, and boilerplate."
+    );
+  }
+  // down / bottom
+  return (
+    "I've just scrolled further down the page" +
+    (direction === "bottom" ? " to the very bottom" : "") +
+    ". Read the part that's now visible toward the lower portion of the page — " +
+    "for a conversation or message thread, the newer messages now in view. " +
+    "Read it naturally and conversationally. Focus on this newly revealed part " +
+    "rather than re-summarizing the whole page from the top, and skip menus, " +
+    "ads, and boilerplate. If there is genuinely nothing new beyond a heading " +
+    "or whitespace, just say so in one short sentence."
+  );
+}
 
 // A tab is restricted only when its URL starts with one of these. Any normal
 // http:// or https:// website is ALWAYS readable.
@@ -108,6 +138,7 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const SETTINGS_KEY = "sharon_settings";
 const DEFAULT_SETTINGS = {
   autoRead: true, // read pages automatically on activation / tab change
+  allowScroll: true, // may Sharon scroll the active tab when asked? (saved approval)
 };
 let settings = { ...DEFAULT_SETTINGS };
 
@@ -565,6 +596,159 @@ async function readPageContext() {
 }
 
 /* ------------------------------------------------------------------ *
+ * Scrolling the active tab
+ *
+ * Sharon stays a reader: she never clicks or navigates. The one page action
+ * she can take — when the user allows it — is to scroll, so she can reveal and
+ * read more of a long article or message thread. This is gated by the saved
+ * "Let Sharon scroll the page" setting (approval), handled client-side here;
+ * after a scroll she simply re-reads whatever is now visible.
+ * ------------------------------------------------------------------ */
+
+// Injected into the page. Must be self-contained (no closures over outer scope).
+// Scrolls the right thing — the document, or the largest scrollable container
+// on app-style pages where the body itself doesn't scroll — and reports back
+// whether it could actually move and where it landed.
+function scrollPage(opts) {
+  var dir = (opts && opts.direction) || "down";
+
+  function docScrollMax() {
+    var de = document.documentElement;
+    return Math.max((de ? de.scrollHeight : 0) - window.innerHeight, 0);
+  }
+
+  // On web apps the <body> often doesn't scroll; the content lives in an inner
+  // overflow:auto/scroll container. Find the tallest visible one.
+  function findScroller() {
+    var best = null;
+    var bestAmt = 0;
+    var all = document.querySelectorAll("div, main, section, ul, ol");
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      var style;
+      try {
+        style = window.getComputedStyle(el);
+      } catch (_) {
+        continue;
+      }
+      var oy = style.overflowY;
+      if (oy !== "auto" && oy !== "scroll") continue;
+      if (el.clientHeight < 120) continue;
+      var amt = el.scrollHeight - el.clientHeight;
+      if (amt <= 40) continue;
+      var rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) continue;
+      if (amt > bestAmt) {
+        best = el;
+        bestAmt = amt;
+      }
+    }
+    return best;
+  }
+
+  var docMax = docScrollMax();
+  // Prefer the window when the document itself scrolls; otherwise hunt for the
+  // inner scroll container.
+  var scroller = docMax > 40 ? null : findScroller();
+
+  function curTop() {
+    if (scroller) return scroller.scrollTop;
+    return window.scrollY || document.documentElement.scrollTop || 0;
+  }
+  function maxTop() {
+    if (scroller) return scroller.scrollHeight - scroller.clientHeight;
+    return docMax;
+  }
+  function viewport() {
+    return scroller ? scroller.clientHeight : window.innerHeight;
+  }
+
+  var max = maxTop();
+  var before = curTop();
+  var step = Math.max(Math.round(viewport() * 0.85), 200);
+
+  var target = before;
+  if (dir === "top") target = 0;
+  else if (dir === "bottom") target = max;
+  else if (dir === "up") target = before - step;
+  else target = before + step; // "down" is the default
+
+  if (target < 0) target = 0;
+  if (target > max) target = max;
+
+  if (scroller) scroller.scrollTo({ top: target, behavior: "smooth" });
+  else window.scrollTo({ top: target, behavior: "smooth" });
+
+  return {
+    hasScroll: max > 40,
+    moved: Math.abs(target - before) > 2,
+    atTop: target <= 1,
+    atBottom: target >= max - 1,
+  };
+}
+
+// Speak + show a short note from Sharon without going to the server.
+function sharonSay(text) {
+  const bubble = addSharonBubble(text);
+  speakText(text);
+  return bubble;
+}
+
+// Scroll the active tab in the given direction, then read what's now visible.
+async function handleScroll(direction) {
+  if (!settings.allowScroll) {
+    sharonSay(
+      "Scrolling is turned off right now. You can switch on “Let Sharon " +
+        "scroll the page for me” in Settings and I'll be glad to scroll for you."
+    );
+    return;
+  }
+
+  const tab = await getActiveTab();
+  if (!tab || !tab.id || isRestricted(tab.url)) {
+    sharonSay(
+      "There's nothing here I can scroll. Open a website and I'll be able to " +
+        "scroll through it for you."
+    );
+    return;
+  }
+
+  // Barge in: stop any reading before we move the page.
+  stopSpeaking();
+
+  let res = {};
+  try {
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: scrollPage,
+      args: [{ direction }],
+    });
+    res = (injection && injection.result) || {};
+  } catch (_) {
+    sharonSay("I couldn't scroll this page just now. Try me again in a moment.");
+    return;
+  }
+
+  if (!res.hasScroll) {
+    sharonSay("This page doesn't scroll — it all fits on screen already.");
+    return;
+  }
+  if (!res.moved) {
+    if (direction === "up" || direction === "top") {
+      sharonSay("We're already at the top of the page.");
+    } else {
+      sharonSay("That's the bottom — there's nothing more to scroll to.");
+    }
+    return;
+  }
+
+  // Give lazy-loaded threads and feeds a moment to render the new content
+  // before we re-extract and read it.
+  await delay(600);
+  await sendInstruction(scrollReadInstruction(direction), {});
+}
+
+/* ------------------------------------------------------------------ *
  * Tab card — keep it current
  * ------------------------------------------------------------------ */
 function refreshTabCard(tab) {
@@ -868,6 +1052,63 @@ function isEchoOfSpeech(phrase) {
 /* ------------------------------------------------------------------ *
  * Acting on what the user said
  * ------------------------------------------------------------------ */
+
+// Work out whether a spoken command is asking Sharon to scroll the page, and
+// which way. Returns { direction, explicit } or null.
+//   - direction: "up" | "down" | "top" | "bottom"
+//   - explicit:  true when the user literally said "scroll …" / "go up/down" /
+//                "to the top/bottom" (an unmistakable scroll request); false for
+//                looser reader phrasing like "read more" / "what else".
+// The `explicit` flag lets us inform the user when scrolling is switched off
+// only when they clearly asked for it, and otherwise let ambiguous words like
+// "more" fall through to a normal question.
+function parseScrollIntent(cmd) {
+  if (
+    /\b(top of (the )?page|to the (very )?top|back to the top)\b/.test(cmd) ||
+    cmd === "top"
+  ) {
+    return { direction: "top", explicit: true };
+  }
+  if (
+    /\b(bottom of (the )?page|to the (very )?bottom|all the way down|scroll to the end)\b/.test(
+      cmd
+    ) ||
+    cmd === "bottom"
+  ) {
+    return { direction: "bottom", explicit: true };
+  }
+  if (
+    /\bscroll (back )?up\b/.test(cmd) ||
+    /\b(go|move|page) up\b/.test(cmd) ||
+    /\bup a (bit|little|touch)\b/.test(cmd) ||
+    cmd === "up"
+  ) {
+    return { direction: "up", explicit: true };
+  }
+  if (
+    /\bscroll( down| further| some| more| a (bit|little))?\b/.test(cmd) ||
+    /\b(go|move|page) down\b/.test(cmd) ||
+    /\bdown a (bit|little|touch)\b/.test(cmd) ||
+    cmd === "down"
+  ) {
+    return { direction: "down", explicit: true };
+  }
+  // Looser reader phrasing — treat as "scroll down and read on". Kept narrow on
+  // purpose so a topical question like "tell me more about pricing" still goes
+  // to the model: a bare "more"/"read more" scrolls, but "more about X" doesn't.
+  if (
+    /^(more|read more|show more|tell me more|read on|keep reading|continue reading|see more|what else|what else does it say|read the rest|the rest)$/.test(
+      cmd
+    ) ||
+    /\b(more of (the|this) (thread|page|conversation|article|email|messages?)|rest of (the|this) (thread|page|conversation|article|email)|further down the (thread|page|conversation))\b/.test(
+      cmd
+    )
+  ) {
+    return { direction: "down", explicit: false };
+  }
+  return null;
+}
+
 function handleUserUtterance(text) {
   text = (text || "").trim();
   if (!text) return;
@@ -890,9 +1131,30 @@ function handleUserUtterance(text) {
     pauseSpeaking();
     return;
   }
-  if (cmd === "resume" || cmd === "continue" || cmd === "keep going") {
+  // "resume" / "continue" / "keep going" resume the voice when it's paused. If
+  // nothing is paused, the user is asking to hear more — scroll on and read.
+  if (
+    cmd === "resume" ||
+    cmd === "continue" ||
+    cmd === "keep going" ||
+    cmd === "go on"
+  ) {
     addBubble("user", text);
-    resumeSpeaking();
+    if (paused) {
+      resumeSpeaking();
+    } else if (settings.allowScroll) {
+      handleScroll("down");
+    } else {
+      resumeSpeaking();
+    }
+    return;
+  }
+
+  // Scrolling the page — Sharon's one page action, when the user allows it.
+  const scrollIntent = parseScrollIntent(cmd);
+  if (scrollIntent && (settings.allowScroll || scrollIntent.explicit)) {
+    addBubble("user", text);
+    handleScroll(scrollIntent.direction);
     return;
   }
 
@@ -1046,6 +1308,7 @@ if (!SpeechRecognition) {
  * ------------------------------------------------------------------ */
 function applySettingsToUI() {
   if (els.autoReadToggle) els.autoReadToggle.checked = !!settings.autoRead;
+  if (els.scrollToggle) els.scrollToggle.checked = !!settings.allowScroll;
 }
 
 // Read the current shortcut Chrome has assigned and show it (or "Not set").
@@ -1118,6 +1381,13 @@ if (els.autoReadToggle) {
       // Turned off — stay quiet; just refresh the calm status line.
       updateStatus();
     }
+  });
+}
+
+if (els.scrollToggle) {
+  els.scrollToggle.addEventListener("change", () => {
+    settings.allowScroll = els.scrollToggle.checked;
+    saveSettings();
   });
 }
 
