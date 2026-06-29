@@ -3716,8 +3716,9 @@
               <div class="conv-sub">${sub}</div>
             </div>
             <div class="head-actions">
+              ${renderVoicePill(vm, idx)}
               <button class="icon-btn" data-action="switch-tab" data-tab="settings" title="Settings" aria-label="Settings">
-                <i data-lucide="settings-2" class="w-5 h-5"></i>
+                <i data-lucide="more-horizontal" class="w-5 h-5"></i>
               </button>
             </div>
           </header>`;
@@ -3857,16 +3858,16 @@
                 </div>
               </div>
               <div class="composer-zone">
-                <div class="composer-tools" style="max-width:768px;margin:0 auto 8px;display:flex;gap:8px;flex-wrap:wrap">
-                  <button class="btn-outline${SELECTION_CAPTURE.armed ? ' armed' : ''}" data-action="ask-selection" data-idx="${idx}" style="padding:7px;min-height:0" aria-label="${SELECTION_CAPTURE.armed ? 'Capturing highlights — click to stop' : 'Ask about highlighted text'}" aria-pressed="${SELECTION_CAPTURE.armed}" title="${SELECTION_CAPTURE.armed ? 'Capturing — highlight text on the page and it goes to Randy. Click to stop.' : 'Click, then highlight text on the page — it goes straight to Randy.'}">
-                    <i data-lucide="highlighter" class="w-4 h-4"></i>
-                  </button>
-                  <button class="btn-outline" data-action="new-chat" style="padding:7px;min-height:0" aria-label="New chat" title="Start a new chat — the current one is saved in the menu">
-                    <i data-lucide="square-pen" class="w-4 h-4"></i>
+                <div class="composer-tools" style="max-width:768px;margin:0 auto 8px;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+                  <button class="btn-outline" data-action="new-chat" aria-label="New chat" title="Start a new chat — the current one is saved in the menu">
+                    <i data-lucide="square-pen" class="w-4 h-4"></i><span>New chat</span>
                   </button>
                 </div>
                 <div class="composer">
                   <textarea id="home-input-${idx}" class="composer-input" rows="1" placeholder="Message ${escAttr(slot.label)}…" ${slot.loading ? 'disabled' : ''}>${escHtml(slot.inputText || '')}</textarea>
+                  <button class="comp-capture${SELECTION_CAPTURE.armed ? ' armed' : ''}" data-action="ask-selection" data-idx="${idx}" aria-label="${SELECTION_CAPTURE.armed ? 'Capturing highlights — click to stop' : 'Ask about highlighted text'}" aria-pressed="${SELECTION_CAPTURE.armed}" title="${SELECTION_CAPTURE.armed ? 'Capturing — highlight text on the page and it goes to Randy. Click to stop.' : 'Click, then highlight text on the page — it goes straight to Randy.'}">
+                    <i data-lucide="highlighter" class="w-5 h-5"></i>
+                  </button>
                   ${VOICE.srSupported ? `<button class="comp-mic${isHomeDictating(idx) ? ' live' : ''}" data-action="dictate-home" data-idx="${idx}" title="${isHomeDictating(idx) ? 'Stop voice typing' : 'Voice to text — speak your message'}" aria-label="Voice to text" aria-pressed="${isHomeDictating(idx)}" ${slot.loading ? 'disabled' : ''}>
                     <i data-lucide="${isHomeDictating(idx) ? 'square' : 'mic'}" class="w-5 h-5"></i>
                   </button>` : ''}
