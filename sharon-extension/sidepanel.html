@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-state="idle" data-mic="muted" data-readaloud="on">
+<html lang="en" data-state="idle" data-voice="on" data-mic="muted">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,220 +7,145 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Inter:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
-    <div class="app">
-      <!-- Header -->
-      <header class="header">
-        <div class="orb" aria-hidden="true">
-          <span class="orb-pulse"></span>
-        </div>
-        <div class="header-text">
-          <h1 class="brand">Sharon</h1>
-          <p class="status" id="status" aria-live="polite">Open a website and I'll start reading</p>
-        </div>
-        <div class="header-actions">
-          <button
-            class="icon-btn"
-            id="settingsBtn"
-            type="button"
-            title="Settings"
-            aria-label="Open settings"
-          >
-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-              <path
-                fill="currentColor"
-                d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.03 7.03 0 0 0-1.69-.98l-.38-2.65A.49.49 0 0 0 14 2h-4a.49.49 0 0 0-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.14.24.42.33.61.22l2.49-1c.52.39 1.08.73 1.69.98l.38 2.65c.04.24.25.42.49.42h4c.24 0 .45-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.22.08.49 0 .61-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"
-              />
-            </svg>
-          </button>
-        </div>
-      </header>
+    <div class="frame">
+      <!-- Top bar -->
+      <div class="topbar">
+        <div class="wordmark"><span class="dot"></span>Sharon</div>
+      </div>
+      <div class="tab-context">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+        On this tab · <b id="tabTitle">Open me on a website</b>
+      </div>
 
-      <!-- On this tab card -->
-      <section class="tab-card" aria-label="Current tab">
-        <span class="tab-card-label">On this tab</span>
-        <p class="tab-title" id="tabTitle">Open me on a website</p>
-        <p class="tab-site" id="tabSite">—</p>
-      </section>
-
-      <!-- Conversation -->
-      <main class="conversation" id="conversation" aria-live="polite" aria-label="Conversation">
-        <div class="welcome" id="welcome">
-          <p class="welcome-title">Hi, I'm Sharon.</p>
-          <p class="welcome-body">
-            Open any website and I'll start reading it to you on my own. Tap the
-            mic and just talk — say <strong>stop</strong> to stop me,
-            <strong>pause</strong> or <strong>resume</strong> to control the
-            voice, or tell me what to focus on. Tap the mic to mute the
-            microphone, or the speaker button beside it to mute my voice.
-          </p>
+      <!-- Scrollable body -->
+      <div class="body" id="body">
+        <!-- Hero -->
+        <div class="hero">
+          <div class="orb-wrap">
+            <span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span>
+            <button class="orb" id="orb" type="button" aria-label="Tap to speak">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/>
+                <path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21a1 1 0 0 0 2 0v-3.08A7 7 0 0 0 19 11z"/>
+              </svg>
+              <span class="mic-off-slash"></span>
+            </button>
+          </div>
+          <div class="eq" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="status-line" id="statusLine" aria-live="polite">Open a website</div>
+          <div class="status-sub" id="statusSub">and I'll start reading</div>
         </div>
-      </main>
 
-      <!-- Bottom controls: mute the microphone (listening) and mute Sharon's
-           read-aloud voice (speaking). -->
-      <div class="mic-bar">
-        <button
-          class="mic-btn"
-          id="micBtn"
-          type="button"
-          aria-pressed="false"
-          title="Mute microphone"
-          aria-label="Mute microphone"
-        >
-          <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
-            <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/>
-            <path fill="currentColor" d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21a1 1 0 0 0 2 0v-3.08A7 7 0 0 0 19 11z"/>
-          </svg>
-          <span class="mic-slash" aria-hidden="true"></span>
+        <!-- Capability list (idle) -->
+        <div class="caps" id="caps">
+          <div class="caps-head">Here's what I can do</div>
+
+          <div class="cap">
+            <div class="cap-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div>
+            <div class="cap-txt"><div class="cap-title">Read &amp; sum up this page</div><div class="cap-eg">"What's this article about?"</div></div>
+          </div>
+
+          <div class="cap">
+            <div class="cap-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></div>
+            <div class="cap-txt"><div class="cap-title">Save a note</div><div class="cap-eg">"Make a note that the proposal is due Friday."</div></div>
+          </div>
+
+          <div class="cap">
+            <div class="cap-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></div>
+            <div class="cap-txt"><div class="cap-title">Look something up</div><div class="cap-eg">"What notes do I have about the Johnson account?"</div></div>
+          </div>
+
+          <div class="cap">
+            <div class="cap-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 11 3 3 8-8"/><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg></div>
+            <div class="cap-txt"><div class="cap-title">Do something on the page</div><div class="cap-eg">"Reply and say I'll be there."</div></div>
+          </div>
+        </div>
+
+        <!-- Live stack (transcript / summary / result) -->
+        <div class="stack hidden" id="stack"></div>
+      </div>
+
+      <!-- Bottom dock -->
+      <div class="dock">
+        <button class="dock-btn on" id="voiceBtn" type="button" aria-label="Sharon's voice: on">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 9v6h4l5 5V4L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4.03v8.06A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06a9 9 0 0 0 0-17.54z"/></svg>
+          <span class="voice-slash"></span>
+          <span class="lbl">Voice</span>
         </button>
 
-        <button
-          class="aloud-btn"
-          id="aloudBtn"
-          type="button"
-          aria-pressed="false"
-          title="Mute Sharon's voice"
-          aria-label="Mute Sharon's voice"
-        >
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-            <path
-              fill="currentColor"
-              d="M4 9v6h4l5 5V4L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4.03v8.06A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06a9 9 0 0 0 0-17.54z"
-            />
-          </svg>
-          <span class="aloud-slash" aria-hidden="true"></span>
+        <button class="dock-mic" id="dockMic" type="button" aria-label="Tap to speak">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21a1 1 0 0 0 2 0v-3.08A7 7 0 0 0 19 11z"/></svg>
+        </button>
+
+        <button class="dock-btn" id="notesBtn" type="button" aria-label="Your notes">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h11l5 5v11a0 0 0 0 1 0 0H4zM15 4v5h5M8 13h8M8 17h5"/></svg>
+          <span class="lbl">Notes</span>
+        </button>
+
+        <button class="dock-btn" id="settingsBtn" type="button" aria-label="Settings">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.03 7.03 0 0 0-1.69-.98l-.38-2.65A.49.49 0 0 0 14 2h-4a.49.49 0 0 0-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.14.24.42.33.61.22l2.49-1c.52.39 1.08.73 1.69.98l.38 2.65c.04.24.25.42.49.42h4c.24 0 .45-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.22.08.49 0 .61-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg>
+          <span class="lbl">Settings</span>
         </button>
       </div>
 
-      <!-- Settings sheet — a clean overlay over the conversation -->
-      <section
-        class="settings"
-        id="settings"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Settings"
-        aria-hidden="true"
-        hidden
-      >
-        <header class="settings-header">
-          <button
-            class="icon-btn"
-            id="settingsBack"
-            type="button"
-            title="Back"
-            aria-label="Back to conversation"
-          >
-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-              <path
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M15 18l-6-6 6-6"
-              />
-            </svg>
-          </button>
-          <h2 class="settings-title">Settings</h2>
-        </header>
+      <!-- Coachmark -->
+      <div class="coach" id="coach">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21a1 1 0 0 0 2 0v-3.08A7 7 0 0 0 19 11z"/></svg>
+        Tap the mic to talk to me
+      </div>
 
-        <div class="settings-body">
-          <section class="setting-group">
-            <label class="checkbox-row" for="autoReadToggle">
-              <input type="checkbox" id="autoReadToggle" />
-              <span class="checkbox-text"
-                >Let Sharon read what's on my screen automatically.</span
-              >
-            </label>
-            <p class="setting-help">
-              When this is on, Sharon reads each page to you on her own. When
-              it's off, she stays quiet until you ask her to read or ask a
-              question about the page.
-            </p>
-          </section>
-
-          <section class="setting-group">
-            <div class="switch-row">
-              <span class="switch-text" id="scrollToggleLabel"
-                >Let Sharon scroll the page for me.</span
-              >
-              <label class="switch" for="scrollToggle">
-                <input
-                  type="checkbox"
-                  id="scrollToggle"
-                  aria-labelledby="scrollToggleLabel"
-                />
-                <span class="switch-track" aria-hidden="true">
-                  <span class="switch-thumb"></span>
-                </span>
-              </label>
-            </div>
-            <p class="setting-help">
-              With this on, you can say “scroll down”, “scroll up”, “go to the
-              top” or “bottom”, or “read more”, and Sharon scrolls the page and
-              reads what's now in view — handy for reading further down a long
-              article or message thread. When it's off, she never touches the
-              page and just reads what's already on screen.
-            </p>
-          </section>
-
-          <section class="setting-group">
-            <div class="switch-row">
-              <span class="switch-text" id="actionsToggleLabel"
-                >Let Sharon act on the page (click &amp; type).</span
-              >
-              <label class="switch" for="actionsToggle">
-                <input
-                  type="checkbox"
-                  id="actionsToggle"
-                  aria-labelledby="actionsToggleLabel"
-                />
-                <span class="switch-track" aria-hidden="true">
-                  <span class="switch-thumb"></span>
-                </span>
-              </label>
-            </div>
-            <p class="setting-help">
-              When this is on, you can ask Sharon to do things on the page — like
-              “reply and say I'll be there”, “search for blue shoes”, or “open
-              the first result” — and she'll click, type, and scroll to carry it
-              out, one step at a time. This is powerful, so it's off by default.
-              She never enters passwords or payment details. Say “stop” at any
-              time to halt her.
-            </p>
-
-            <label class="checkbox-row" for="confirmToggle">
-              <input type="checkbox" id="confirmToggle" />
-              <span class="checkbox-text">Ask me before each action.</span>
-            </label>
-            <p class="setting-help">
-              When on (recommended), Sharon tells you what she's about to do and
-              waits for you to say “yes” before clicking or typing. Turn it off
-              to let her act without asking each time.
-            </p>
-          </section>
-
-          <section class="setting-group">
-            <h3 class="setting-heading">Keyboard shortcut</h3>
-            <p class="setting-line">
-              Launch Sharon:
-              <span class="shortcut-key" id="shortcutValue">…</span>
-            </p>
-            <button class="btn" id="changeShortcut" type="button">
-              Change shortcut
-            </button>
-            <p class="setting-note">
-              Chrome handles shortcut changes on its own page.
-            </p>
-          </section>
+      <!-- ============ Settings sheet ============ -->
+      <div class="sheet" id="settingsSheet" role="dialog" aria-modal="true" aria-label="Settings">
+        <div class="sheet-head">
+          <div class="sheet-title">Settings</div>
+          <button class="sheet-close" type="button" data-close aria-label="Close settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
         </div>
-      </section>
+        <div class="sheet-body">
+          <div class="set-group">
+            <div class="set-row"><div class="set-name">Read pages to me automatically</div>
+              <label class="switch"><input type="checkbox" id="autoReadToggle" aria-label="Read pages to me automatically"><span class="track"></span><span class="thumb"></span></label></div>
+            <p class="set-help">When on, Sharon starts reading each page on her own. When off, she waits until you ask.</p>
+          </div>
+          <div class="set-group">
+            <div class="set-row"><div class="set-name">Let Sharon scroll the page</div>
+              <label class="switch"><input type="checkbox" id="scrollToggle" aria-label="Let Sharon scroll the page"><span class="track"></span><span class="thumb"></span></label></div>
+            <p class="set-help">Say "scroll down", "go to the top", or "read more" and she'll move through long pages for you.</p>
+          </div>
+          <div class="set-group">
+            <div class="set-row"><div class="set-name">Let Sharon act on the page</div>
+              <label class="switch"><input type="checkbox" id="actionsToggle" aria-label="Let Sharon act on the page"><span class="track"></span><span class="thumb"></span></label></div>
+            <p class="set-help">Lets her click and type to carry out tasks. Off by default. She never enters passwords or payment details.</p>
+            <div class="set-row" style="margin-top:13px"><div class="set-name">Ask me before each action</div>
+              <label class="switch"><input type="checkbox" id="confirmToggle" aria-label="Ask me before each action"><span class="track"></span><span class="thumb"></span></label></div>
+          </div>
+          <div class="set-group">
+            <div class="set-row"><div class="set-name">Launch Sharon</div><span class="shortcut-key" id="shortcutValue">…</span></div>
+            <p class="set-help">Chrome handles shortcut changes on its own page.</p>
+            <button class="btn-text" id="changeShortcut" type="button">Change shortcut</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Notes sheet ============ -->
+      <div class="sheet" id="notesSheet" role="dialog" aria-modal="true" aria-label="Your notes">
+        <div class="sheet-head">
+          <div class="sheet-title">Your notes</div>
+          <button class="sheet-close" type="button" data-close aria-label="Close notes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+        <div class="sheet-body">
+          <div class="note-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <input type="text" id="noteSearchInput" placeholder="Search your notes…" aria-label="Search your notes" />
+          </div>
+          <div class="notes-list" id="notesList"></div>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="sidepanel.js"></script>

@@ -1,24 +1,42 @@
-// sidepanel.js — Sharon's brains: follow the active tab, read it aloud,
-// and let the user talk to her at any time through one microphone.
+// sidepanel.js — Sharon's brains: follow the active tab, read it aloud, let the
+// user talk to her through one microphone, and route what she hears to the
+// Speaking_Assistant backend (action-based API + two-layer memory tables).
+//
+// The working engine (continuous Web Speech recognition, speechSynthesis
+// read-aloud, live page-text extraction, voice scrolling, the on-page "act"
+// agent, settings storage, the stored session id, and the echo filter) is the
+// same as before — it has only been re-wired to the new card-based UI and the
+// new { api_key, action, payload } envelope.
 
-import { PROXY_URL, MAX_PAGE_TEXT } from "./config.js";
+import {
+  PROXY_URL,
+  API_KEY,
+  USER_ID,
+  ASSISTANT_ID,
+  MAX_PAGE_TEXT,
+} from "./config.js";
 
 /* ------------------------------------------------------------------ *
- * Element references
+ * Element references (the redesigned side panel)
  * ------------------------------------------------------------------ */
 const els = {
   html: document.documentElement,
-  status: document.getElementById("status"),
   tabTitle: document.getElementById("tabTitle"),
-  tabSite: document.getElementById("tabSite"),
-  conversation: document.getElementById("conversation"),
-  welcome: document.getElementById("welcome"),
-  micBtn: document.getElementById("micBtn"),
-  aloudBtn: document.getElementById("aloudBtn"),
-  // Settings
+  statusLine: document.getElementById("statusLine"),
+  statusSub: document.getElementById("statusSub"),
+  body: document.getElementById("body"),
+  caps: document.getElementById("caps"),
+  stack: document.getElementById("stack"),
+  coach: document.getElementById("coach"),
+  orb: document.getElementById("orb"),
+  dockMic: document.getElementById("dockMic"),
+  voiceBtn: document.getElementById("voiceBtn"),
+  notesBtn: document.getElementById("notesBtn"),
   settingsBtn: document.getElementById("settingsBtn"),
-  settings: document.getElementById("settings"),
-  settingsBack: document.getElementById("settingsBack"),
+  settingsSheet: document.getElementById("settingsSheet"),
+  notesSheet: document.getElementById("notesSheet"),
+  noteSearchInput: document.getElementById("noteSearchInput"),
+  notesList: document.getElementById("notesList"),
   autoReadToggle: document.getElementById("autoReadToggle"),
   scrollToggle: document.getElementById("scrollToggle"),
   actionsToggle: document.getElementById("actionsToggle"),
@@ -27,11 +45,11 @@ const els = {
   changeShortcut: document.getElementById("changeShortcut"),
 };
 
-// Grounding rules sent with EVERY request. Sharon is a read-only voice
-// assistant for whatever is visible on the current tab right now: she uses only
-// the extracted page text, never invents anything, and can't click or open
-// things herself. (The networking is unchanged — this just shapes the
-// instruction text we already send in the request body.)
+// Grounding rules sent (inside "system") with every "ask" call. Sharon is a
+// read-only voice assistant for whatever is visible on the current tab right
+// now: she uses only the extracted page text, never invents anything, and can't
+// click or open things herself (except scroll, when allowed). The page text is
+// appended after these rules so it reaches the model through "system".
 const GROUNDING =
   "You are Sharon, a read-only voice assistant. The only thing you can see is " +
   "the text currently visible on the user's active browser tab, given to you " +
@@ -50,8 +68,7 @@ const GROUNDING =
   "list of messages but not what's inside them. Open the one you want, or ask " +
   "me to scroll, and I'll read it.\"\n" +
   "4. If the answer isn't in the page content, say so plainly instead of " +
-  "making something up. Honesty over helpfulness.\n\n" +
-  "Here is the task:\n";
+  "making something up. Honesty over helpfulness.";
 
 // The default instruction Sharon sends when she starts reading on her own.
 const DEFAULT_INSTRUCTION =
@@ -95,11 +112,10 @@ function scrollReadInstruction(direction) {
   );
 }
 
-// Sent on every step when Sharon is allowed to act on the page. She is given
-// the user's goal, the visible page text (as page content), and a numbered list
-// of the interactive elements currently on the page, and must reply with ONE
-// JSON action plan. The whole loop runs inside the extension; this just shapes
-// the instruction text we put in the request body, which is otherwise unchanged.
+// Sent (inside "system") on every step when Sharon is allowed to act on the
+// page. She is given the user's goal, the visible page text (as page content),
+// and a numbered list of the interactive elements, and must reply with ONE JSON
+// action plan. The whole loop runs inside the extension.
 const AGENT_GROUNDING =
   "You are Sharon, a hands-free voice assistant that can BOTH read the user's " +
   "active browser tab AND act on it for them — clicking, typing, selecting, and " +
@@ -128,7 +144,7 @@ const AGENT_GROUNDING =
   "2. If the user only wants information or to have something read, set " +
   '"actions" to [] , put the answer/reading in "say", and set "done": true.\n' +
   "3. Take SMALL steps — usually one to three actions — then you'll get the " +
-  'updated page to decide the next step. Set "done": false while more steps '+
+  'updated page to decide the next step. Set "done": false while more steps ' +
   "remain.\n" +
   '4. When the goal is achieved, set "done": true with a brief confirmation in ' +
   '"say".\n' +
@@ -136,7 +152,7 @@ const AGENT_GROUNDING =
   "other secret credentials. If the goal needs those, stop and say so plainly " +
   '("done": true).\n' +
   "6. Talk only about what is actually on the page; never invent content. If " +
-  "you can't find a suitable element, say so plainly and set \"done\": true.\n\n";
+  "you can't find a suitable element, say so plainly and set \"done\": true.";
 
 // A tab is restricted only when its URL starts with one of these. Any normal
 // http:// or https:// website is ALWAYS readable.
@@ -153,10 +169,11 @@ const RESTRICTED_PREFIXES = [
  * ------------------------------------------------------------------ */
 let sessionId = null;
 let busy = false; // a proxy request is in flight
+let thinking = false; // drive the "thinking" orb / status while a call runs
 let restricted = true; // no readable page in view yet
 let lastReadKey = null; // tabId::url we last started reading
 let lastUserInstruction = null; // the most recent spoken instruction (if any)
-let abortController = null; // cancels an in-flight proxy request
+let abortController = null; // cancels an in-flight "ask" request
 let evalSeq = 0; // guards against out-of-order tab evaluations
 let ready = false; // settings loaded — safe to auto-read
 
@@ -174,9 +191,15 @@ let recognition = null;
 let recognizing = false;
 let micMuted = false; // user toggled mute
 let micBlocked = false; // browser denied mic access
-let interimBubble = null;
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function uuid() {
+  return (
+    (crypto.randomUUID && crypto.randomUUID()) ||
+    "id-" + Math.random().toString(36).slice(2) + Date.now()
+  );
+}
 
 /* ------------------------------------------------------------------ *
  * Settings — persisted in chrome.storage.local so they survive reopening
@@ -212,55 +235,63 @@ async function saveSettings() {
 }
 
 /* ------------------------------------------------------------------ *
- * Status + state — single source of truth for the header + accent
+ * Status + state — single source of truth for the hero + accent.
+ * Drives data-state (idle | listening | thinking) on <html>, plus the
+ * status line and subtitle.
  * ------------------------------------------------------------------ */
-function setStatus(text) {
-  els.status.textContent = text;
+function setStatusText(line, sub) {
+  if (els.statusLine) els.statusLine.textContent = line;
+  if (els.statusSub) els.statusSub.textContent = sub || "";
 }
 
 function updateStatus() {
-  els.html.setAttribute("data-mic", micMuted ? "muted" : "live");
-  els.micBtn.setAttribute("aria-pressed", String(!micMuted));
-  els.micBtn.title = micMuted ? "Unmute microphone" : "Mute microphone";
-  els.micBtn.setAttribute(
-    "aria-label",
-    micMuted ? "Unmute microphone" : "Mute microphone"
-  );
+  els.html.setAttribute("data-mic", micMuted || micBlocked ? "muted" : "live");
+  els.html.setAttribute("data-voice", settings.readAloud ? "on" : "off");
 
-  let state, text;
-  if (restricted) {
+  let state, line, sub;
+  if (thinking) {
+    state = "thinking";
+    line = "Thinking…";
+    sub = "Reading the page and your request";
+  } else if (restricted) {
     state = "idle";
-    text = "Open a website and I'll start reading";
+    line = "Open a website";
+    sub = "and I'll start reading";
   } else if (paused) {
-    state = "reading";
-    text = "Paused";
+    state = "idle";
+    line = "Paused";
+    sub = "Say “resume” to continue";
   } else if (speaking) {
-    state = "reading";
-    text = "Reading…";
-  } else if (micMuted) {
-    state = "muted";
-    text = "Muted";
+    state = "idle";
+    line = "Reading…";
+    sub = "Say “stop” to stop me";
+  } else if (micMuted || micBlocked) {
+    state = "idle";
+    line = "Muted";
+    sub = "Tap the mic to turn me back on";
   } else if (!settings.autoRead) {
-    // Auto-read is off: stay calm and wait to be asked, mic still live.
     state = "listening";
-    text = "Ask me to read this page";
+    line = "Ask me to read this page";
+    sub = "I'm listening";
   } else {
     state = "listening";
-    text = "Listening…";
+    line = "Listening…";
+    sub = "I'm ready when you are";
   }
   els.html.setAttribute("data-state", state);
-  setStatus(text);
+  setStatusText(line, sub);
 }
 
-// Reflect the read-aloud (voice output) mute state on the speaker button.
+// Reflect the read-aloud (voice output) mute state on the dock Voice button.
 function updateReadAloudUI() {
   const on = !!settings.readAloud;
-  els.html.setAttribute("data-readaloud", on ? "on" : "off");
-  if (els.aloudBtn) {
-    els.aloudBtn.setAttribute("aria-pressed", String(!on));
-    const label = on ? "Mute Sharon's voice" : "Unmute Sharon's voice";
-    els.aloudBtn.title = label;
-    els.aloudBtn.setAttribute("aria-label", label);
+  els.html.setAttribute("data-voice", on ? "on" : "off");
+  if (els.voiceBtn) {
+    els.voiceBtn.classList.toggle("on", on);
+    els.voiceBtn.setAttribute(
+      "aria-label",
+      on ? "Sharon's voice: on" : "Sharon's voice: off"
+    );
   }
 }
 
@@ -289,120 +320,412 @@ async function ensureSessionId() {
 }
 
 /* ------------------------------------------------------------------ *
- * Conversation rendering
+ * The card stack — the redesigned conversation surface
  * ------------------------------------------------------------------ */
-function clearWelcome() {
-  if (els.welcome) {
-    els.welcome.remove();
-    els.welcome = null;
+function scrollStackToBottom() {
+  if (els.body) els.body.scrollTop = els.body.scrollHeight;
+}
+
+// Switch from the idle "capability list" to the live card stack.
+function enterStack() {
+  if (els.coach) els.coach.classList.add("hide");
+  if (els.caps) els.caps.classList.add("hidden");
+  if (els.stack) els.stack.classList.remove("hidden");
+}
+
+// If the stack has emptied (e.g. after Redo), bring the capability list back.
+function maybeShowCaps() {
+  if (els.stack && els.stack.children.length === 0) {
+    els.stack.classList.add("hidden");
+    if (els.caps) els.caps.classList.remove("hidden");
   }
 }
 
-function scrollToBottom() {
-  els.conversation.scrollTop = els.conversation.scrollHeight;
+function makeCard(extraClass) {
+  const card = document.createElement("div");
+  card.className = "card" + (extraClass ? " " + extraClass : "");
+  return card;
 }
 
-function addBubble(role, text, { interim = false } = {}) {
-  clearWelcome();
-  const div = document.createElement("div");
-  div.className =
-    "bubble " +
-    (role === "user" ? "user" : role === "error" ? "error" : "sharon");
-  if (interim) div.classList.add("interim");
-  div.textContent = text;
-  els.conversation.appendChild(div);
-  scrollToBottom();
-  return div;
-}
-
-function addSources(bubble, sources) {
-  if (!Array.isArray(sources) || sources.length === 0) return;
-  const wrap = document.createElement("div");
-  wrap.className = "sources";
-  for (const url of sources) {
-    if (!url) continue;
-    const a = document.createElement("a");
-    a.href = url;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    let label = url;
-    try {
-      label = new URL(url).hostname.replace(/^www\./, "") + " ↗";
-    } catch (_) {
-      /* keep raw url */
-    }
-    a.textContent = label;
-    a.title = url;
-    wrap.appendChild(a);
-  }
-  bubble.appendChild(wrap);
-  scrollToBottom();
-}
-
-function showTyping() {
-  clearWelcome();
-  const div = document.createElement("div");
-  div.className = "bubble sharon typing";
-  div.innerHTML = "<span></span><span></span><span></span>";
-  els.conversation.appendChild(div);
-  scrollToBottom();
-  return div;
+function cardHead(eyebrowLabel) {
+  const head = document.createElement("div");
+  head.className = "card-head";
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "card-eyebrow";
+  const pin = document.createElement("span");
+  pin.className = "pin";
+  eyebrow.appendChild(pin);
+  eyebrow.appendChild(document.createTextNode(eyebrowLabel));
+  head.appendChild(eyebrow);
+  return head;
 }
 
 // Split Sharon's reply into a short opening overview ("lead") and the body, so
-// the summary can be shown at a glance above the rest.
+// the gist can be shown at a glance above the rest.
 function splitLead(text) {
   const t = (text || "").trim();
   if (!t) return { lead: "", body: "" };
 
-  // Prefer an explicit paragraph break near the top.
   let idx = t.search(/\n\s*\n/);
   if (idx > 0 && idx < 400) {
     const body = t.slice(idx).trim();
     if (body) return { lead: t.slice(0, idx).trim(), body };
   }
-
-  // Otherwise take the first sentence as the lead.
   const m = t.match(/^([\s\S]+?[.!?])\s+([\s\S]+)$/);
   if (m && m[1].length <= 300 && m[2].trim()) {
     return { lead: m[1].trim(), body: m[2].trim() };
   }
-
-  // Otherwise split on the first line break.
   idx = t.indexOf("\n");
   if (idx > 0 && idx < 300) {
     const body = t.slice(idx).trim();
     if (body) return { lead: t.slice(0, idx).trim(), body };
   }
-
-  // Nothing to split (e.g. a short page) — show it as a single line.
   return { lead: t, body: "" };
 }
 
-function addSharonBubble(text) {
-  clearWelcome();
-  const div = document.createElement("div");
-  div.className = "bubble sharon";
-  const { lead, body } = splitLead(text);
-  if (lead && body) {
-    const leadEl = document.createElement("p");
-    leadEl.className = "lead";
-    leadEl.textContent = lead;
-    const bodyEl = document.createElement("p");
-    bodyEl.className = "body-text";
-    bodyEl.textContent = body;
-    div.appendChild(leadEl);
-    div.appendChild(bodyEl);
-  } else {
-    div.textContent = text;
+function splitSentences(text) {
+  const out = (text || "")
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return out.length ? out : [(text || "").trim()].filter(Boolean);
+}
+
+// "The gist" summary card — the opening sentence(s) as bullets.
+function addGistCard(leadText) {
+  enterStack();
+  const card = makeCard();
+  card.appendChild(cardHead("The gist"));
+  const ul = document.createElement("ul");
+  ul.className = "summary-list";
+  for (const s of splitSentences(leadText).slice(0, 4)) {
+    const li = document.createElement("li");
+    li.textContent = s;
+    ul.appendChild(li);
   }
-  els.conversation.appendChild(div);
-  scrollToBottom();
-  return div;
+  card.appendChild(ul);
+  els.stack.appendChild(card);
+  scrollStackToBottom();
+  return card;
+}
+
+// A plain spoken-answer card from Sharon.
+function addSharonReplyCard(text) {
+  enterStack();
+  const card = makeCard("result-card");
+  card.appendChild(cardHead("Sharon"));
+  const p = document.createElement("p");
+  p.className = "reply";
+  p.textContent = text;
+  card.appendChild(p);
+  els.stack.appendChild(card);
+  scrollStackToBottom();
+  return card;
+}
+
+// SVG icons used inside chips (static markup, no user data).
+const ICON_CHECK =
+  '<path d="M5 12l5 5L20 7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>';
+const ICON_SEARCH =
+  '<circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="m21 21-4.3-4.3" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>';
+const ICON_ACT =
+  '<path d="m9 11 3 3 8-8" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 12a9 9 0 1 1-6.2-8.5" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/>';
+
+function chip(clsExtra, iconSvg, label) {
+  const c = document.createElement("div");
+  c.className = "action-chip" + (clsExtra ? " " + clsExtra : "");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.innerHTML = iconSvg;
+  c.appendChild(svg);
+  c.appendChild(document.createTextNode(label));
+  return c;
+}
+
+// Green "Saved to your notes" card with a preview of the saved entry.
+function addSavedCard(noteText, entryType) {
+  enterStack();
+  const card = makeCard("result-card");
+  card.appendChild(cardHead("Sharon"));
+  card.appendChild(
+    chip("", ICON_CHECK, entryType === "task" ? "Saved as a task" : "Saved to your notes")
+  );
+  const prev = document.createElement("div");
+  prev.className = "note-preview";
+  const label = document.createElement("div");
+  label.className = "np-label";
+  label.textContent = entryType === "task" ? "Task saved" : "Note saved";
+  const body = document.createElement("div");
+  body.className = "np-body";
+  body.textContent = noteText;
+  prev.appendChild(label);
+  prev.appendChild(body);
+  card.appendChild(prev);
+  els.stack.appendChild(card);
+  scrollStackToBottom();
+  return card;
+}
+
+// Blue "Checked your notes — N found" card listing the hits.
+function addFoundCard(summaryText, hits) {
+  enterStack();
+  const card = makeCard("result-card");
+  card.appendChild(cardHead("Sharon"));
+  const n = hits.length;
+  card.appendChild(chip("info", ICON_SEARCH, "Checked your notes — " + n + " found"));
+  const p = document.createElement("p");
+  p.className = "reply";
+  p.textContent = summaryText;
+  card.appendChild(p);
+  for (const h of hits) {
+    const row = document.createElement("div");
+    row.className = "found-row";
+    const dot = document.createElement("span");
+    dot.className = "found-dot";
+    const main = document.createElement("div");
+    main.className = "fr-main";
+    const t = document.createElement("div");
+    t.className = "fr-t";
+    t.textContent = h.title || "(untitled note)";
+    main.appendChild(t);
+    const snippet = (h.content || "").trim();
+    if (snippet) {
+      const s = document.createElement("div");
+      s.className = "fr-s";
+      s.textContent = snippet.length > 110 ? snippet.slice(0, 110) + "…" : snippet;
+      main.appendChild(s);
+    }
+    const d = document.createElement("span");
+    d.className = "fr-d";
+    d.textContent = relativeTime(h.created_at);
+    row.appendChild(dot);
+    row.appendChild(main);
+    row.appendChild(d);
+    card.appendChild(row);
+  }
+  els.stack.appendChild(card);
+  scrollStackToBottom();
+  return card;
+}
+
+// Coral "Done on this page" card for completed on-page actions.
+function addActionCard(text) {
+  enterStack();
+  const card = makeCard("result-card");
+  card.appendChild(cardHead("Sharon"));
+  card.appendChild(chip("page", ICON_ACT, "Done on this page"));
+  const p = document.createElement("p");
+  p.className = "reply";
+  p.textContent = text;
+  card.appendChild(p);
+  els.stack.appendChild(card);
+  scrollStackToBottom();
+  return card;
+}
+
+function addErrorCard(msg) {
+  enterStack();
+  const card = makeCard("result-card error-card");
+  card.appendChild(cardHead("Sharon"));
+  const p = document.createElement("p");
+  p.className = "reply";
+  p.textContent = "Sharon hit a snag: " + msg;
+  card.appendChild(p);
+  els.stack.appendChild(card);
+  scrollStackToBottom();
+  return card;
+}
+
+// The "Working on it…" thinking card. Sets the thinking state; remove it and
+// call updateStatus() (via clearThinking) when the call resolves.
+function showThinkingCard(label) {
+  enterStack();
+  thinking = true;
+  updateStatus();
+  const card = makeCard("thinking-card");
+  const row = document.createElement("div");
+  row.className = "think-row";
+  row.innerHTML =
+    '<span class="td"></span><span class="td"></span><span class="td"></span>';
+  const lbl = document.createElement("span");
+  lbl.className = "think-label";
+  lbl.textContent = label || "Working on it…";
+  row.appendChild(lbl);
+  card.appendChild(row);
+  els.stack.appendChild(card);
+  scrollStackToBottom();
+  return card;
+}
+
+function clearThinking(card) {
+  if (card && card.remove) card.remove();
+  thinking = false;
+  updateStatus();
 }
 
 /* ------------------------------------------------------------------ *
- * Active tab + page text extraction
+ * The editable transcript card (the headline feature)
+ * ------------------------------------------------------------------ */
+const AUTO_SEND_MS = 1600;
+let composeCard = null; // the current "You said" card element
+let composeEl = null; // its contenteditable .transcript
+let composeRaw = ""; // the original, un-edited ASR text (-> transcript_raw)
+let composeConf = null; // ASR confidence for the current utterance
+let composeEdited = false; // did the user touch the field? (cancels auto-send)
+let autoSendTimer = null;
+
+function cancelAutoSend() {
+  if (autoSendTimer) {
+    clearTimeout(autoSendTimer);
+    autoSendTimer = null;
+  }
+}
+
+function placeCaretEnd(el) {
+  try {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.collapse(false);
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function resetComposeState() {
+  cancelAutoSend();
+  composeCard = null;
+  composeEl = null;
+  composeRaw = "";
+  composeConf = null;
+  composeEdited = false;
+}
+
+// Build the editable "You said" card and wire its controls.
+function ensureComposeCard() {
+  enterStack();
+  if (composeCard) return composeCard;
+  const card = makeCard();
+  card.innerHTML =
+    '<div class="card-head">' +
+    '<span class="card-eyebrow"><span class="pin"></span>You said</span>' +
+    '<button class="edit-btn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>Edit</button>' +
+    "</div>" +
+    '<div class="transcript" contenteditable="true" role="textbox" aria-label="Your words — tap to edit" data-placeholder="Your words appear here…"></div>' +
+    '<div class="edit-hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>Tap the text to fix anything before sending</div>' +
+    '<div class="send-row">' +
+    '<button class="btn-send" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z"/></svg>Send to Sharon</button>' +
+    '<button class="btn-ghost" type="button" aria-label="Start over">Redo</button>' +
+    "</div>";
+  els.stack.appendChild(card);
+  composeCard = card;
+  composeEl = card.querySelector(".transcript");
+
+  card.querySelector(".edit-btn").addEventListener("click", () => {
+    composeEdited = true;
+    cancelAutoSend();
+    composeEl.focus();
+    placeCaretEnd(composeEl);
+  });
+  card.querySelector(".btn-send").addEventListener("click", () => commitCompose());
+  card.querySelector(".btn-ghost").addEventListener("click", () => discardCompose());
+  composeEl.addEventListener("input", () => {
+    composeEdited = true;
+    cancelAutoSend();
+  });
+  composeEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      commitCompose();
+    }
+  });
+  scrollStackToBottom();
+  return card;
+}
+
+// Show interim (ghost) words in the transcript field while the user speaks.
+function showComposeInterim(interimText) {
+  ensureComposeCard();
+  if (composeEdited) return; // never overwrite the user's edits with ghost text
+  const committed = composeRaw ? composeRaw + " " : "";
+  composeEl.innerHTML = "";
+  if (committed) composeEl.appendChild(document.createTextNode(committed));
+  const ghost = document.createElement("span");
+  ghost.className = "interim";
+  ghost.textContent = interimText;
+  composeEl.appendChild(ghost);
+  scrollStackToBottom();
+}
+
+function clearComposeInterim() {
+  if (!composeEl) return;
+  const ghost = composeEl.querySelector(".interim");
+  if (ghost) ghost.remove();
+}
+
+// A final (non-command) utterance becomes transcript content. Appended so the
+// user can dictate across several phrases; auto-send (re)starts unless edited.
+function composeAppend(text, conf) {
+  ensureComposeCard();
+  composeRaw = composeRaw ? composeRaw + " " + text : text;
+  if (conf != null && !Number.isNaN(conf)) composeConf = conf;
+  if (!composeEdited) {
+    composeEl.textContent = composeRaw;
+  } else {
+    composeEl.textContent = (composeEl.textContent + " " + text).trim();
+  }
+  setStatusText("Got it", "Edit anything, then send");
+  startAutoSend();
+  scrollStackToBottom();
+}
+
+function startAutoSend() {
+  cancelAutoSend();
+  if (composeEdited) return; // the user is editing — they'll tap Send
+  autoSendTimer = setTimeout(() => {
+    autoSendTimer = null;
+    commitCompose();
+  }, AUTO_SEND_MS);
+}
+
+// Lock the current "You said" card so it stays visible as a record, then route.
+function commitCompose() {
+  cancelAutoSend();
+  if (!composeCard) return;
+  const content = (composeEl.textContent || "").trim();
+  if (!content) {
+    composeEl.focus();
+    return;
+  }
+  const raw = composeRaw || content;
+  const conf = composeConf;
+
+  // Lock the card: drop the editing affordances, leave it as a "You said" note.
+  composeEl.setAttribute("contenteditable", "false");
+  composeEl.style.cursor = "default";
+  const editBtn = composeCard.querySelector(".card-head .edit-btn");
+  if (editBtn) editBtn.remove();
+  const hint = composeCard.querySelector(".edit-hint");
+  if (hint) hint.remove();
+  const row = composeCard.querySelector(".send-row");
+  if (row) row.remove();
+
+  resetComposeState();
+  routeUtterance(content, raw, conf);
+}
+
+function discardCompose() {
+  cancelAutoSend();
+  if (composeCard) composeCard.remove();
+  resetComposeState();
+  maybeShowCaps();
+  updateStatus();
+}
+
+/* ------------------------------------------------------------------ *
+ * Active tab + page text extraction (unchanged engine)
  * ------------------------------------------------------------------ */
 async function getActiveTab() {
   try {
@@ -416,9 +739,6 @@ async function getActiveTab() {
   }
 }
 
-// Get the active tab, but if its URL hasn't resolved yet (empty/undefined),
-// wait briefly and re-check rather than assuming the page is protected. A real
-// http/https page resolves quickly; a genuinely restricted page stays blank.
 async function getActiveTabReady() {
   let tab = await getActiveTab();
   for (let i = 0; i < 6 && (!tab || !tab.url); i++) {
@@ -429,7 +749,7 @@ async function getActiveTabReady() {
 }
 
 function isRestricted(url) {
-  if (!url) return true; // only reached after we've waited and re-checked
+  if (!url) return true;
   const lower = url.toLowerCase();
   if (RESTRICTED_PREFIXES.some((p) => lower.startsWith(p))) return true;
   let u;
@@ -440,12 +760,19 @@ function isRestricted(url) {
   }
   const host = u.hostname.toLowerCase();
   const path = u.pathname.toLowerCase();
-  // The Chrome / Edge web store.
   if (host === "chromewebstore.google.com") return true;
   if (host === "chrome.google.com" && path.startsWith("/webstore")) return true;
   if (host === "microsoftedge.microsoft.com" && path.startsWith("/addons"))
     return true;
   return false;
+}
+
+function pageDomain(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch (_) {
+    return "";
+  }
 }
 
 // Injected into the page. Must be self-contained (no closures over outer scope).
@@ -458,20 +785,17 @@ function extractPageText() {
       .trim();
   }
 
-  // Tags whose text is almost never the page's main content.
   const EXCLUDE_TAGS = {
     NAV: 1, HEADER: 1, FOOTER: 1, ASIDE: 1,
     SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1,
     SVG: 1, CANVAS: 1, FORM: 1, BUTTON: 1, INPUT: 1,
     SELECT: 1, TEXTAREA: 1, LABEL: 1, IFRAME: 1,
   };
-  // Tags that should introduce a line break in the reading order.
   const BLOCK_TAGS = {
     P: 1, DIV: 1, SECTION: 1, ARTICLE: 1, MAIN: 1, LI: 1, UL: 1, OL: 1,
     H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, BLOCKQUOTE: 1, PRE: 1,
     TABLE: 1, TR: 1, FIGURE: 1, FIGCAPTION: 1, DD: 1, DT: 1, DL: 1, HR: 1,
   };
-  // Class / id / aria-label tokens that mark obvious boilerplate.
   const BOILERPLATE =
     /(^|[-_ ])(ads?|advert|advertisement|advertising|doubleclick|dfp|cookie|consent|gdpr|newsletter|subscribe|signup|sign-up|paywall|sponsored|promo|promotion|banner|related|recirc|recommended|recommendation|comments?|disqus|livefyre|share|sharing|social|breadcrumb|breadcrumbs|pagination|sidebar|popup|modal|overlay|cta|read-more|more-stories|trending|outbrain|taboola|navbar|navigation|menu|submenu|masthead|footer|topbar|skip-link|skip-to|widget|toolbar)([-_ ]|$)/i;
   const SKIP_ROLES =
@@ -512,8 +836,6 @@ function extractPageText() {
     return false;
   }
 
-  // Walk the live DOM in document (top-to-bottom) order, collecting only the
-  // text that survives the filters above.
   function gather(node) {
     let out = "";
     const kids = node.childNodes;
@@ -542,9 +864,6 @@ function extractPageText() {
     return c ? c.trim() : "";
   }
 
-  // Among a set of candidate regions, return the visible one whose filtered
-  // text is longest, along with that text. Used to find the real content on web
-  // apps, not just articles. (Returning the text avoids re-gathering it later.)
   function bestRegion(selectors) {
     let bestEl = null;
     let bestText = "";
@@ -563,18 +882,11 @@ function extractPageText() {
     return { el: bestEl, text: bestText };
   }
 
-  // Pick the region to read. Works for web apps, not just articles: when a
-  // clear message / document body is open, prefer it over the surrounding menus
-  // and sidebars. Returns { el, text }.
   function pickMain() {
-    // 1) A focused message / document body — the strongest signal that the user
-    //    has an item open (an email, a doc, an article body, a single post).
-    //    Require a substantial amount of text so a small incidental widget
-    //    (e.g. a chat box) can't hijack a real article.
     const focused = bestRegion([
       '[itemprop="articleBody"]',
       '[role="document"]',
-      ".a3s", // Gmail open-message body
+      ".a3s",
       ".message-body",
       ".messageBody",
       ".email-body",
@@ -582,7 +894,6 @@ function extractPageText() {
     ]);
     if (focused.el && focused.text.length >= 200) return focused;
 
-    // 2) A semantic main-content region.
     const region = bestRegion([
       "article",
       '[role="article"]',
@@ -591,18 +902,14 @@ function extractPageText() {
     ]);
     if (region.el && region.text.length >= 80) return region;
 
-    // 3) A focused body that exists but was below the article threshold (e.g. a
-    //    short opened email) still beats reading the whole app chrome.
     if (focused.el && focused.text.length >= 80) return focused;
 
-    // 4) Nothing specific stood out — read the whole body.
     return { el: document.body, text: collapse(gather(document.body)) };
   }
 
   const picked = pickMain();
   const main = picked.el || document.body;
 
-  // Capture the headline / title separately.
   const h1 =
     (main && main.querySelector && main.querySelector("h1")) ||
     document.querySelector("h1");
@@ -612,7 +919,6 @@ function extractPageText() {
     metaContent('meta[property="og:title"]') ||
     (document.title || "").trim();
 
-  // If the user has selected text, honour that selection.
   const sel = window.getSelection ? window.getSelection().toString().trim() : "";
   if (sel) {
     return { text: collapse(sel), title: title, url: location.href };
@@ -620,10 +926,6 @@ function extractPageText() {
 
   let text = picked.text || "";
 
-  // Safety fallback: if cleanup left almost nothing — e.g. an oddly-built page
-  // where filtering removed the real content — fall back to the raw body text.
-  // Only swap when the body has substantially more, so a clean short extraction
-  // (a brief email/message) is kept as-is instead of being buried in chrome.
   if (text.length < 200) {
     const bodyText = collapse((document.body && document.body.innerText) || "");
     if (bodyText.length > text.length * 1.5) text = bodyText;
@@ -651,25 +953,13 @@ async function readPageContext() {
       url: result.url || tab.url || "",
     };
   } catch (e) {
-    // Couldn't inject (e.g. an unexpected internal page) — treat calmly.
     return { restricted: true };
   }
 }
 
 /* ------------------------------------------------------------------ *
- * Scrolling the active tab
- *
- * Sharon stays a reader: she never clicks or navigates. The one page action
- * she can take — when the user allows it — is to scroll, so she can reveal and
- * read more of a long article or message thread. This is gated by the saved
- * "Let Sharon scroll the page" setting (approval), handled client-side here;
- * after a scroll she simply re-reads whatever is now visible.
+ * Scrolling the active tab (unchanged engine)
  * ------------------------------------------------------------------ */
-
-// Injected into the page. Must be self-contained (no closures over outer scope).
-// Scrolls the right thing — the document, or the largest scrollable container
-// on app-style pages where the body itself doesn't scroll — and reports back
-// whether it could actually move and where it landed.
 function scrollPage(opts) {
   var dir = (opts && opts.direction) || "down";
 
@@ -678,8 +968,6 @@ function scrollPage(opts) {
     return Math.max((de ? de.scrollHeight : 0) - window.innerHeight, 0);
   }
 
-  // On web apps the <body> often doesn't scroll; the content lives in an inner
-  // overflow:auto/scroll container. Find the tallest visible one.
   function findScroller() {
     var best = null;
     var bestAmt = 0;
@@ -708,8 +996,6 @@ function scrollPage(opts) {
   }
 
   var docMax = docScrollMax();
-  // Prefer the window when the document itself scrolls; otherwise hunt for the
-  // inner scroll container.
   var scroller = docMax > 40 ? null : findScroller();
 
   function curTop() {
@@ -732,7 +1018,7 @@ function scrollPage(opts) {
   if (dir === "top") target = 0;
   else if (dir === "bottom") target = max;
   else if (dir === "up") target = before - step;
-  else target = before + step; // "down" is the default
+  else target = before + step;
 
   if (target < 0) target = 0;
   if (target > max) target = max;
@@ -750,17 +1036,16 @@ function scrollPage(opts) {
 
 // Speak + show a short note from Sharon without going to the server.
 function sharonSay(text) {
-  const bubble = addSharonBubble(text);
+  const bubble = addSharonReplyCard(text);
   speakText(text);
   return bubble;
 }
 
-// Scroll the active tab in the given direction, then read what's now visible.
 async function handleScroll(direction) {
   if (!settings.allowScroll) {
     sharonSay(
       "Scrolling is turned off right now. You can switch on “Let Sharon " +
-        "scroll the page for me” in Settings and I'll be glad to scroll for you."
+        "scroll the page” in Settings and I'll be glad to scroll for you."
     );
     return;
   }
@@ -774,7 +1059,6 @@ async function handleScroll(direction) {
     return;
   }
 
-  // Barge in: stop any reading before we move the page.
   stopSpeaking();
 
   let res = {};
@@ -803,29 +1087,76 @@ async function handleScroll(direction) {
     return;
   }
 
-  // Give lazy-loaded threads and feeds a moment to render the new content
-  // before we re-extract and read it.
   await delay(600);
-  await sendInstruction(scrollReadInstruction(direction), {});
+  await runAskLane(scrollReadInstruction(direction), {});
 }
 
 /* ------------------------------------------------------------------ *
- * Acting on the page — full assistant control (opt-in)
+ * Talking to the backend
  *
- * When the user enables "Let Sharon act on the page", spoken instructions run
- * through an agentic loop that lives entirely inside the extension:
- *   perceive (map the interactive elements) → reason (ask the model for a JSON
- *   action plan) → act (inject clicks / typing / etc.) → observe → repeat.
- * The request body to the proxy is unchanged; the action protocol travels
- * inside the model's text reply, which we parse here.
+ * IMPORTANT: text/plain (no CORS preflight that Apps Script can't answer), the
+ * new { api_key, action, payload } envelope, no extra headers. Read success
+ * data from data.result.*, and show data.error on { ok:false }.
  * ------------------------------------------------------------------ */
+async function callApi(action, payload, signal) {
+  const body = { api_key: API_KEY, action, payload };
+  const res = await fetch(PROXY_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=UTF-8" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const raw = await res.text();
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (_) {
+    throw new Error(
+      "Sharon got an unexpected reply from the server. Please try again."
+    );
+  }
+  return data;
+}
 
-const MAX_AGENT_STEPS = 8; // stop runaway loops; the user can ask to continue
-let agentTask = null; // { goal, log: [], steps } while a task is running
+// Build the "ask" system string with the page text folded in (the action does
+// NOT feed page.excerpt to the model, so the text must ride here in "system").
+function askSystem(groundingText, pageText) {
+  return (
+    groundingText +
+    "\n\nPage content (the only thing you can currently see):\n" +
+    (pageText || "").slice(0, MAX_PAGE_TEXT)
+  );
+}
+
+// LANE 3 transport — the default conversational "ask" action. It auto-logs both
+// the user and assistant turns and folds in memory, so we NEVER pair it with an
+// append_turn for the same exchange.
+async function askConversation(userText, ctx, asrConf, signal) {
+  const id = await ensureSessionId();
+  const pageText = ctx.text || "";
+  const payload = {
+    session_id: id,
+    user_text: userText,
+    system: askSystem(GROUNDING, pageText),
+    page: {
+      url: ctx.url || "",
+      title: ctx.title || "",
+      excerpt: pageText.slice(0, MAX_PAGE_TEXT),
+    },
+    user_id: USER_ID,
+    assistant_id: ASSISTANT_ID,
+    asr_confidence: asrConf != null && !Number.isNaN(asrConf) ? asrConf : null,
+  };
+  return callApi("ask", payload, signal);
+}
+
+/* ------------------------------------------------------------------ *
+ * Acting on the page — full assistant control (opt-in, unchanged loop)
+ * ------------------------------------------------------------------ */
+const MAX_AGENT_STEPS = 8;
+let agentTask = null; // { goal, log, steps, acted } while a task runs
 let pendingPlan = null; // an action plan awaiting the user's spoken "yes"
 
-// Injected. Build a numbered map of the interactive elements on the page and
-// tag each with data-sharon-id so we can act on it later. Self-contained.
 function collectInteractive(opts) {
   var MAX = (opts && opts.max) || 120;
 
@@ -841,7 +1172,6 @@ function collectInteractive(opts) {
     if (el.disabled) return false;
     var r = el.getBoundingClientRect();
     if (r.width <= 1 || r.height <= 1) return false;
-    // Keep things on or near the screen (allow a generous below-the-fold band).
     if (r.bottom < -200 || r.top > (window.innerHeight || 0) + 3000) return false;
     return true;
   }
@@ -938,8 +1268,6 @@ function collectInteractive(opts) {
   return { elements: out };
 }
 
-// Injected. Carry out an ordered list of actions on elements tagged by
-// collectInteractive, and report back what happened. Self-contained.
 function doActions(opts) {
   var actions = (opts && opts.actions) || [];
 
@@ -1076,12 +1404,13 @@ function doActions(opts) {
   return { results: results };
 }
 
-// Show a status line while Sharon is acting, then fall back to normal status.
 function setActing(on, text) {
   if (on) {
-    els.html.setAttribute("data-state", "reading");
-    setStatus(text || "Working…");
+    thinking = true;
+    els.html.setAttribute("data-state", "thinking");
+    setStatusText(text || "Working…", "On the page");
   } else {
+    thinking = false;
     updateStatus();
   }
 }
@@ -1120,8 +1449,10 @@ function elementsToText(list) {
     .join("\n");
 }
 
+// The agent grounding now lives in "system" (alongside the page text), so this
+// returns only the goal / action log / element list, sent as user_text.
 function buildAgentPrompt(goal, log, list) {
-  let s = AGENT_GROUNDING + "User goal: " + goal + "\n\n";
+  let s = "User goal: " + goal + "\n\n";
   if (log.length) {
     s +=
       "Actions you have already taken this task:\n" +
@@ -1132,9 +1463,25 @@ function buildAgentPrompt(goal, log, list) {
   return s;
 }
 
-// Pull the JSON action plan out of the model's reply. Returns
-// { say, actions, done } or null when there's no parseable plan (in which case
-// we treat the reply as an ordinary spoken answer).
+async function askAgent(promptBody, ctx, signal) {
+  const id = await ensureSessionId();
+  const pageText = ctx.text || "";
+  const payload = {
+    session_id: id,
+    user_text: promptBody,
+    system: askSystem(AGENT_GROUNDING, pageText),
+    page: {
+      url: ctx.url || "",
+      title: ctx.title || "",
+      excerpt: pageText.slice(0, MAX_PAGE_TEXT),
+    },
+    user_id: USER_ID,
+    assistant_id: ASSISTANT_ID,
+    asr_confidence: null,
+  };
+  return callApi("ask", payload, signal);
+}
+
 function parseAgentReply(reply) {
   if (!reply) return null;
   let jsonStr = null;
@@ -1161,7 +1508,6 @@ function parseAgentReply(reply) {
   };
 }
 
-// Describe an action plan in plain words, for the spoken confirmation prompt.
 function describePlan(actions, list) {
   const nameById = {};
   for (const e of list) nameById[e.id] = e.name;
@@ -1179,7 +1525,7 @@ function describePlan(actions, list) {
 }
 
 function startAgentTask(goal) {
-  agentTask = { goal, log: [], steps: 0 };
+  agentTask = { goal, log: [], steps: 0, acted: false };
   agentStep();
 }
 
@@ -1216,52 +1562,54 @@ async function agentStep() {
 
   setActing(true, "Looking at the page…");
   const list = await extractElements(tab);
-  const content = buildAgentPrompt(agentTask.goal, agentTask.log, list);
+  const promptBody = buildAgentPrompt(agentTask.goal, agentTask.log, list);
 
-  const typing = showTyping();
+  const think = showThinkingCard("Looking at the page…");
   let data;
   try {
-    data = await askSharon(content, ctx);
+    data = await askAgent(promptBody, ctx);
   } catch (err) {
-    typing.remove();
-    addBubble(
-      "error",
-      "Sharon hit a snag: " + ((err && err.message) || "I couldn't reach the server.")
-    );
+    clearThinking(think);
+    addErrorCard((err && err.message) || "I couldn't reach the server.");
     cancelAgentTask();
     setActing(false);
     return;
   }
-  typing.remove();
+  clearThinking(think);
 
   if (!data || !data.ok) {
-    addBubble("error", "Sharon hit a snag: " + ((data && data.error) || "something went wrong."));
+    addErrorCard((data && data.error) || "something went wrong.");
     cancelAgentTask();
     setActing(false);
     return;
   }
 
-  const plan = parseAgentReply(data.reply);
+  const reply = data.result && data.result.reply;
+  const plan = parseAgentReply(reply);
   if (!plan) {
-    // Not an action reply — treat it as a normal spoken answer.
-    const bubble = addSharonBubble(data.reply || "(no reply)");
-    addSources(bubble, data.sources);
-    if (data.reply) speakText(data.reply);
+    addSharonReplyCard(reply || "(no reply)");
+    if (reply) speakText(reply);
+    cancelAgentTask();
+    setActing(false);
+    return;
+  }
+
+  if (!plan.actions.length) {
+    // Sharon answered / decided she's done. Show a coral "done on this page"
+    // card if she actually acted during this task; otherwise a plain answer.
+    if (plan.say) {
+      if (agentTask.acted) addActionCard(plan.say);
+      else addSharonReplyCard(plan.say);
+      speakText(plan.say);
+    }
     cancelAgentTask();
     setActing(false);
     return;
   }
 
   if (plan.say) {
-    addSharonBubble(plan.say);
+    addSharonReplyCard(plan.say);
     speakText(plan.say);
-  }
-
-  if (!plan.actions.length) {
-    // Sharon answered / decided she's done — no page action needed.
-    cancelAgentTask();
-    setActing(false);
-    return;
   }
 
   if (settings.confirmActions) {
@@ -1305,6 +1653,7 @@ async function runPlan(actions) {
   const results = res.results || [];
   results.forEach((r, i) => {
     const a = actions[i] || {};
+    if (r.ok) agentTask.acted = true;
     agentTask.log.push(
       a.type +
         (a.id != null ? " #" + a.id : "") +
@@ -1315,7 +1664,6 @@ async function runPlan(actions) {
   });
   agentTask.steps++;
 
-  // Let the page settle (navigation, re-render) before the next observation.
   await delay(800);
   agentStep();
 }
@@ -1324,72 +1672,29 @@ async function runPlan(actions) {
  * Tab card — keep it current
  * ------------------------------------------------------------------ */
 function refreshTabCard(tab) {
+  if (!els.tabTitle) return;
   if (!tab) {
     els.tabTitle.textContent = "No active tab";
-    els.tabSite.textContent = "—";
     return;
   }
   if (isRestricted(tab.url)) {
     els.tabTitle.textContent = tab.title || "A browser page";
-    els.tabSite.textContent = "Open a website and I'll start reading";
     return;
   }
   els.tabTitle.textContent = tab.title || "This page";
-  try {
-    els.tabSite.textContent = new URL(tab.url).hostname.replace(/^www\./, "");
-  } catch (_) {
-    els.tabSite.textContent = tab.url || "—";
-  }
 }
 
 /* ------------------------------------------------------------------ *
- * Talking to the proxy
- *
- * IMPORTANT: keep this networking EXACTLY as is — text/plain (no CORS
- * preflight that Apps Script can't answer), the same body shape, and no API
- * key anywhere. Do NOT switch to application/json or add headers.
+ * LANE 3 — Read / answer (the default). Uses the "ask" action, which logs
+ * both turns and folds in memory. Renders the gist + reply cards.
  * ------------------------------------------------------------------ */
-async function askSharon(question, ctx, signal) {
-  const id = await ensureSessionId();
-  const body = {
-    action: "chat",
-    messages: [{ role: "user", content: question }],
-    page_text: ctx.text || "",
-    page_title: ctx.title || "",
-    page_url: ctx.url || "",
-    session_id: id,
-  };
-
-  const res = await fetch(PROXY_URL, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=UTF-8" },
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  const raw = await res.text();
-  let data;
-  try {
-    data = JSON.parse(raw);
-  } catch (_) {
-    throw new Error(
-      "Sharon got an unexpected reply from the server. Please try again."
-    );
-  }
-  return data;
-}
-
-/* ------------------------------------------------------------------ *
- * The send path — shared by auto-read and spoken instructions
- * ------------------------------------------------------------------ */
-async function sendInstruction(
+async function runAskLane(
   instruction,
-  { remember = false, defaultRead = false } = {}
+  { remember = false, defaultRead = false, asrConf = null } = {}
 ) {
   instruction = (instruction || "").trim();
   if (!instruction) return;
 
-  // Cancel anything already in flight — the newest request wins.
   if (abortController) {
     try {
       abortController.abort();
@@ -1401,12 +1706,9 @@ async function sendInstruction(
   abortController = ac;
   busy = true;
 
-  // Re-extract the current tab's text at this moment — never reuse stale text,
-  // since the user clicks around the page themselves between requests.
   const ctx = await readPageContext();
   if (ac.signal.aborted) return;
   if (ctx.restricted) {
-    // Not an error — just nothing to read here.
     restricted = true;
     busy = false;
     if (abortController === ac) abortController = null;
@@ -1415,44 +1717,40 @@ async function sendInstruction(
   }
   if (remember) lastUserInstruction = instruction;
 
-  // Don't break short pages: when reading automatically and there's barely
-  // anything to read, ask for a brief honest reply instead of the full read.
   let prompt = instruction;
   if (defaultRead && (ctx.text || "").trim().length < SHORT_PAGE_CHARS) {
     prompt = SHORT_PAGE_INSTRUCTION;
   }
 
-  // Prepend the grounding rules so Sharon answers strictly from what's on the
-  // current tab and never invents anything. (Body shape is unchanged.)
-  const grounded = GROUNDING + prompt;
-
-  const typing = showTyping();
+  const think = showThinkingCard("Reading the page…");
   try {
-    const data = await askSharon(grounded, ctx, ac.signal);
+    const data = await askConversation(prompt, ctx, asrConf, ac.signal);
     if (ac.signal.aborted) {
-      typing.remove();
+      clearThinking(think);
       return;
     }
-    typing.remove();
+    clearThinking(think);
 
-    if (data && data.ok) {
-      const bubble = addSharonBubble(data.reply || "(no reply)");
-      addSources(bubble, data.sources);
-      if (data.reply) speakText(data.reply);
+    if (data && data.ok && data.result) {
+      const reply = data.result.reply || "(no reply)";
+      const { lead, body } = splitLead(reply);
+      if (lead && body) {
+        addGistCard(lead);
+        addSharonReplyCard(body);
+      } else {
+        addSharonReplyCard(reply);
+      }
+      if (reply) speakText(reply);
     } else {
-      const msg =
-        (data && data.error) || "something went wrong with that request.";
-      addBubble("error", "Sharon hit a snag: " + msg);
+      addErrorCard((data && data.error) || "something went wrong with that request.");
     }
   } catch (err) {
-    typing.remove();
+    clearThinking(think);
     if (err && err.name === "AbortError") return;
-    addBubble(
-      "error",
-      "Sharon hit a snag: " +
-        (err && err.message
-          ? err.message
-          : "I couldn't reach the server. Check your connection and try again.")
+    addErrorCard(
+      err && err.message
+        ? err.message
+        : "I couldn't reach the server. Check your connection and try again."
     );
   } finally {
     if (abortController === ac) {
@@ -1464,19 +1762,280 @@ async function sendInstruction(
 }
 
 /* ------------------------------------------------------------------ *
+ * Memory lanes — page fields shared by append_turn / distill_to_memory
+ * ------------------------------------------------------------------ */
+async function pageFields() {
+  const ctx = await readPageContext();
+  if (ctx.restricted) {
+    return { page_url: "", page_title: "", page_domain: "", screen_excerpt: "" };
+  }
+  const text = ctx.text || "";
+  return {
+    page_url: ctx.url || "",
+    page_title: ctx.title || "",
+    page_domain: pageDomain(ctx.url || ""),
+    screen_excerpt: text.slice(0, MAX_PAGE_TEXT),
+  };
+}
+
+// Log a single turn to conversation_turns. Returns the server's turn_id (or null).
+async function appendTurn({ role, content, transcriptRaw, asrConf, page }) {
+  const id = await ensureSessionId();
+  const payload = {
+    session_id: id,
+    role,
+    content,
+    client_msg_id: uuid(),
+    user_id: USER_ID,
+    assistant_id: ASSISTANT_ID,
+    modality: "voice",
+    transcript_raw: transcriptRaw || "",
+    asr_confidence: asrConf != null && !Number.isNaN(asrConf) ? asrConf : null,
+    language: "en-US",
+    model: "",
+    page_url: page.page_url,
+    page_title: page.page_title,
+    page_domain: page.page_domain,
+    screen_excerpt: role === "assistant" ? "" : page.screen_excerpt,
+  };
+  const data = await callApi("append_turn", payload);
+  if (data && data.ok && data.result) return data.result.turn_id || null;
+  if (data && !data.ok) throw new Error(data.error || "couldn't log that turn.");
+  return null;
+}
+
+/* ------------------------------------------------------------------ *
+ * LANE 1 — Save (note / task / decision)
+ * ------------------------------------------------------------------ */
+function stripSaveCommand(s) {
+  const out = (s || "")
+    .replace(
+      /^(?:please\s+|hey\s+|ok(?:ay)?\s+|sharon[,\s]+)*(?:make\s+a\s+(?:note|task|reminder|to-?do|to\s+do)|take\s+a\s+note|add\s+a\s+(?:note|task|reminder|to-?do|to\s+do)|note|remember|save\s+(?:this|that)|remind\s+me)\b[\s:,.\-]*(?:that|to|about|of|for)?\b[\s:,.\-]*/i,
+      ""
+    )
+    .trim();
+  return out || (s || "").trim();
+}
+
+async function saveLane(content, transcriptRaw, asrConf) {
+  enterStack();
+  const think = showThinkingCard("Saving your note…");
+  const page = await pageFields();
+
+  // 1) log the user's turn
+  let userTurnId = null;
+  try {
+    userTurnId = await appendTurn({
+      role: "user",
+      content,
+      transcriptRaw,
+      asrConf,
+      page,
+    });
+  } catch (e) {
+    clearThinking(think);
+    addErrorCard((e && e.message) || "I couldn't save that.");
+    return;
+  }
+
+  // 2) distill it into memory_log
+  const entryType =
+    /\b(remind|reminder|to-?do|to\s+do|task)\b/i.test(content) ? "task" : "note";
+  const cleaned = stripSaveCommand(content);
+  const title = cleaned.slice(0, 80);
+  try {
+    const id = await ensureSessionId();
+    const data = await callApi("distill_to_memory", {
+      entry_type: entryType,
+      title,
+      content: cleaned,
+      user_id: USER_ID,
+      assistant_id: ASSISTANT_ID,
+      session_id: id,
+      source_turn_ids: userTurnId ? [userTurnId] : [],
+      tags: [],
+      importance: 3,
+      page_url: page.page_url,
+    });
+    if (data && !data.ok) {
+      clearThinking(think);
+      addErrorCard(data.error || "I couldn't save that note.");
+      return;
+    }
+  } catch (e) {
+    clearThinking(think);
+    addErrorCard((e && e.message) || "I couldn't save that note.");
+    return;
+  }
+
+  clearThinking(think);
+
+  // 3) local confirmation (no model call), spoken + logged as an assistant turn
+  const confirm =
+    entryType === "task"
+      ? "Done — I saved that task: “" + title + "”."
+      : "Done — I saved that note: “" + title + "”.";
+  addSavedCard(cleaned, entryType);
+  speakText(confirm);
+  try {
+    await appendTurn({
+      role: "assistant",
+      content: confirm,
+      transcriptRaw: "",
+      asrConf: null,
+      page,
+    });
+  } catch (_) {
+    /* the note is saved; logging the confirmation is best-effort */
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * LANE 2 — Recall (look something up)
+ * ------------------------------------------------------------------ */
+function stripRecallCommand(s) {
+  const out = (s || "")
+    .replace(
+      /^(?:please\s+|hey\s+|ok(?:ay)?\s+|sharon[,\s]+)*(?:what\s+notes(?:\s+do\s+i\s+have)?|do\s+i\s+have\s+(?:any\s+)?notes|look\s+up|search\s+(?:my\s+)?(?:notes|memory)(?:\s+for)?|find\s+(?:my\s+)?notes|what\s+did\s+(?:we|i)\s+(?:say|decide)|remind\s+me\s+what|pull\s+up)\b[\s:,.\-]*(?:about|on|for|regarding|the|do\s+i\s+have)?\b[\s:,.\-]*/i,
+      ""
+    )
+    .trim();
+  return out || (s || "").trim();
+}
+
+function shortTopic(query) {
+  const q = (query || "").trim();
+  if (!q) return "that";
+  return q.length > 60 ? q.slice(0, 60) + "…" : q;
+}
+
+async function recallLane(content, transcriptRaw, asrConf) {
+  enterStack();
+
+  // log the user's turn
+  const page = await pageFields();
+  try {
+    await appendTurn({ role: "user", content, transcriptRaw, asrConf, page });
+  } catch (e) {
+    addErrorCard((e && e.message) || "I couldn't reach the server.");
+    return;
+  }
+
+  const query = stripRecallCommand(content);
+  const think = showThinkingCard("Checking your notes…");
+  let hits = [];
+  try {
+    const data = await callApi("search_memory", {
+      query,
+      user_id: USER_ID,
+      assistant_id: ASSISTANT_ID,
+      limit: 5,
+      touch: true,
+    });
+    if (data && data.ok) hits = Array.isArray(data.result) ? data.result : [];
+    else if (data && !data.ok) {
+      clearThinking(think);
+      addErrorCard(data.error || "I couldn't search your notes.");
+      return;
+    }
+  } catch (e) {
+    clearThinking(think);
+    addErrorCard((e && e.message) || "I couldn't search your notes.");
+    return;
+  }
+  clearThinking(think);
+
+  const n = hits.length;
+  let summary;
+  if (n === 0) {
+    summary = "I couldn't find any notes about " + shortTopic(query) + ".";
+  } else {
+    const titles = hits
+      .slice(0, 3)
+      .map((h) => (h.title || (h.content || "").slice(0, 60) || "").trim())
+      .filter(Boolean);
+    summary =
+      "Found " +
+      n +
+      (n === 1 ? " note" : " notes") +
+      (query ? " about " + shortTopic(query) : "") +
+      ": " +
+      titles.join("; ") +
+      ".";
+  }
+  addFoundCard(summary, hits);
+  speakText(summary);
+
+  try {
+    await appendTurn({
+      role: "assistant",
+      content: summary,
+      transcriptRaw: "",
+      asrConf: null,
+      page,
+    });
+  } catch (_) {
+    /* best-effort logging */
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Lane routing — classify a sent transcript and send it down a lane
+ * ------------------------------------------------------------------ */
+function classifyLane(text) {
+  const t = (text || "").trim().toLowerCase();
+  if (!t) return "ask";
+  // Recall first, so "remind me what …" beats the "remind me …" save trigger.
+  if (
+    /^(?:please\s+|hey\s+|ok(?:ay)?\s+|sharon[,\s]+)*(what\s+notes|do\s+i\s+have\s+(?:any\s+)?notes|look\s+up|search\s+(?:my\s+)?(?:notes|memory)|find\s+(?:my\s+)?notes|what\s+did\s+(?:we|i)\s+(?:say|decide)\s+about|remind\s+me\s+what|pull\s+up)\b/.test(
+      t
+    )
+  ) {
+    return "recall";
+  }
+  if (
+    /^(?:please\s+|hey\s+|ok(?:ay)?\s+|sharon[,\s]+)*(make\s+a\s+(?:note|task|reminder|to-?do|to\s+do)|note\s+that|take\s+a\s+note|remember\b|save\s+(?:this|that)|add\s+a\s+(?:note|task|reminder|to-?do|to\s+do)|remind\s+me)\b/.test(
+      t
+    )
+  ) {
+    return "save";
+  }
+  return "ask";
+}
+
+function routeUtterance(content, raw, conf) {
+  const lane = classifyLane(content);
+  if (speaking) stopSpeaking();
+  if (lane === "save") {
+    saveLane(content, raw, conf);
+    return;
+  }
+  if (lane === "recall") {
+    recallLane(content, raw, conf);
+    return;
+  }
+  // Default lane: read / answer — or run the on-page agent when enabled.
+  if (settings.allowActions) {
+    startAgentTask(content);
+  } else {
+    runAskLane(content, { remember: true, asrConf: conf });
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Auto-read: whenever a readable tab becomes active, start reading it.
  * ------------------------------------------------------------------ */
 async function evaluateActiveTab() {
   const seq = ++evalSeq;
   const tab = await getActiveTabReady();
-  if (seq !== evalSeq) return; // a newer evaluation superseded this one
+  if (seq !== evalSeq) return;
 
   refreshTabCard(tab);
 
   if (!tab || isRestricted(tab.url)) {
     restricted = true;
     lastReadKey = null;
-    stopSpeaking(); // we've left the page she was reading
+    stopSpeaking();
     updateStatus();
     return;
   }
@@ -1484,29 +2043,24 @@ async function evaluateActiveTab() {
   restricted = false;
   updateStatus();
 
-  // Wait until saved settings have loaded so a tab event during startup can't
-  // auto-read before we know whether the user disabled it.
   if (!ready) return;
-
-  // When auto-read is off, Sharon stays quiet: she never reads or sends page
-  // text on her own. She'll only act when the user explicitly asks.
   if (!settings.autoRead) return;
 
   const key = tab.id + "::" + tab.url;
-  if (key === lastReadKey) return; // already reading / read this exact page
+  if (key === lastReadKey) return;
   lastReadKey = key;
   autoRead();
 }
 
 async function autoRead() {
   stopSpeaking();
-  // Use the user's last spoken instruction if there is one; otherwise default.
   const custom = lastUserInstruction;
-  await sendInstruction(custom || DEFAULT_INSTRUCTION, { defaultRead: !custom });
+  // Auto-read goes through LANE 3 (ask) using the default reading instruction.
+  await runAskLane(custom || DEFAULT_INSTRUCTION, { defaultRead: !custom });
 }
 
 /* ------------------------------------------------------------------ *
- * Speech synthesis (reading aloud)
+ * Speech synthesis (reading aloud) — unchanged engine
  * ------------------------------------------------------------------ */
 function pickEnglishVoice() {
   if (!synth) return null;
@@ -1524,8 +2078,7 @@ function pickEnglishVoice() {
 }
 
 function speakText(text) {
-  if (!synth) return; // no speech support — leave the answer on screen
-  // The user has muted Sharon's voice — show the answer but don't read it aloud.
+  if (!synth) return;
   if (!settings.readAloud) return;
   synth.cancel();
   const utt = new SpeechSynthesisUtterance(text);
@@ -1564,7 +2117,7 @@ function speakText(text) {
 
   currentUtterance = utt;
   currentSpokenText = text;
-  speaking = true; // set now so the echo filter is active immediately
+  speaking = true;
   paused = false;
   synth.speak(utt);
   updateStatus();
@@ -1594,7 +2147,6 @@ function resumeSpeaking() {
   }
 }
 
-// Voices can load asynchronously; warm them up.
 if (synth) {
   synth.onvoiceschanged = () => pickEnglishVoice();
 }
@@ -1616,26 +2168,15 @@ function isEchoOfSpeech(phrase) {
   if (!p) return true;
   const full = normalize(currentSpokenText);
   if (!full) return false;
-  if (full.includes(p)) return true; // a contiguous chunk of what she's saying
-  // Otherwise, if most of the words are words she's currently reading, it's echo.
+  if (full.includes(p)) return true;
   const words = p.split(" ");
   const matched = words.filter((w) => full.includes(w)).length;
   return matched / words.length >= 0.6;
 }
 
 /* ------------------------------------------------------------------ *
- * Acting on what the user said
+ * Acting on what the user said — immediate commands vs. transcript content
  * ------------------------------------------------------------------ */
-
-// Work out whether a spoken command is asking Sharon to scroll the page, and
-// which way. Returns { direction, explicit } or null.
-//   - direction: "up" | "down" | "top" | "bottom"
-//   - explicit:  true when the user literally said "scroll …" / "go up/down" /
-//                "to the top/bottom" (an unmistakable scroll request); false for
-//                looser reader phrasing like "read more" / "what else".
-// The `explicit` flag lets us inform the user when scrolling is switched off
-// only when they clearly asked for it, and otherwise let ambiguous words like
-// "more" fall through to a normal question.
 function parseScrollIntent(cmd) {
   if (
     /\b(top of (the )?page|to the (very )?top|back to the top)\b/.test(cmd) ||
@@ -1667,9 +2208,6 @@ function parseScrollIntent(cmd) {
   ) {
     return { direction: "down", explicit: true };
   }
-  // Looser reader phrasing — treat as "scroll down and read on". Kept narrow on
-  // purpose so a topical question like "tell me more about pricing" still goes
-  // to the model: a bare "more"/"read more" scrolls, but "more about X" doesn't.
   if (
     /^(more|read more|show more|tell me more|read on|keep reading|continue reading|see more|what else|what else does it say|read the rest|the rest)$/.test(
       cmd
@@ -1683,10 +2221,43 @@ function parseScrollIntent(cmd) {
   return null;
 }
 
-function handleUserUtterance(text) {
+// Try to consume the utterance as an instant, hands-free command. Returns true
+// when handled (so it must NOT be routed through the transcript / Send).
+function tryImmediateCommand(text, cmd) {
+  if (cmd === "stop" || cmd === "stop reading" || cmd === "be quiet" || cmd === "quiet") {
+    cancelAgentTask();
+    stopSpeaking();
+    setActing(false);
+    updateStatus();
+    return true;
+  }
+  if (cmd === "pause") {
+    pauseSpeaking();
+    return true;
+  }
+  if (
+    cmd === "resume" ||
+    cmd === "continue" ||
+    cmd === "keep going" ||
+    cmd === "go on"
+  ) {
+    if (paused) resumeSpeaking();
+    else if (settings.allowScroll) handleScroll("down");
+    else resumeSpeaking();
+    return true;
+  }
+  const scrollIntent = parseScrollIntent(cmd);
+  if (scrollIntent && (settings.allowScroll || scrollIntent.explicit)) {
+    handleScroll(scrollIntent.direction);
+    return true;
+  }
+  return false;
+}
+
+// Every final utterance flows through here.
+function handleUserUtterance(text, conf) {
   text = (text || "").trim();
   if (!text) return;
-  // While Sharon is talking, ignore the mic echoing her own voice.
   if (speaking && isEchoOfSpeech(text)) return;
 
   const cmd = text
@@ -1694,7 +2265,7 @@ function handleUserUtterance(text) {
     .replace(/[.!?,]+$/g, "")
     .trim();
 
-  // If an action plan is waiting for the user's okay, this utterance answers it.
+  // An action plan waiting for the user's okay — yes / no answers it instantly.
   if (pendingPlan) {
     const yes = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|confirm|go for it|sounds good)$/.test(
       cmd
@@ -1703,72 +2274,31 @@ function handleUserUtterance(text) {
       cmd
     );
     if (yes) {
-      addBubble("user", text);
+      discardCompose();
       const actions = pendingPlan.actions;
       pendingPlan = null;
       runPlan(actions);
       return;
     }
     if (no) {
-      addBubble("user", text);
+      discardCompose();
       cancelAgentTask();
       sharonSay("Okay, I'll leave it.");
       updateStatus();
       return;
     }
-    // Neither yes nor no — treat it as a brand-new request; drop the plan.
+    // Neither yes nor no — treat as a brand-new request; drop the plan.
     cancelAgentTask();
   }
 
-  if (cmd === "stop" || cmd === "stop reading" || cmd === "be quiet" || cmd === "quiet") {
-    addBubble("user", text);
-    cancelAgentTask(); // abort any task in progress
-    stopSpeaking();
-    setActing(false);
-    return;
-  }
-  if (cmd === "pause") {
-    addBubble("user", text);
-    pauseSpeaking();
-    return;
-  }
-  // "resume" / "continue" / "keep going" resume the voice when it's paused. If
-  // nothing is paused, the user is asking to hear more — scroll on and read.
-  if (
-    cmd === "resume" ||
-    cmd === "continue" ||
-    cmd === "keep going" ||
-    cmd === "go on"
-  ) {
-    addBubble("user", text);
-    if (paused) {
-      resumeSpeaking();
-    } else if (settings.allowScroll) {
-      handleScroll("down");
-    } else {
-      resumeSpeaking();
-    }
+  // Immediate commands fire instantly and never go through the transcript.
+  if (tryImmediateCommand(text, cmd)) {
+    discardCompose();
     return;
   }
 
-  // Scrolling the page — Sharon's one page action, when the user allows it.
-  const scrollIntent = parseScrollIntent(cmd);
-  if (scrollIntent && (settings.allowScroll || scrollIntent.explicit)) {
-    addBubble("user", text);
-    handleScroll(scrollIntent.direction);
-    return;
-  }
-
-  // Anything else is an instruction. When Sharon is allowed to act on the page,
-  // it runs through the agentic loop (which still just answers/reads when no
-  // page action is needed); otherwise it's a normal read/answer request.
-  addBubble("user", text);
-  if (speaking) stopSpeaking(); // barge-in: pause the reading first
-  if (settings.allowActions) {
-    startAgentTask(text);
-  } else {
-    sendInstruction(text, { remember: true });
-  }
+  // Everything else becomes editable transcript content with an auto-send.
+  composeAppend(text, conf);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1790,60 +2320,46 @@ function ensureRecognition() {
   rec.onresult = (event) => {
     let interim = "";
     let final = "";
+    let finalConf = null;
     for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcript = event.results[i][0].transcript;
-      if (event.results[i].isFinal) final += transcript;
-      else interim += transcript;
+      const alt = event.results[i][0];
+      if (event.results[i].isFinal) {
+        final += alt.transcript;
+        if (alt.confidence != null) finalConf = alt.confidence;
+      } else {
+        interim += alt.transcript;
+      }
     }
 
     const show = interim.trim();
     if (show && !(speaking && isEchoOfSpeech(show))) {
-      if (!interimBubble) {
-        interimBubble = addBubble("user", show, { interim: true });
-      } else {
-        interimBubble.textContent = show;
-        scrollToBottom();
-      }
+      showComposeInterim(show);
     }
 
     if (final.trim()) {
       const text = final.trim();
-      if (interimBubble) {
-        interimBubble.remove();
-        interimBubble = null;
-      }
-      handleUserUtterance(text);
+      clearComposeInterim();
+      handleUserUtterance(text, finalConf);
     }
   };
 
   rec.onerror = (event) => {
     recognizing = false;
-    if (interimBubble) {
-      interimBubble.remove();
-      interimBubble = null;
-    }
     if (
       event.error === "not-allowed" ||
       event.error === "service-not-allowed"
     ) {
       micBlocked = true;
       micMuted = true;
-      addBubble(
-        "error",
+      addErrorCard(
         "I couldn't access the microphone. Check the browser's mic permission, then tap the mic to try again. I'll keep reading pages in the meantime."
       );
       updateStatus();
     }
-    // Other errors (no-speech, network, aborted) are handled by onend's restart.
   };
 
   rec.onend = () => {
     recognizing = false;
-    if (interimBubble) {
-      interimBubble.remove();
-      interimBubble = null;
-    }
-    // Keep recognition alive while the mic is live.
     if (!micMuted && !micBlocked) {
       setTimeout(() => {
         if (!micMuted && !micBlocked) startRecognition();
@@ -1863,7 +2379,7 @@ function startRecognition() {
     rec.start();
     recognizing = true;
   } catch (_) {
-    // start() throws if it's already running; ignore.
+    /* start() throws if already running; ignore. */
   }
 }
 
@@ -1875,28 +2391,29 @@ function stopRecognition() {
     /* ignore */
   }
   recognizing = false;
-  if (interimBubble) {
-    interimBubble.remove();
-    interimBubble = null;
-  }
 }
 
 /* ------------------------------------------------------------------ *
- * The microphone button — the single control (mute / unmute)
+ * The mic controls — orb hero + dock mic both start/stop listening
  * ------------------------------------------------------------------ */
-els.micBtn.addEventListener("click", () => {
+function toggleMic() {
   if (!SpeechRecognition) {
-    addBubble(
-      "error",
+    addErrorCard(
       "Voice input isn't available in this browser, but I'll still read pages aloud automatically."
     );
     return;
   }
   if (micBlocked) {
-    // Let the user retry granting permission.
     micBlocked = false;
     micMuted = false;
     startRecognition();
+    updateStatus();
+    return;
+  }
+  // While Sharon is reading, a tap is a natural "stop" (barge-in) and keeps the
+  // mic state as-is, rather than muting her ear.
+  if (speaking) {
+    stopSpeaking();
     updateStatus();
     return;
   }
@@ -1904,27 +2421,58 @@ els.micBtn.addEventListener("click", () => {
   if (micMuted) stopRecognition();
   else startRecognition();
   updateStatus();
-});
-
-if (!SpeechRecognition) {
-  els.micBtn.title = "Voice input not supported";
 }
 
+if (els.orb) els.orb.addEventListener("click", toggleMic);
+if (els.dockMic) els.dockMic.addEventListener("click", toggleMic);
+
 /* ------------------------------------------------------------------ *
- * The read-aloud button — mute / unmute Sharon's spoken voice
+ * The Voice dock button — mute / unmute Sharon's spoken voice
  * ------------------------------------------------------------------ */
-if (els.aloudBtn) {
-  els.aloudBtn.addEventListener("click", () => {
+if (els.voiceBtn) {
+  els.voiceBtn.addEventListener("click", () => {
     settings.readAloud = !settings.readAloud;
     saveSettings();
-    if (!settings.readAloud) stopSpeaking(); // silence her right away
+    if (!settings.readAloud) stopSpeaking();
     updateReadAloudUI();
     updateStatus();
   });
 }
 
 /* ------------------------------------------------------------------ *
- * Settings view — a clean sheet over the conversation
+ * Slide-up sheets (Settings / Notes)
+ * ------------------------------------------------------------------ */
+function openSheet(sheet) {
+  if (sheet) sheet.classList.add("open");
+}
+function closeSheets() {
+  document.querySelectorAll(".sheet").forEach((s) => s.classList.remove("open"));
+}
+
+if (els.settingsBtn)
+  els.settingsBtn.addEventListener("click", () => {
+    applySettingsToUI();
+    refreshShortcut();
+    openSheet(els.settingsSheet);
+  });
+if (els.notesBtn)
+  els.notesBtn.addEventListener("click", () => {
+    openSheet(els.notesSheet);
+    loadNotes("", { limit: 20, touch: false });
+  });
+document
+  .querySelectorAll("[data-close]")
+  .forEach((b) => b.addEventListener("click", closeSheets));
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    const open = document.querySelector(".sheet.open");
+    if (open) closeSheets();
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Settings sheet — toggles map to the existing storage keys
  * ------------------------------------------------------------------ */
 function applySettingsToUI() {
   if (els.autoReadToggle) els.autoReadToggle.checked = !!settings.autoRead;
@@ -1934,7 +2482,6 @@ function applySettingsToUI() {
   updateReadAloudUI();
 }
 
-// Read the current shortcut Chrome has assigned and show it (or "Not set").
 async function refreshShortcut() {
   let label = "Not set";
   try {
@@ -1949,59 +2496,14 @@ async function refreshShortcut() {
   if (els.shortcutValue) els.shortcutValue.textContent = label;
 }
 
-// While the sheet is open, make the rest of the panel inert so keyboard and
-// screen-reader users can't reach the controls hidden behind it.
-const backgroundEls = [
-  document.querySelector(".header"),
-  document.querySelector(".tab-card"),
-  document.querySelector(".conversation"),
-  document.querySelector(".mic-bar"),
-];
-function setBackgroundInert(on) {
-  for (const el of backgroundEls) {
-    if (!el) continue;
-    if (on) el.setAttribute("inert", "");
-    else el.removeAttribute("inert");
-  }
-}
-
-function openSettings() {
-  applySettingsToUI();
-  refreshShortcut();
-  els.settings.hidden = false;
-  els.settings.setAttribute("aria-hidden", "false");
-  els.settingsBtn.setAttribute("aria-expanded", "true");
-  setBackgroundInert(true);
-  els.settingsBack.focus();
-}
-
-function closeSettings() {
-  els.settings.hidden = true;
-  els.settings.setAttribute("aria-hidden", "true");
-  els.settingsBtn.setAttribute("aria-expanded", "false");
-  setBackgroundInert(false);
-  els.settingsBtn.focus();
-}
-
-if (els.settingsBtn) els.settingsBtn.addEventListener("click", openSettings);
-if (els.settingsBack) els.settingsBack.addEventListener("click", closeSettings);
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && els.settings && !els.settings.hidden) {
-    closeSettings();
-  }
-});
-
 if (els.autoReadToggle) {
   els.autoReadToggle.addEventListener("change", () => {
     settings.autoRead = els.autoReadToggle.checked;
     saveSettings();
     if (settings.autoRead) {
-      // Turned back on while on a readable page — let her start reading.
       lastReadKey = null;
       evaluateActiveTab();
     } else {
-      // Turned off — stay quiet; just refresh the calm status line.
       updateStatus();
     }
   });
@@ -2018,7 +2520,7 @@ if (els.actionsToggle) {
   els.actionsToggle.addEventListener("change", () => {
     settings.allowActions = els.actionsToggle.checked;
     saveSettings();
-    if (!settings.allowActions) cancelAgentTask(); // stop any task in flight
+    if (!settings.allowActions) cancelAgentTask();
     updateStatus();
   });
 }
@@ -2037,6 +2539,122 @@ if (els.changeShortcut) {
     } catch (_) {
       /* fail quietly */
     }
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Notes sheet — real memory, backed by search_memory
+ * ------------------------------------------------------------------ */
+function relativeTime(iso) {
+  if (!iso) return "";
+  const then = new Date(iso);
+  const ms = then.getTime();
+  if (Number.isNaN(ms)) return "";
+  const diff = Date.now() - ms;
+  if (diff < 0) return "just now";
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return min + "m ago";
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return hr + "h ago";
+  const day = Math.floor(hr / 24);
+  if (day === 1) return "yesterday";
+  if (day < 7) return day + "d ago";
+  try {
+    return then.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch (_) {
+    return day + "d ago";
+  }
+}
+
+function renderNotes(hits) {
+  els.notesList.innerHTML = "";
+  if (!hits.length) {
+    const empty = document.createElement("div");
+    empty.className = "notes-empty";
+    empty.textContent = "No notes yet — say “make a note…” and I'll save one.";
+    els.notesList.appendChild(empty);
+    return;
+  }
+  for (const h of hits) {
+    const item = document.createElement("div");
+    item.className = "note-item";
+    const title = (h.title || "").trim();
+    const content = (h.content || "").trim();
+    if (title) {
+      const t = document.createElement("div");
+      t.className = "ni-title";
+      t.textContent = title;
+      item.appendChild(t);
+    }
+    if (content) {
+      const b = document.createElement("div");
+      b.className = "ni-body";
+      b.textContent = content;
+      item.appendChild(b);
+    }
+    const meta = document.createElement("div");
+    meta.className = "ni-meta";
+    const src = document.createElement("span");
+    src.className = "src";
+    src.textContent = h.entry_type || "note";
+    meta.appendChild(src);
+    const when = relativeTime(h.created_at);
+    if (when) {
+      meta.appendChild(document.createTextNode("·"));
+      const t = document.createElement("span");
+      t.textContent = when;
+      meta.appendChild(t);
+    }
+    item.appendChild(meta);
+    els.notesList.appendChild(item);
+  }
+}
+
+let notesReqSeq = 0;
+async function loadNotes(query, { limit = 20, touch = false } = {}) {
+  if (!els.notesList) return;
+  const seq = ++notesReqSeq;
+  els.notesList.innerHTML =
+    '<div class="notes-loading">Looking through your notes…</div>';
+  try {
+    const data = await callApi("search_memory", {
+      query: query || "",
+      user_id: USER_ID,
+      assistant_id: ASSISTANT_ID,
+      limit,
+      touch,
+    });
+    if (seq !== notesReqSeq) return; // a newer search superseded this one
+    if (data && data.ok) {
+      renderNotes(Array.isArray(data.result) ? data.result : []);
+    } else {
+      els.notesList.innerHTML = "";
+      const err = document.createElement("div");
+      err.className = "notes-empty";
+      err.textContent =
+        "I couldn't load your notes: " + ((data && data.error) || "unknown error");
+      els.notesList.appendChild(err);
+    }
+  } catch (e) {
+    if (seq !== notesReqSeq) return;
+    els.notesList.innerHTML = "";
+    const err = document.createElement("div");
+    err.className = "notes-empty";
+    err.textContent =
+      "I couldn't load your notes — check your connection and try again.";
+    els.notesList.appendChild(err);
+  }
+}
+
+let notesSearchTimer = null;
+if (els.noteSearchInput) {
+  els.noteSearchInput.addEventListener("input", () => {
+    const q = els.noteSearchInput.value.trim();
+    if (notesSearchTimer) clearTimeout(notesSearchTimer);
+    notesSearchTimer = setTimeout(() => {
+      loadNotes(q, { limit: 20, touch: false });
+    }, 320);
   });
 }
 
@@ -2066,6 +2684,11 @@ if (chrome.tabs && chrome.tabs.onUpdated) {
   });
 }
 
+// Hide the coachmark after a short while if the user hasn't interacted.
+setTimeout(() => {
+  if (els.coach) els.coach.classList.add("hide");
+}, 6000);
+
 /* ------------------------------------------------------------------ *
  * Boot — the panel is activated: mic goes LIVE and reading starts.
  * ------------------------------------------------------------------ */
@@ -2073,10 +2696,11 @@ if (chrome.tabs && chrome.tabs.onUpdated) {
   micMuted = false;
   micBlocked = false;
   await ensureSessionId();
-  await loadSettings(); // remembered settings survive closing & reopening
-  ready = true; // settings are in — auto-read may now proceed
+  await loadSettings();
+  ready = true;
   applySettingsToUI();
+  updateReadAloudUI();
   updateStatus();
-  startRecognition(); // mic is live the moment the panel opens
-  evaluateActiveTab(); // start reading if we're on a readable page (and allowed)
+  startRecognition();
+  evaluateActiveTab();
 })();

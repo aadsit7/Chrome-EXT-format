@@ -1,11 +1,42 @@
-Sharon — a voice assistant for your browser side panel
-======================================================
+Sharon — a voice assistant for your browser side panel  (v6.0.0)
+================================================================
 
 Sharon reads the web page you're on out loud, all on her own, and listens for
 your voice the whole time so you can talk to her hands-free. She works in both
-Google Chrome and Microsoft Edge. There is no API key inside the extension —
-Sharon sends the page text and your spoken instructions to a server that does
-the AI part.
+Google Chrome and Microsoft Edge. The AI provider key is NEVER inside the
+extension — Sharon sends the page text and your spoken instructions to your
+Google Apps Script web app ("Speaking_Assistant"), which holds the secret key,
+calls the model, and reads/writes her two-layer memory.
+
+She now has memory. As you talk, Sharon logs the conversation, and when you ask
+her to "make a note" or "remember" something she distills it into a notes/tasks
+store. Later you can ask "what notes do I have about X" or open the Notes sheet
+(the notebook icon in the bottom dock) to search everything she's saved.
+
+
+Backend setup (one-time — you must do this before Sharon will work)
+-------------------------------------------------------------------
+Sharon talks to a Google Apps Script web app that fronts your "Speaking_Assistant"
+Google Sheet. Open config.js and paste in your own values:
+
+  PROXY_URL    — your Apps Script Web App /exec URL.  (ships as a placeholder)
+  API_KEY      — must MATCH the Script Property named API_KEY in that Apps
+                 Script project.                       (ships as a placeholder)
+  USER_ID      — "usr_aaron"  (a real row in the Sheet's "users" tab)
+  ASSISTANT_ID — "asst_sharon" (a real row in the Sheet's "assistants" tab)
+
+USER_ID and ASSISTANT_ID are sent on every call so memory recall matches your
+data — leave them as-is unless your Sheet uses different ids.
+
+In the Apps Script project itself:
+  - Set two Script Properties:  API_KEY  (same string as config.js) and
+    ANTHROPIC_API_KEY  (your model provider key — never goes in the extension).
+  - Deploy as a Web App with  "Execute as: me"  and  "Who has access: Anyone".
+    (Apps Script web apps can't answer a CORS preflight, which is why Sharon
+    always sends text/plain and never application/json.)
+
+Until PROXY_URL and API_KEY are filled in, Sharon's panel loads and listens,
+but every request comes back as "Sharon hit a snag…".
 
 Sharon is a voice assistant for whatever is on your current tab. She only ever
 works with the single active tab in the current window, and she only reads what
@@ -62,14 +93,27 @@ How to test her
      - Say anything else, like "just give me the key points" or "what does it
        say about pricing?", and she'll pause, take your instruction, and read
        you the answer.
-6. There are two controls at the bottom. The big microphone mutes/unmutes
-   listening: tap it to mute (it turns grey with a slash and stops listening);
-   tap again to go live (coral with a soft pulse). When muted, Sharon just reads
-   and ignores you. The smaller speaker button beside it mutes/unmutes Sharon's
-   own voice: tap it to silence her reading aloud (her answers still appear on
-   screen, she just won't speak them); tap again to let her speak. Your choice
-   is remembered after you close and reopen.
-7. Open a protected page like  chrome://settings  — instead of breaking, she
+6. The bottom dock has four controls. The big coral microphone in the middle
+   (and the large breathing orb up top) start/stop listening: tap to mute (the
+   orb shows a slash and stops listening); tap again to go live. Tapping while
+   she's reading simply stops her (a barge-in). The "Voice" button on the left
+   mutes/unmutes Sharon's own spoken voice: tap to silence her reading aloud
+   (her answers still appear on screen); tap again to let her speak. Your choice
+   is remembered after you close and reopen. "Notes" opens your saved notes and
+   "Settings" opens the settings sheet.
+7. When you talk, Sharon writes down what she heard in an editable card. You can
+   tap the text to fix anything before it's sent; otherwise it sends itself
+   after a moment so you stay hands-free. Quick commands — "stop", "pause",
+   "resume", "scroll down", and yes/no answers — still fire instantly and skip
+   the card.
+8. Saving and recalling notes:
+     - Say "make a note that the proposal is due Friday" (or "remember…",
+       "remind me to…") and Sharon saves it; a green "Saved to your notes" card
+       confirms it.
+     - Say "what notes do I have about the proposal" (or "look up…", "search my
+       notes…") and she reads back what she finds and shows a blue results card.
+     - Tap "Notes" in the dock to browse and search everything she's saved.
+9. Open a protected page like  chrome://settings  — instead of breaking, she
    shows a calm "Open a website and I'll start reading" line and begins again
    the moment you switch to a real website.
 
