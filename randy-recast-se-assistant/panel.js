@@ -346,6 +346,33 @@
         return 'anon-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
       }
 
+      // Synchronous (localStorage) mirror of "has this install finished
+      // onboarding?". chrome.storage.local is async, so without this hint every
+      // reload would have to wait on it before knowing whether to show the tool —
+      // flashing a frame and delaying the mic auto-start each time. The hint lets
+      // an already-onboarded install render the normal tool and start listening
+      // INSTANTLY; chrome.storage stays the source of truth for the real id +
+      // name (loaded in the background, always ready before any API call).
+      // localStorage is synchronous and available on extension pages.
+      const ONBOARDED_HINT_KEY = 'randy_onboarded';
+      function readOnboardedHint() {
+        try { return localStorage.getItem(ONBOARDED_HINT_KEY) === '1'; } catch { return false; }
+      }
+      function writeOnboardedHint(done) {
+        try {
+          if (done) localStorage.setItem(ONBOARDED_HINT_KEY, '1');
+          else localStorage.removeItem(ONBOARDED_HINT_KEY);
+        } catch {}
+      }
+
+      // loadIdentity runs exactly once; everything awaits this shared promise so
+      // the anon id is guaranteed present before the first API call.
+      let _identityPromise = null;
+      function ensureIdentity() {
+        if (!_identityPromise) _identityPromise = loadIdentity();
+        return _identityPromise;
+      }
+
       // Load the anon id (minting + persisting it once on first run) and any
       // saved name. Always resolves with IDENTITY populated and loaded=true.
       async function loadIdentity() {
@@ -361,6 +388,8 @@
           IDENTITY.userName = { firstName: String(nm.firstName), lastName: String(nm.lastName) };
         }
         IDENTITY.loaded = true;
+        // Keep the synchronous fast-path hint in step with the source of truth.
+        writeOnboardedHint(!!IDENTITY.userName);
         return IDENTITY;
       }
 
@@ -370,6 +399,14 @@
       function identityFullName() {
         const n = IDENTITY.userName;
         return n ? (n.firstName + ' ' + n.lastName).trim() : '';
+      }
+
+      // Whether to show the normal tool right now. True once onboarding is
+      // confirmed, OR — before the async identity load finishes — when the
+      // synchronous hint says this install already onboarded. That second clause
+      // is what keeps reloads instant and flash-free.
+      function shouldShowApp() {
+        return onboardingComplete() || (!IDENTITY.loaded && readOnboardedHint());
       }
 
       // Persist the one-time name and guarantee the anon id exists, then let the
@@ -384,6 +421,7 @@
         }
         IDENTITY.userName = { firstName, lastName };
         await storageSet({ [USER_NAME_KEY]: IDENTITY.userName });
+        writeOnboardedHint(true);
         return true;
       }
 
@@ -3092,6 +3130,9 @@
         if (!GSHEET_WEBHOOK) {
           throw new Error('Answer service is not configured.');
         }
+        // Make sure the anon id is loaded before attaching metadata.user_id. It
+        // resolves long before any real call, so this never adds latency.
+        try { await ensureIdentity(); } catch {}
         const payload = Object.assign({ action: 'chat', session_id: SESSION_ID }, body);
         // Tag the model call with the opaque anonymous install id (metadata
         // .user_id) — never the name or any other personal info. The proxy
@@ -3338,6 +3379,7 @@
 
       async function streamAssistReply(body, signal, idx, msgIdx, perf) {
         const slot = STATE.slots[idx];
+        try { await ensureIdentity(); } catch {}
         const payload = Object.assign({ action: 'chat', session_id: SESSION_ID }, body, { stream: true });
         // Same as postChat: carry only the opaque anonymous id to the model,
         // never the name. The edge proxy forwards it to the Anthropic request.
@@ -3645,8 +3687,10 @@
       // the inputs on Save, so no per-keystroke render steals the caret.
       function renderOnboarding(root) {
         if (!IDENTITY.loaded) {
-          // Brief, quiet placeholder while chrome.storage resolves (a few ms).
-          root.innerHTML = '<div class="onb-wrap"><div class="onb-card onb-loading">Loading…</div></div>';
+          // Identity still loading and no fast-path hint — paint a blank panel in
+          // the app's own background colour (no card, no text) so the few-ms wait
+          // is invisible instead of a flash of UI.
+          root.innerHTML = '<div class="onb-blank"></div>';
           return;
         }
         const f = IDENTITY.userName ? escAttr(IDENTITY.userName.firstName) : '';
@@ -3675,8 +3719,9 @@
         if (!root) return;
         // Identity gate: until a name is saved for this install, the panel shows
         // ONLY the one-time onboarding screen — never the normal tool. Once a
-        // name exists (this install, ever) this branch is skipped for good.
-        if (!IDENTITY.loaded || !onboardingComplete()) {
+        // name exists (this install, ever) this branch is skipped for good. The
+        // synchronous hint inside shouldShowApp() keeps reloads instant.
+        if (!shouldShowApp()) {
           renderOnboarding(root);
           return;
         }
@@ -5508,13 +5553,23 @@
       }
 
       function boot() {
-        // Show the panel immediately (a brief loading placeholder), then load the
-        // anon id + saved name from chrome.storage. Both are in hand BEFORE the
-        // main app — and therefore before the first API call — starts. If no name
-        // is saved yet, render() keeps showing onboarding and startMainApp() is
-        // held back until the user saves their name.
-        render();
-        loadIdentity().then(() => {
+        // Fast path: a synchronous localStorage hint says this install already
+        // finished onboarding, so render the normal tool and start listening
+        // IMMEDIATELY — identical to the original boot, with no wait on the async
+        // chrome.storage read. (That wait was the reload glitch: a flashed frame
+        // and a delayed mic auto-start every time.)
+        if (readOnboardedHint()) {
+          render();
+          startMainApp();
+        } else {
+          render(); // blank panel until identity resolves, then onboarding/tool
+        }
+        // Always load the real id + name (the source of truth). On the fast path
+        // the id lands in the background, well before any API call; on a first
+        // run this decides whether we show onboarding or the tool. If the hint
+        // was stale (id/name actually gone), this corrects the view. startMainApp
+        // is guarded so it never runs twice.
+        ensureIdentity().then(() => {
           render();
           if (onboardingComplete()) startMainApp();
         });

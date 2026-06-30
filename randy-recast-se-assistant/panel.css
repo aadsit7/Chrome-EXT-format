@@ -808,7 +808,9 @@
         border-radius: var(--radius); box-shadow: var(--shadow-hover);
         padding: 28px 24px; box-sizing: border-box; text-align: left;
       }
-      .onb-card.onb-loading { text-align: center; color: var(--n500); font-weight: 600; }
+      /* Invisible placeholder shown for the few ms while chrome.storage resolves
+         on a cold first run (matches the app's background so there's no flash). */
+      .onb-blank { height: 100%; width: 100%; background: var(--n25); }
       .onb-logo {
         display: inline-flex; align-items: center; justify-content: center;
         width: 48px; height: 48px; border-radius: 14px; margin-bottom: 14px;
