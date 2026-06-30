@@ -41,6 +41,9 @@ const els = {
   scrollToggle: document.getElementById("scrollToggle"),
   actionsToggle: document.getElementById("actionsToggle"),
   confirmToggle: document.getElementById("confirmToggle"),
+  voiceSelect: document.getElementById("voiceSelect"),
+  voiceSpeed: document.getElementById("voiceSpeed"),
+  voicePreview: document.getElementById("voicePreview"),
   shortcutValue: document.getElementById("shortcutValue"),
   changeShortcut: document.getElementById("changeShortcut"),
 };
@@ -212,6 +215,8 @@ const DEFAULT_SETTINGS = {
   readAloud: true, // speak answers out loud? (user can mute Sharon's voice)
   allowActions: false, // may Sharon click/type/act on the page? (opt-in, off by default)
   confirmActions: true, // ask for a spoken "yes" before each set of actions
+  voiceName: "", // chosen read-aloud voice by name ("" = auto / ranked chooser)
+  voiceRate: 0.95, // read-aloud speaking rate (clamped 0.7–1.2)
 };
 let settings = { ...DEFAULT_SETTINGS };
 
@@ -2085,57 +2090,234 @@ async function autoRead() {
 }
 
 /* ------------------------------------------------------------------ *
- * Speech synthesis (reading aloud) — unchanged engine
+ * Speech synthesis (reading aloud)
+ *
+ * getVoices() loads lazily, so the list is cached on load and rebuilt on the
+ * 'voiceschanged' event; the chosen voice is re-resolved whenever it changes.
+ * Long replies are chunked into sentence-sized utterances and spoken as a queue
+ * for natural pauses and to dodge Chrome's ~15s single-utterance cutoff.
  * ------------------------------------------------------------------ */
-function pickEnglishVoice() {
-  if (!synth) return null;
-  const voices = synth.getVoices() || [];
-  if (!voices.length) return null;
-  return (
-    voices.find(
-      (v) =>
-        /^en[-_]US/i.test(v.lang) && /female|Samantha|Google US/i.test(v.name)
-    ) ||
-    voices.find((v) => /^en[-_]US/i.test(v.lang)) ||
-    voices.find((v) => /^en/i.test(v.lang)) ||
-    voices[0]
+let availableVoices = []; // cached speechSynthesis voice list
+let chosenVoice = null; // currently resolved read-aloud voice
+let voicesReadyWaiters = []; // callbacks waiting for the voice list to populate
+let speakSeq = 0; // bumped to invalidate an in-flight queue (stop / supersede)
+
+const SAMPLE_RATE_DEFAULT = 0.95;
+const MAX_CHUNK_CHARS = 220; // keep each utterance comfortably short
+const SPEED_RATES = { slow: 0.9, normal: 0.95, brisk: 1.05 };
+
+function getVoices() {
+  if (!synth) return [];
+  try {
+    return synth.getVoices() || [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function clampRate(r) {
+  const n = typeof r === "number" && !Number.isNaN(r) ? r : SAMPLE_RATE_DEFAULT;
+  return Math.min(1.2, Math.max(0.7, n));
+}
+
+function rateToSpeed(r) {
+  const n = clampRate(r);
+  if (n <= 0.92) return "slow";
+  if (n >= 1.0) return "brisk";
+  return "normal";
+}
+
+// Run fn once voices are available; fall back to a short timeout in case the
+// 'voiceschanged' event never fires (some browsers populate synchronously).
+function whenVoicesReady(fn) {
+  if (getVoices().length) {
+    fn();
+    return;
+  }
+  voicesReadyWaiters.push(fn);
+  setTimeout(() => {
+    const i = voicesReadyWaiters.indexOf(fn);
+    if (i >= 0) {
+      voicesReadyWaiters.splice(i, 1);
+      fn();
+    }
+  }, 1200);
+}
+
+// (Re)build the cached voice list, re-resolve the chosen voice, refresh the
+// Settings dropdown, and release anything waiting on the list.
+function loadVoices() {
+  availableVoices = getVoices();
+  chosenVoice = resolveVoice();
+  populateVoiceSelect();
+  if (availableVoices.length && voicesReadyWaiters.length) {
+    const waiters = voicesReadyWaiters;
+    voicesReadyWaiters = [];
+    waiters.forEach((fn) => {
+      try {
+        fn();
+      } catch (_) {
+        /* ignore */
+      }
+    });
+  }
+}
+
+function englishVoices() {
+  const voices = availableVoices.length ? availableVoices : getVoices();
+  return voices.filter((v) => /^en/i.test(v.lang));
+}
+
+// Sharon is female — bias ties toward female-sounding voices, away from male.
+function isFemaleVoice(name) {
+  return /female|woman|samantha|aria|jenny|libby|sonia|emma|zira|susan|allison|ava|joanna|salli|kendra|kimberly|fiona|tessa|karen|moira|serena|catherine|hazel/i.test(
+    name
+  );
+}
+function isMaleVoice(name) {
+  return /\bmale\b|\bman\b|david|guy|mark|george|james|ryan|brandon|fred|daniel|oliver|thomas|william|alex|aaron/i.test(
+    name
   );
 }
 
+// Ranked quality score for an English voice (higher = better). Category gaps of
+// 10 dominate the small locale/gender tie-breakers, preserving the priority
+// order: natural > neural > online > google > known-good locals > en-US > en.
+function scoreVoice(v) {
+  const name = v.name || "";
+  const n = name.toLowerCase();
+  let score;
+  if (n.includes("natural")) score = 100;
+  else if (n.includes("neural")) score = 90;
+  else if (n.includes("online")) score = 80;
+  else if (n.includes("google")) score = 70;
+  else if (/\b(samantha|aria|jenny|libby|sonia|emma)\b/.test(n)) score = 60;
+  else if (/^en[-_]us/i.test(v.lang)) score = 30;
+  else score = 10;
+
+  if (/^en[-_]us/i.test(v.lang)) score += 5;
+  else if (/^en[-_]gb/i.test(v.lang)) score += 3;
+
+  if (isFemaleVoice(name)) score += 2;
+  if (isMaleVoice(name)) score -= 2;
+  return score;
+}
+
+// The ranked chooser — best available English voice.
+function pickEnglishVoice() {
+  const voices = englishVoices();
+  if (!voices.length) return null;
+  let best = null;
+  let bestScore = -Infinity;
+  for (const v of voices) {
+    const s = scoreVoice(v);
+    if (s > bestScore) {
+      best = v;
+      bestScore = s;
+    }
+  }
+  return best;
+}
+
+// A user-selected voice (by name) always wins; otherwise fall back to ranked.
+function resolveVoice() {
+  const voices = availableVoices.length ? availableVoices : getVoices();
+  if (!voices.length) return null;
+  const want = (settings.voiceName || "").trim();
+  if (want) {
+    const exact = voices.find((v) => v.name === want);
+    if (exact) return exact;
+  }
+  return pickEnglishVoice();
+}
+
+// Friendlier label for the dropdown (trim noisy vendor noise, tag the locale).
+function friendlyVoiceName(v) {
+  let label = (v.name || "Voice").replace(/^Microsoft\s+/i, "");
+  const loc = /^en[-_]gb/i.test(v.lang)
+    ? " · UK"
+    : /^en[-_]us/i.test(v.lang)
+    ? " · US"
+    : "";
+  return label + loc;
+}
+
+// Fill the Settings voice dropdown from the cached list (best first), keeping
+// the user's current choice selected even if it isn't available yet.
+function populateVoiceSelect() {
+  const sel = els.voiceSelect;
+  if (!sel) return;
+  const current = settings.voiceName || "";
+  const sorted = englishVoices()
+    .slice()
+    .sort((a, b) => scoreVoice(b) - scoreVoice(a));
+  sel.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = "";
+  auto.textContent = "Auto (best available)";
+  sel.appendChild(auto);
+  let hasCurrent = !current;
+  for (const v of sorted) {
+    const o = document.createElement("option");
+    o.value = v.name;
+    o.textContent = friendlyVoiceName(v);
+    if (v.name === current) hasCurrent = true;
+    sel.appendChild(o);
+  }
+  if (current && !hasCurrent) {
+    const o = document.createElement("option");
+    o.value = current;
+    o.textContent = current + " (unavailable)";
+    sel.appendChild(o);
+  }
+  sel.value = current;
+}
+
+// Split a reply into sentence-sized chunks, merging short sentences and hard-
+// splitting any over-long one so no single utterance risks the Chrome cutoff.
+function chunkForSpeech(text) {
+  const chunks = [];
+  let buf = "";
+  for (let s of splitSentences(text)) {
+    while (s.length > MAX_CHUNK_CHARS) {
+      let cut = s.lastIndexOf(" ", MAX_CHUNK_CHARS);
+      if (cut < MAX_CHUNK_CHARS * 0.6) cut = MAX_CHUNK_CHARS;
+      chunks.push(s.slice(0, cut).trim());
+      s = s.slice(cut).trim();
+    }
+    if (!s) continue;
+    if (!buf) buf = s;
+    else if ((buf + " " + s).length <= MAX_CHUNK_CHARS) buf += " " + s;
+    else {
+      chunks.push(buf);
+      buf = s;
+    }
+  }
+  if (buf) chunks.push(buf);
+  return chunks.length ? chunks : [(text || "").trim()].filter(Boolean);
+}
+
 function speakText(text) {
-  if (!synth || !settings.readAloud) {
-    // Nothing will be spoken (no synth, or Sharon's voice is muted), so there's
-    // no utterance-end event to wait for — re-arm listening for the next turn
-    // once the current call settles.
+  const full = (text || "").trim();
+  if (!synth || !settings.readAloud || !full) {
+    // Nothing will be spoken (no synth, voice muted, or empty), so there's no
+    // utterance-end event to wait for — re-arm listening once this call settles.
     queueMicrotask(returnToListening);
     return;
   }
-  synth.cancel();
-  const utt = new SpeechSynthesisUtterance(text);
-  const voice = pickEnglishVoice();
-  if (voice) {
-    utt.voice = voice;
-    utt.lang = voice.lang;
-  } else {
-    utt.lang = "en-US";
-  }
-  utt.rate = 1;
-  utt.pitch = 1;
 
-  utt.onstart = () => {
-    speaking = true;
-    paused = false;
-    updateStatus();
-  };
-  utt.onresume = () => {
-    paused = false;
-    updateStatus();
-  };
-  utt.onpause = () => {
-    paused = true;
-    updateStatus();
-  };
-  const finish = () => {
+  const mySeq = ++speakSeq; // claim the queue; stop/supersede bumps this
+  synth.cancel();
+
+  const chunks = chunkForSpeech(full);
+  currentSpokenText = full; // echo filter spans the whole reply
+  currentUtterance = null;
+  speaking = true;
+  paused = false;
+  updateStatus();
+
+  const finishAll = () => {
+    if (mySeq !== speakSeq) return;
     speaking = false;
     paused = false;
     currentUtterance = null;
@@ -2144,18 +2326,65 @@ function speakText(text) {
     // Sharon's read-aloud has finished — return to listening for the next turn.
     returnToListening();
   };
-  utt.onend = finish;
-  utt.onerror = finish;
 
-  currentUtterance = utt;
-  currentSpokenText = text;
-  speaking = true;
-  paused = false;
-  synth.speak(utt);
-  updateStatus();
+  const startQueue = () => {
+    if (mySeq !== speakSeq) return; // stopped / superseded while waiting
+    const voice = resolveVoice();
+    const rate = clampRate(settings.voiceRate);
+    let i = 0;
+    const speakNext = () => {
+      if (mySeq !== speakSeq) return;
+      if (i >= chunks.length) {
+        finishAll();
+        return;
+      }
+      const utt = new SpeechSynthesisUtterance(chunks[i++]);
+      if (voice) {
+        utt.voice = voice;
+        utt.lang = voice.lang;
+      } else {
+        utt.lang = "en-US";
+      }
+      utt.rate = rate;
+      utt.pitch = 1;
+      utt.volume = 1;
+      utt.onstart = () => {
+        if (mySeq !== speakSeq) return;
+        speaking = true;
+        paused = false;
+        updateStatus();
+      };
+      utt.onpause = () => {
+        if (mySeq !== speakSeq) return;
+        paused = true;
+        updateStatus();
+      };
+      utt.onresume = () => {
+        if (mySeq !== speakSeq) return;
+        paused = false;
+        updateStatus();
+      };
+      utt.onend = () => {
+        if (mySeq !== speakSeq) return;
+        speakNext();
+      };
+      utt.onerror = () => {
+        if (mySeq !== speakSeq) return;
+        speakNext();
+      };
+      currentUtterance = utt;
+      synth.speak(utt);
+    };
+    speakNext();
+  };
+
+  // Never speak before voices are available.
+  if (getVoices().length) startQueue();
+  else whenVoicesReady(startQueue);
 }
 
 function stopSpeaking() {
+  speakSeq++; // invalidate any in-flight queue handlers
   if (synth) synth.cancel();
   speaking = false;
   paused = false;
@@ -2179,8 +2408,45 @@ function resumeSpeaking() {
   }
 }
 
+// Speak one short sample in the currently-selected voice so the user can
+// compare from Settings. Bypasses the mute and the conversation queue.
+function previewVoice() {
+  if (!synth) return;
+  stopSpeaking();
+  const sample =
+    "Hi, I'm Sharon. This is how I'll sound when I read your pages aloud.";
+  const go = () => {
+    const utt = new SpeechSynthesisUtterance(sample);
+    const voice = resolveVoice();
+    if (voice) {
+      utt.voice = voice;
+      utt.lang = voice.lang;
+    } else {
+      utt.lang = "en-US";
+    }
+    utt.rate = clampRate(settings.voiceRate);
+    utt.pitch = 1;
+    utt.volume = 1;
+    currentSpokenText = sample; // let the echo filter ignore the preview
+    speaking = true;
+    updateStatus();
+    const done = () => {
+      speaking = false;
+      paused = false;
+      currentSpokenText = "";
+      updateStatus();
+    };
+    utt.onend = done;
+    utt.onerror = done;
+    synth.speak(utt);
+  };
+  if (getVoices().length) go();
+  else whenVoicesReady(go);
+}
+
 if (synth) {
-  synth.onvoiceschanged = () => pickEnglishVoice();
+  synth.addEventListener("voiceschanged", loadVoices);
+  loadVoices();
 }
 
 /* ------------------------------------------------------------------ *
@@ -2511,6 +2777,9 @@ function applySettingsToUI() {
   if (els.scrollToggle) els.scrollToggle.checked = !!settings.allowScroll;
   if (els.actionsToggle) els.actionsToggle.checked = !!settings.allowActions;
   if (els.confirmToggle) els.confirmToggle.checked = !!settings.confirmActions;
+  populateVoiceSelect();
+  if (els.voiceSelect) els.voiceSelect.value = settings.voiceName || "";
+  if (els.voiceSpeed) els.voiceSpeed.value = rateToSpeed(settings.voiceRate);
   updateReadAloudUI();
 }
 
@@ -2562,6 +2831,25 @@ if (els.confirmToggle) {
     settings.confirmActions = els.confirmToggle.checked;
     saveSettings();
   });
+}
+
+if (els.voiceSelect) {
+  els.voiceSelect.addEventListener("change", () => {
+    settings.voiceName = els.voiceSelect.value || "";
+    chosenVoice = resolveVoice(); // takes effect on Sharon's next sentence
+    saveSettings();
+  });
+}
+
+if (els.voiceSpeed) {
+  els.voiceSpeed.addEventListener("change", () => {
+    settings.voiceRate = clampRate(SPEED_RATES[els.voiceSpeed.value]);
+    saveSettings();
+  });
+}
+
+if (els.voicePreview) {
+  els.voicePreview.addEventListener("click", () => previewVoice());
 }
 
 if (els.changeShortcut) {
@@ -2730,6 +3018,7 @@ setTimeout(() => {
   await ensureSessionId();
   await loadSettings();
   ready = true;
+  loadVoices(); // re-resolve the chosen voice now that settings are loaded
   applySettingsToUI();
   updateReadAloudUI();
   updateStatus();
