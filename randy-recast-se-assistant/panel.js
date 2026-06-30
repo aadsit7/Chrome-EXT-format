@@ -303,6 +303,91 @@
       const HISTORY_KEY  = 'recast_chat_history';
 
       /* ================================================================
+       * IDENTITY — anonymous install id + one-time name capture
+       *
+       * On first run we mint a random anonymous id (crypto.randomUUID) and store
+       * it in chrome.storage.local under "anon_user_id"; every later run reads
+       * the same id back, so one install keeps one id forever. The first time the
+       * panel opens we also ask once for the user's first/last name and store it
+       * under "user_name"; after that the name screen never appears again.
+       *
+       * chrome.storage is async, so loadIdentity() runs at boot and the rest of
+       * the panel waits on it — the anon id is always in hand BEFORE the first
+       * API call goes out. Only the opaque id is ever sent to the model
+       * (metadata.user_id); the name travels only to the usage sheet, never to
+       * the API.
+       * ================================================================ */
+      const ANON_ID_KEY   = 'anon_user_id';
+      const USER_NAME_KEY = 'user_name';
+      const IDENTITY = { anonId: null, userName: null, loaded: false };
+
+      // Promise wrappers over chrome.storage.local. Guarded so the panel still
+      // runs if it's ever opened outside an extension context (storage no-ops).
+      function storageGet(keys) {
+        return new Promise(resolve => {
+          try {
+            if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return resolve({});
+            chrome.storage.local.get(keys, res => resolve(res || {}));
+          } catch { resolve({}); }
+        });
+      }
+      function storageSet(obj) {
+        return new Promise(resolve => {
+          try {
+            if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return resolve();
+            chrome.storage.local.set(obj, () => resolve());
+          } catch { resolve(); }
+        });
+      }
+
+      function newAnonId() {
+        try { if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID(); } catch {}
+        // Fallback for the (vanishingly rare) case randomUUID is unavailable.
+        return 'anon-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+      }
+
+      // Load the anon id (minting + persisting it once on first run) and any
+      // saved name. Always resolves with IDENTITY populated and loaded=true.
+      async function loadIdentity() {
+        const res = await storageGet([ANON_ID_KEY, USER_NAME_KEY]);
+        let anonId = res[ANON_ID_KEY];
+        if (!anonId || typeof anonId !== 'string') {
+          anonId = newAnonId();
+          await storageSet({ [ANON_ID_KEY]: anonId });
+        }
+        IDENTITY.anonId = anonId;
+        const nm = res[USER_NAME_KEY];
+        if (nm && typeof nm === 'object' && nm.firstName && nm.lastName) {
+          IDENTITY.userName = { firstName: String(nm.firstName), lastName: String(nm.lastName) };
+        }
+        IDENTITY.loaded = true;
+        return IDENTITY;
+      }
+
+      function onboardingComplete() {
+        return !!(IDENTITY.userName && IDENTITY.userName.firstName && IDENTITY.userName.lastName);
+      }
+      function identityFullName() {
+        const n = IDENTITY.userName;
+        return n ? (n.firstName + ' ' + n.lastName).trim() : '';
+      }
+
+      // Persist the one-time name and guarantee the anon id exists, then let the
+      // normal tool take over. Returns false if either field is blank.
+      async function saveUserName(firstName, lastName) {
+        firstName = String(firstName || '').trim();
+        lastName  = String(lastName  || '').trim();
+        if (!firstName || !lastName) return false;
+        if (!IDENTITY.anonId) {
+          IDENTITY.anonId = newAnonId();
+          await storageSet({ [ANON_ID_KEY]: IDENTITY.anonId });
+        }
+        IDENTITY.userName = { firstName, lastName };
+        await storageSet({ [USER_NAME_KEY]: IDENTITY.userName });
+        return true;
+      }
+
+      /* ================================================================
        * STATE
        * ================================================================ */
 
@@ -3008,6 +3093,12 @@
           throw new Error('Answer service is not configured.');
         }
         const payload = Object.assign({ action: 'chat', session_id: SESSION_ID }, body);
+        // Tag the model call with the opaque anonymous install id (metadata
+        // .user_id) — never the name or any other personal info. The proxy
+        // forwards this through to the Anthropic request.
+        if (IDENTITY.anonId) {
+          payload.metadata = Object.assign({}, payload.metadata, { user_id: IDENTITY.anonId });
+        }
         const timer = new AbortController();
         const ms = timeoutMs || ASSIST.ANSWER_TIMEOUT_MS;
         const timeoutId = setTimeout(
@@ -3054,7 +3145,14 @@
             answer: answer,
             sources: Array.isArray(sources) ? sources.join(', ') : String(sources || ''),
             model: model || '',
-            session_id: sessionId || ''
+            session_id: sessionId || '',
+            // Usage log only (NOT the model call): pair each inquiry with the
+            // anonymous id AND the captured name so rows in the sheet can be
+            // traced back to a user. (The API request above gets the id alone.)
+            user_id: IDENTITY.anonId || '',
+            user_name: identityFullName(),
+            first_name: IDENTITY.userName ? IDENTITY.userName.firstName : '',
+            last_name: IDENTITY.userName ? IDENTITY.userName.lastName : ''
           })
         }).catch(err => console.warn('Background save failed:', err));
       }
@@ -3241,6 +3339,11 @@
       async function streamAssistReply(body, signal, idx, msgIdx, perf) {
         const slot = STATE.slots[idx];
         const payload = Object.assign({ action: 'chat', session_id: SESSION_ID }, body, { stream: true });
+        // Same as postChat: carry only the opaque anonymous id to the model,
+        // never the name. The edge proxy forwards it to the Anthropic request.
+        if (IDENTITY.anonId) {
+          payload.metadata = Object.assign({}, payload.metadata, { user_id: IDENTITY.anonId });
+        }
 
         // Bound the whole stream like postChat does, composing with the caller's
         // signal so a user cancel / watchdog abort still cuts it.
@@ -3536,8 +3639,47 @@
         }
       }
 
+      // One-time onboarding screen: ask for first + last name, then hand off to
+      // the normal tool. Reuses the global click/keydown handlers (the Save
+      // button is data-action="save-onboarding"). The name is read straight off
+      // the inputs on Save, so no per-keystroke render steals the caret.
+      function renderOnboarding(root) {
+        if (!IDENTITY.loaded) {
+          // Brief, quiet placeholder while chrome.storage resolves (a few ms).
+          root.innerHTML = '<div class="onb-wrap"><div class="onb-card onb-loading">Loading…</div></div>';
+          return;
+        }
+        const f = IDENTITY.userName ? escAttr(IDENTITY.userName.firstName) : '';
+        const l = IDENTITY.userName ? escAttr(IDENTITY.userName.lastName) : '';
+        root.innerHTML = `
+          <div class="onb-wrap">
+            <div class="onb-card" role="dialog" aria-label="Welcome to Randy">
+              <div class="onb-logo"><i data-lucide="sparkles" class="w-6 h-6"></i></div>
+              <h1 class="onb-title">Welcome to Randy</h1>
+              <p class="onb-sub">Before we start, what should we call you? We only ask this once.</p>
+              <label class="onb-label" for="onb-first">First name</label>
+              <input id="onb-first" class="onb-input" type="text" autocomplete="given-name" placeholder="First name" value="${f}" />
+              <label class="onb-label" for="onb-last">Last name</label>
+              <input id="onb-last" class="onb-input" type="text" autocomplete="family-name" placeholder="Last name" value="${l}" />
+              <div id="onb-error" class="onb-error" role="alert" aria-live="polite"></div>
+              <button class="onb-save" data-action="save-onboarding">Save &amp; continue</button>
+            </div>
+          </div>`;
+        if (window.lucide?.createIcons) try { window.lucide.createIcons(); } catch {}
+        bindEvents();
+        setTimeout(() => { try { document.getElementById('onb-first')?.focus(); } catch {} }, 30);
+      }
+
       function render() {
         const root = document.getElementById('app');
+        if (!root) return;
+        // Identity gate: until a name is saved for this install, the panel shows
+        // ONLY the one-time onboarding screen — never the normal tool. Once a
+        // name exists (this install, ever) this branch is skipped for good.
+        if (!IDENTITY.loaded || !onboardingComplete()) {
+          renderOnboarding(root);
+          return;
+        }
         const scroll = captureScroll();
         root.innerHTML = `
           <div class="app-frame">
@@ -4959,6 +5101,30 @@
           if (STATE.cardMenuOpen && action !== 'toggle-card-menu') STATE.cardMenuOpen = false;
 
           switch (action) {
+            case 'save-onboarding': {
+              const fn = document.getElementById('onb-first');
+              const ln = document.getElementById('onb-last');
+              const first = fn ? fn.value : '';
+              const last  = ln ? ln.value : '';
+              const errEl = document.getElementById('onb-error');
+              if (!first.trim() || !last.trim()) {
+                if (errEl) errEl.textContent = 'Please enter both your first and last name.';
+                if (!first.trim() && fn) fn.focus(); else if (ln) ln.focus();
+                break;
+              }
+              if (act.dataset.busy === '1') break;   // guard against double-submit
+              act.dataset.busy = '1';
+              saveUserName(first, last).then(ok => {
+                if (!ok) {
+                  act.dataset.busy = '';
+                  if (errEl) errEl.textContent = 'Please enter both your first and last name.';
+                  return;
+                }
+                render();         // gate now passes → the normal tool renders
+                startMainApp();   // run the boot side-effects deferred during onboarding
+              });
+              break;
+            }
             case 'switch-tab': {
               STATE.activeTab = act.dataset.tab;
               render();
@@ -5243,6 +5409,12 @@
         });
 
         document.addEventListener('keydown', e => {
+          // Enter in either onboarding field submits the one-time name screen.
+          if (e.key === 'Enter' && (e.target.id === 'onb-first' || e.target.id === 'onb-last')) {
+            e.preventDefault();
+            document.querySelector('[data-action="save-onboarding"]')?.click();
+            return;
+          }
           if (e.key === 'Enter' && !e.shiftKey && e.target.id === 'expanded-input' && STATE.expandedSlot !== null) {
             e.preventDefault();
             STATE.slots[STATE.expandedSlot].inputText = e.target.value;
@@ -5306,8 +5478,13 @@
        * BOOT
        * ================================================================ */
 
-      function boot() {
-        render();
+      // The normal-tool boot side-effects. Deferred until onboarding is complete
+      // so the mic and the first API call never fire behind the name screen.
+      // Runs exactly once per panel open.
+      let _mainStarted = false;
+      function startMainApp() {
+        if (_mainStarted) return;
+        _mainStarted = true;
         loadRemoteConfig().then(render);
         // Re-render once the browser loads its speech voice list (async in Chrome).
         if (VOICE.ttsSupported && typeof speechSynthesis.onvoiceschanged !== 'undefined') {
@@ -5328,6 +5505,19 @@
         // page (e.g. while copying something) goes straight to Randy — the
         // button still lets the user turn it off.
         setTimeout(() => { try { autoArmSelectionCapture(); } catch {} }, 600);
+      }
+
+      function boot() {
+        // Show the panel immediately (a brief loading placeholder), then load the
+        // anon id + saved name from chrome.storage. Both are in hand BEFORE the
+        // main app — and therefore before the first API call — starts. If no name
+        // is saved yet, render() keeps showing onboarding and startMainApp() is
+        // held back until the user saves their name.
+        render();
+        loadIdentity().then(() => {
+          render();
+          if (onboardingComplete()) startMainApp();
+        });
       }
 
       // Run boot once the DOM is ready. The script is the last element in the

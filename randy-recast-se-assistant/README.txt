@@ -34,6 +34,43 @@ prompts for the mic at runtime instead, which is the correct behavior. You can
 stop listening any time from inside the panel; it resumes on the next open.
 
 
+FIRST-RUN NAME + ANONYMOUS ID (one time only)
+---------------------------------------------
+The very first time the panel opens on a fresh install, Randy shows a single
+onboarding screen that asks for your First name and Last name (both required)
+and a Save button. The normal tool does not appear until you save. After you
+save, this screen NEVER shows again on that install — every later open goes
+straight to the normal tool.
+
+Behind the scenes, on first run Randy also mints a random anonymous id with the
+browser's built-in crypto.randomUUID(). Storage (all via chrome.storage.local,
+which is why the manifest now requests the "storage" permission, and only that):
+  - "anon_user_id" : the random id. Created once, then read back on every later
+                     open — the same install keeps the same id forever.
+  - "user_name"    : { firstName, lastName } from the onboarding screen.
+The id (and name) are loaded at startup and are guaranteed to be in hand BEFORE
+the first API call goes out (chrome.storage reads are async, so boot waits on
+them and the mic/auto-listen only start once they've resolved).
+
+WHERE THE NAME AND ID GO
+  - To the model (Anthropic API, via the Apps Script / Worker proxy): ONLY the
+    opaque random id is attached, as metadata.user_id. The name — and any other
+    personal info — is NEVER sent to the API.
+  - To the usage sheet (the existing Google Apps Script backend that already
+    logs every Q&A): the name AND the id are sent together, so the name-to-id
+    pairing is visible on the sheet side. The client now includes user_id,
+    user_name, first_name and last_name in the background save payload.
+
+ONE REMAINING SERVER-SIDE STEP FOR THE SHEET: two columns, "User_ID" and
+"User_Name", have been added to the "Randy Tasks" tab of the "Recast SE" Google
+Sheet so the data has somewhere to land. The extension already transmits those
+values, but the row-append itself is performed by the Google Apps Script proxy
+(which holds the Anthropic key and lives OUTSIDE this repository). That script
+must be updated once to write the new user_id / user_name payload fields into
+columns G and H; until then those two columns stay blank for new rows while
+everything else keeps working exactly as before.
+
+
 WHAT IT DOES
 ------------
 - Listens to the call (Web Speech API), classifies overheard questions, and
