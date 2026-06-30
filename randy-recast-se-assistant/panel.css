@@ -796,3 +796,35 @@
       /* Header voice pills — subtle lift to match the glass language. */
       .vp.go, .vp.live { box-shadow: 0 6px 16px rgba(3,114,255,0.28); }
 
+      /* ===== One-time onboarding / name capture screen ===== */
+      .onb-wrap {
+        height: 100%; width: 100%; display: flex; align-items: center; justify-content: center;
+        padding: 24px; box-sizing: border-box;
+        background: linear-gradient(160deg, var(--n50) 0%, var(--quote) 100%);
+        overflow-y: auto;
+      }
+      .onb-card {
+        width: 100%; max-width: 360px; background: #fff; border: 1px solid var(--n200);
+        border-radius: var(--radius); box-shadow: var(--shadow-hover);
+        padding: 28px 24px; box-sizing: border-box; text-align: left;
+      }
+      .onb-card.onb-loading { text-align: center; color: var(--n500); font-weight: 600; }
+      .onb-logo {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 48px; height: 48px; border-radius: 14px; margin-bottom: 14px;
+        background: var(--primary); color: #fff; box-shadow: var(--shadow-brand);
+      }
+      .onb-title { font-size: 20px; font-weight: 800; color: var(--navy-deep); margin: 0 0 6px; }
+      .onb-sub { font-size: 13.5px; font-weight: 500; color: var(--n500); margin: 0 0 18px; line-height: 1.45; }
+      .onb-label { display: block; font-size: 12px; font-weight: 700; color: var(--n600); margin: 0 0 6px; }
+      .onb-input { margin-bottom: 14px; }
+      .onb-error { min-height: 18px; font-size: 12.5px; font-weight: 600; color: #c02626; margin: -6px 0 10px; }
+      .onb-save {
+        width: 100%; background: var(--primary); color: #fff; border: none; border-radius: 999px;
+        padding: 12px 22px; min-height: 46px; font-weight: 700; font-size: 14px; cursor: pointer;
+        transition: background 0.12s; font-family: inherit;
+      }
+      .onb-save:hover { background: var(--primary-hover); }
+      .onb-save:active { background: var(--primary-press); }
+      .onb-save:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
