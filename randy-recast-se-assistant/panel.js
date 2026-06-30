@@ -524,6 +524,9 @@
         ttsPaused: false,         // legacy guard flag; always false now (no TTS pause)
         recentTtsText: '',        // rolling buffer of spoken text for echo matching
         srRunning: false,         // recognizer actually running (onstart..onend)
+        srStartStrikes: 0,        // consecutive watchdog ticks that found the
+                                  // recognizer stopped despite trying to start —
+                                  // enough strikes means rebuild it outright
         watchdogId: null,         // background-tab restart watchdog interval
         lastSrEventAt: 0,         // last recognizer activity (wedge detection)
         micStream: null,          // held open (echo cancellation OFF) so the
@@ -540,6 +543,80 @@
         dictationBase: '',        // finalized dictation text staged in the input
         dictationTarget: null     // where dictation writes: {kind:'pip'} or {kind:'home', slot}
       };
+
+      // Which microphone Randy opens. '' = the system default device
+      // (recommended — and the device Chrome's live speech recognizer always
+      // uses); a specific deviceId pins the capture to that input so the user
+      // can switch hardware in Settings if the default device misbehaves. The
+      // device list fills in lazily: browsers hide input labels until mic
+      // permission has been granted at least once.
+      const MIC = {
+        deviceId: '',             // '' = system default, else a specific deviceId
+        devices: []               // cached [{deviceId, label}] of audioinput devices
+      };
+
+      // Re-read the available microphones. Safe to call any time; labels only
+      // appear once capture permission has been granted. Drops a pinned device
+      // that has been unplugged so listening falls back to the system default.
+      async function refreshMicDevices() {
+        try {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+          const list = await navigator.mediaDevices.enumerateDevices();
+          MIC.devices = list
+            .filter(d => d.kind === 'audioinput')
+            .map(d => ({ deviceId: d.deviceId, label: d.label || '' }));
+          if (MIC.deviceId && !MIC.devices.some(d => d.deviceId === MIC.deviceId)) {
+            MIC.deviceId = '';
+            try { saveSettings(); } catch {}
+          }
+          if (STATE.activeTab === 'settings') render();
+        } catch {}
+      }
+
+      // Keep the device list fresh when mics are plugged in or removed.
+      try {
+        if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+          navigator.mediaDevices.addEventListener('devicechange', () => { try { refreshMicDevices(); } catch {} });
+        }
+      } catch {}
+
+      // Open the held keep-alive mic capture on the chosen device, with the
+      // audio-processing constraints each listening mode needs. A pinned device
+      // that's gone is forgotten and retried on the system default before giving
+      // up, so an unplugged mic can never strand listening. Returns 'ok' or a
+      // failure code ('denied' | 'no-device' | 'transient'); the caller toasts.
+      async function acquireMicStream(twoWay) {
+        if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) return 'ok';
+        const proc = twoWay
+          ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+          : { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+        const open = (device) => navigator.mediaDevices.getUserMedia({ audio: Object.assign({ deviceId: device }, proc) });
+        const codeFor = (err) => {
+          const name = err && err.name ? err.name : '';
+          if (name === 'NotAllowedError' || name === 'SecurityError' || name === 'PermissionDeniedError') return 'denied';
+          if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError') return 'no-device';
+          return 'transient';
+        };
+        try {
+          VOICE.micStream = await open(MIC.deviceId ? { exact: MIC.deviceId } : { ideal: 'default' });
+        } catch (err) {
+          const code = codeFor(err);
+          if (code === 'no-device' && MIC.deviceId) {
+            // The pinned mic is unavailable — drop the pin and fall back to the
+            // system default before reporting a hard failure.
+            MIC.deviceId = '';
+            try { saveSettings(); } catch {}
+            try { VOICE.micStream = await open({ ideal: 'default' }); }
+            catch (e2) { return codeFor(e2); }
+          } else {
+            return code;
+          }
+        }
+        VOICE.micStream.getTracks().forEach(t => { t.onended = () => { VOICE.micStream = null; }; });
+        // Capture is granted now, so device labels are finally readable.
+        refreshMicDevices();
+        return 'ok';
+      }
 
       // Listening runtime state. Randy hears on two channels: (1) the
       // microphone via the Web Speech recognizer — which also overhears the
@@ -655,6 +732,7 @@
           voicePersonality: s.voicePersonality,
           speakAnswers: !!s.speakAnswers,
           audioMode: s.audioMode === 'one-way' ? 'one-way' : 'two-way',
+          micDeviceId: MIC.deviceId || '',
           allowedDomains: s.allowedDomains
         }));
         try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(data)); } catch {}
@@ -695,6 +773,10 @@
               s.allowedDomains = d.allowedDomains.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim());
             }
           });
+          // The chosen microphone is global, not per-slot — read it off the
+          // first record. Validated against the live device list once labels
+          // load (refreshMicDevices), so a stale id can't strand listening.
+          if (data[0] && typeof data[0].micDeviceId === 'string') MIC.deviceId = data[0].micDeviceId;
         } catch {}
         // Listening always starts OFF — the screen-share picker needs a click.
         // The proxy URL used to be overridable per-browser, which left some
@@ -1682,10 +1764,20 @@
         };
         r.onerror = (e) => {
           VOICE.lastSrEventAt = Date.now();
-          if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          if (e.error === 'not-allowed') {
             VOICE.permissionDenied = true;
             stopListening({ silent: true });
             showToast('Randy needs microphone access — allow the mic and try again');
+            return;
+          }
+          if (e.error === 'service-not-allowed') {
+            // Usually a transient hiccup in Chrome's cloud speech service (a
+            // network blip, another tab grabbing the recognizer) — NOT a real,
+            // permanent block. Killing listening here is what left Randy frozen
+            // after a momentary glitch. Rebuild the recognizer and keep going.
+            if (VOICE.wantRunning && recognitionWanted()) {
+              setTimeout(() => { try { hardResetRecognition(); } catch {} }, 400);
+            }
             return;
           }
           if (e.error === 'phrases-not-supported') {
@@ -1700,7 +1792,7 @@
           // Transient errors (no-speech, aborted, network) fall through to
           // onend, which restarts as needed.
         };
-        r.onstart = () => { VOICE.srRunning = true; VOICE.lastSrEventAt = Date.now(); };
+        r.onstart = () => { VOICE.srRunning = true; VOICE.srStartStrikes = 0; VOICE.lastSrEventAt = Date.now(); };
         r.onend = () => {
           VOICE.srRunning = false;
           VOICE.lastSrEventAt = Date.now();
@@ -1737,6 +1829,36 @@
         startRecognitionWatchdog();
       }
 
+      // Last-resort recovery for a hard-wedged recognizer. A SpeechRecognition
+      // instance can get stuck so badly that it stops firing events, abort()
+      // no longer triggers onend, and start() is a silent no-op — the soft
+      // restart path can never revive it, and the listener stays frozen. The
+      // only reliable escape is to throw the instance away and build a new one.
+      // The dead instance's handlers are detached first so a late event from it
+      // can't fight the replacement (its onend would otherwise try to spin up a
+      // second recognizer).
+      function hardResetRecognition() {
+        const old = VOICE.recognition;
+        VOICE.recognition = null;
+        VOICE.srRunning = false;
+        VOICE.srStartStrikes = 0;
+        if (old) {
+          try { old.onresult = old.onerror = old.onstart = old.onend = null; } catch {}
+          try { old.abort(); } catch {}
+          try { old.stop(); } catch {}
+        }
+        if (!VOICE.wantRunning || !recognitionWanted() || VOICE.ttsPaused || VOICE.dictationPaused) return;
+        const tryStart = (attempt) => {
+          if (!VOICE.wantRunning || !recognitionWanted() || VOICE.ttsPaused || VOICE.dictationPaused) return;
+          if (VOICE.srRunning) return;   // a fresh instance already came up
+          try { startRecognitionNow(); }
+          catch (err) {
+            if (attempt < 5) setTimeout(() => tryStart(attempt + 1), 200 * (attempt + 1));
+          }
+        };
+        tryStart(0);
+      }
+
       // How long the recognizer may sit "running" with zero events before
       // it's presumed wedged. Chrome's cloud recognizer occasionally stops
       // delivering results without firing onend during long sessions; an
@@ -1756,12 +1878,30 @@
         VOICE.watchdogId = setInterval(() => {
           if (!VOICE.wantRunning || !recognitionWanted() || VOICE.ttsPaused || VOICE.dictationPaused) return;
           if (!VOICE.srRunning) {
+            // Should be running but isn't. Try the cheap restart, but if the
+            // instance keeps refusing to come up (onstart never fires) across a
+            // few ticks, it's wedged shut — rebuild it from scratch.
+            VOICE.srStartStrikes = (VOICE.srStartStrikes || 0) + 1;
+            if (VOICE.srStartStrikes >= 3) { hardResetRecognition(); return; }
             try { startRecognitionNow(); } catch {}
             return;
           }
+          VOICE.srStartStrikes = 0;
           if (Date.now() - VOICE.lastSrEventAt > SR_STALL_MS) {
-            // abort() fires onend, which restarts cleanly.
-            try { VOICE.recognition.abort(); } catch {}
+            // Running but silent for too long. First try the cheap path —
+            // abort() should fire onend, which restarts cleanly. But a hard
+            // wedge ignores abort() and never fires onend, so if the SAME
+            // instance is still "running" and still silent shortly after,
+            // rebuild it outright instead of aborting a corpse forever.
+            const wedged = VOICE.recognition;
+            try { wedged && wedged.abort(); } catch {}
+            setTimeout(() => {
+              if (VOICE.wantRunning && recognitionWanted() && !VOICE.ttsPaused && !VOICE.dictationPaused &&
+                  VOICE.recognition === wedged && VOICE.srRunning &&
+                  Date.now() - VOICE.lastSrEventAt > SR_STALL_MS) {
+                hardResetRecognition();
+              }
+            }, 1500);
           }
         }, 5000);
       }
@@ -1986,6 +2126,10 @@
           try { r.start(); }
           catch (err) {
             if (attempt < 6) setTimeout(() => tryStart(attempt + 1), 200 * (attempt + 1));
+            // Dictation never managed to start. Don't leave the passive
+            // listener stuck paused (dictationPaused === true would freeze it
+            // forever) — give up on dictation and bring Randy back.
+            else { VOICE.dictating = false; resumePassiveAfterDictation(); render(); }
           }
         };
         tryStart(0);
@@ -2240,10 +2384,12 @@
         // throttling, which is what keeps the restart watchdog alive while
         // the user works beside the docked pop-out with this tab hidden.
         //
-        // Mic capture. Chrome opens the default device once and shares that
-        // capture session with the Web Speech recognizer, so the constraints
-        // requested here govern what the recognizer transcribes too — which is
-        // exactly how each mode is enforced.
+        // Mic capture. This held stream is the keep-alive capture (it exempts
+        // the tab from background timer throttling so the watchdog keeps
+        // firing) AND the mic-permission gate. The Web Speech recognizer opens
+        // its OWN capture on the system default device, so these constraints
+        // shape the held stream — and, on machines where both share the default
+        // device, influence what the recognizer overhears acoustically.
         //
         //   TWO-WAY — audio processing is turned OFF on purpose. Randy must
         //     transcribe BOTH the user's voice and the call playing on the
@@ -2270,43 +2416,29 @@
         //     auto-gain keep the focus on the person at the mic. Combined with
         //     never starting the computer-audio tap above, this keeps the
         //     "only what you're saying" promise honest.
-        // deviceId 'default' (soft `ideal`, so it never OverconstrainedErrors on
-        // browsers without a virtual "default" device) pins capture to whatever
-        // mic the user has chosen as the system default in their computer's sound
-        // settings — and keeps following it if they change it — instead of letting
-        // Chrome latch onto a stale per-site device that ignores those settings.
-        const micAudio = twoWay
-          ? { deviceId: { ideal: 'default' }, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-          : { deviceId: { ideal: 'default' }, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-          try {
-            VOICE.micStream = await navigator.mediaDevices.getUserMedia({ audio: micAudio });
-            VOICE.micStream.getTracks().forEach(t => {
-              t.onended = () => { VOICE.micStream = null; };
-            });
-          } catch (err) {
-            const name = err && err.name ? err.name : '';
-            if (name === 'NotAllowedError' || name === 'SecurityError' || name === 'PermissionDeniedError') {
-              // A genuine denial — stop auto-retrying and tell the user how to
-              // fix it. A later open starts a fresh context and tries again.
-              VOICE.permissionDenied = true;
-              showToast('Randy needs the microphone. Click Allow and try again.');
-              render();
-              return 'denied';
-            }
-            if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError') {
-              if (!auto) showToast("Randy couldn't find a microphone — check that one is connected.");
-              render();
-              return 'no-device';
-            }
+        // The device is MIC.deviceId when the user pinned one in Settings,
+        // otherwise the system default ('default' as a soft `ideal` so it never
+        // OverconstrainedErrors on browsers without a virtual "default" device).
+        // acquireMicStream handles a pinned-but-unplugged device by falling back
+        // to the default, so a stale choice can never strand listening.
+        const micStatus = await acquireMicStream(twoWay);
+        if (micStatus !== 'ok') {
+          if (micStatus === 'denied') {
+            // A genuine denial — stop auto-retrying and tell the user how to
+            // fix it. A later open starts a fresh context and tries again.
+            VOICE.permissionDenied = true;
+            showToast('Randy needs the microphone. Click Allow and try again.');
+          } else if (micStatus === 'no-device') {
+            if (!auto) showToast("Randy couldn't find a microphone — check that one is connected.");
+          } else {
             // Transient: the device is momentarily busy or the capture stack is
             // still warming up in the instant the panel opens. Stay quiet on the
             // auto path so the retry loop can recover without toast spam; the
             // manual path keeps its original feedback.
             if (!auto) showToast('Randy needs the microphone. Click Allow and try again.');
-            render();
-            return 'transient';
           }
+          render();
+          return micStatus;
         }
 
         slot.listenOn = true;
@@ -4369,6 +4501,23 @@
                   <i data-lucide="mic" class="w-3 h-3 inline mr-1"></i>Voice${VOICE.srSupported ? '' : ' — needs Chrome or Edge'}
                 </label>
 
+                ${VOICE.srSupported ? `
+                  <div style="margin-bottom:16px">
+                    <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Microphone</label>
+                    <select id="setting-mic" style="width:100%;padding:10px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:14px">
+                      <option value=""${MIC.deviceId ? '' : ' selected'}>System default microphone (recommended)</option>
+                      ${MIC.devices
+                        .filter(d => d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications')
+                        .map((d, i) => `<option value="${escAttr(d.deviceId)}"${MIC.deviceId === d.deviceId ? ' selected' : ''}>${escHtml(d.label || ('Microphone ' + (i + 1)))}</option>`)
+                        .join('')}
+                    </select>
+                    <p class="text-[11px] text-slate-400 mt-1">The microphone Randy opens when he listens. If the default device isn&rsquo;t picking you up, switch here. Live listening follows your computer&rsquo;s default mic, so for best results also set your preferred device as the system default in your OS sound settings.</p>
+                    <button class="btn-outline" style="font-size:11px;padding:5px 12px;margin-top:8px" data-action="refresh-mics">
+                      <i data-lucide="refresh-cw" class="w-3 h-3 inline mr-1"></i> Refresh device list
+                    </button>
+                  </div>
+                ` : ''}
+
                 ${VOICE.ttsSupported ? `
                   <div>
                     <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Available Speech Voices <span class="text-slate-400 normal-case">(picked automatically — prefers natural-sounding voices)</span></label>
@@ -5175,6 +5324,28 @@
         if (_bound) return;
         _bound = true;
 
+        // The microphone picker in Settings. Changing it re-opens the held
+        // capture on the chosen device right away (no need to toggle Randy off
+        // and on). The screen-share picker is NOT re-triggered — only the mic
+        // stream is swapped — so two-way users aren't re-prompted.
+        document.addEventListener('change', e => {
+          const el = e.target;
+          if (!el || el.id !== 'setting-mic') return;
+          MIC.deviceId = el.value || '';
+          saveSettings();
+          if (STATE.slots[0].listenOn) {
+            const twoWay = STATE.slots[0].audioMode === 'two-way';
+            if (VOICE.micStream) {
+              try { VOICE.micStream.getTracks().forEach(t => t.stop()); } catch {}
+              VOICE.micStream = null;
+            }
+            acquireMicStream(twoWay).then((status) => {
+              if (status === 'ok') restartRecognition();
+            });
+          }
+          showToast(MIC.deviceId ? 'Microphone switched' : 'Using the system default microphone');
+        });
+
         document.addEventListener('click', e => {
           const act = e.target.closest('[data-action]');
           // Close the card overflow menu when clicking outside it.
@@ -5227,6 +5398,9 @@
             case 'switch-tab': {
               STATE.activeTab = act.dataset.tab;
               render();
+              // Opening Settings is a good moment to refresh the mic list so
+              // the picker shows current devices (labels appear once granted).
+              if (act.dataset.tab === 'settings') { try { refreshMicDevices(); } catch {} }
               break;
             }
             case 'close-settings-bg': {
@@ -5308,6 +5482,20 @@
               if (s.listenOn) { stopListening({ silent: true }); }
               startListening('two-way');
               render();
+              break;
+            }
+            case 'refresh-mics': {
+              // Labels stay blank until mic permission has been granted once;
+              // a throwaway capture unlocks them, then we re-enumerate.
+              (async () => {
+                try {
+                  if (!MIC.devices.some(d => d.label) && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    s.getTracks().forEach(t => t.stop());
+                  }
+                } catch {}
+                refreshMicDevices();
+              })();
               break;
             }
             case 'set-audio-mode': {
