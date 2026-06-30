@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sharon",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "description": "A hands-free voice assistant for your current tab: it reads aloud whatever is visible — articles, emails, docs, messages — listens for your voice, scrolls the page, and (when you allow it) can click, type, and act on the page to carry out what you ask.",
   "action": {
     "default_title": "Sharon",
