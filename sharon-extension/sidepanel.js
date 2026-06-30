@@ -571,6 +571,21 @@ function clearThinking(card) {
  * The editable transcript card (the headline feature)
  * ------------------------------------------------------------------ */
 const AUTO_SEND_MS = 1600;
+
+// ASR confidence thresholds. Below LOW_CONF an utterance is too shaky to ACT on
+// blindly (saving a note, acting on the page) — Sharon reads it back and waits
+// for a spoken yes/no first. Below VERY_LOW_CONF even a read/answer reply gets a
+// soft spoken hedge, but it is never blocked or un-editable.
+const LOW_CONF = 0.6;
+const VERY_LOW_CONF = 0.4;
+
+function isLowConfidence(conf) {
+  return conf != null && !Number.isNaN(conf) && conf < LOW_CONF;
+}
+function isVeryLowConfidence(conf) {
+  return conf != null && !Number.isNaN(conf) && conf < VERY_LOW_CONF;
+}
+
 let composeCard = null; // the current "You said" card element
 let composeEl = null; // its contenteditable .transcript
 let composeRaw = ""; // the original, un-edited ASR text (-> transcript_raw)
@@ -680,9 +695,32 @@ function composeAppend(text, conf) {
   } else {
     composeEl.textContent = (composeEl.textContent + " " + text).trim();
   }
+  markComposeConfidence(composeConf);
   setStatusText("Got it", "Edit anything, then send");
   startAutoSend();
   scrollStackToBottom();
+}
+
+// Subtly flag a shaky transcript: a small amber dot + label on the "You said"
+// card head when the ASR confidence for this utterance is low.
+function markComposeConfidence(conf) {
+  if (!composeCard) return;
+  const eyebrow = composeCard.querySelector(".card-head .card-eyebrow");
+  if (!eyebrow) return;
+  let tag = eyebrow.querySelector(".conf-tag");
+  if (isLowConfidence(conf)) {
+    if (!tag) {
+      tag = document.createElement("span");
+      tag.className = "conf-tag";
+      const dot = document.createElement("span");
+      dot.className = "conf-dot";
+      tag.appendChild(dot);
+      tag.appendChild(document.createTextNode("Not sure I heard that"));
+      eyebrow.appendChild(tag);
+    }
+  } else if (tag) {
+    tag.remove();
+  }
 }
 
 function startAutoSend() {
@@ -737,7 +775,7 @@ function discardCompose() {
  * ------------------------------------------------------------------ */
 function returnToListening() {
   if (micBlocked) return; // keep the existing mic-blocked message + behavior
-  if (agentTask || pendingPlan) return; // mid task / awaiting a spoken yes-no
+  if (agentTask || pendingPlan || pendingConfirm) return; // mid task / awaiting a yes-no
   if (busy || thinking) return; // a fresh request is already underway
   if (speaking) return; // still talking
   if (composeCard) return; // the user is already composing the next turn
@@ -857,6 +895,77 @@ function extractPageText() {
     return false;
   }
 
+  function roleOf(el) {
+    return ((el.getAttribute && el.getAttribute("role")) || "").toLowerCase();
+  }
+
+  // Heading level for H1–H6 and ARIA role="heading" (honoring aria-level); 0 if
+  // the element is not a heading.
+  function headingLevel(el) {
+    const tag = el.tagName;
+    if (/^H[1-6]$/.test(tag)) return +tag[1];
+    if (roleOf(el) === "heading") {
+      const lv = parseInt(el.getAttribute("aria-level") || "2", 10);
+      return Number.isNaN(lv) ? 2 : Math.min(6, Math.max(1, lv));
+    }
+    return 0;
+  }
+
+  function isTable(el) {
+    const r = roleOf(el);
+    return el.tagName === "TABLE" || r === "table" || r === "grid";
+  }
+
+  // Flatten a subtree to a single line of text (for cells, headings, list items)
+  // so its words stay together — never split across structural newlines.
+  function flatten(node) {
+    let out = "";
+    const kids = node.childNodes;
+    for (let i = 0; i < kids.length; i++) {
+      const c = kids[i];
+      if (c.nodeType === 3) {
+        out += c.nodeValue;
+      } else if (c.nodeType === 1) {
+        if (c.tagName === "BR") {
+          out += " ";
+          continue;
+        }
+        if (shouldSkip(c)) continue;
+        out += " " + flatten(c) + " ";
+      }
+    }
+    return out;
+  }
+  function inline(node) {
+    return flatten(node).replace(/\s+/g, " ").trim();
+  }
+
+  // Serialize a table (or ARIA grid) row-by-row, cells joined with " | " so a
+  // label and its number stay on the same line — "Mariners | 5" can never get
+  // reordered into "6 | 5" once it's flattened.
+  function serializeTable(table) {
+    const rows = [];
+    const trs = table.querySelectorAll('tr, [role="row"]');
+    for (let i = 0; i < trs.length; i++) {
+      const tr = trs[i];
+      if (shouldSkip(tr)) continue;
+      const cells = tr.querySelectorAll(
+        'th, td, [role="cell"], [role="gridcell"], [role="columnheader"], [role="rowheader"]'
+      );
+      const vals = [];
+      for (let j = 0; j < cells.length; j++) {
+        if (shouldSkip(cells[j])) continue;
+        vals.push(inline(cells[j]));
+      }
+      if (vals.length) rows.push(vals.join(" | "));
+      else {
+        const t = inline(tr);
+        if (t) rows.push(t);
+      }
+    }
+    return rows.length ? "\n" + rows.join("\n") + "\n" : "";
+  }
+
   function gather(node) {
     let out = "";
     const kids = node.childNodes;
@@ -871,6 +980,26 @@ function extractPageText() {
           continue;
         }
         if (shouldSkip(child)) continue;
+
+        // Headings → markdown-style "## Heading" so levels survive flattening.
+        const hl = headingLevel(child);
+        if (hl) {
+          const h = inline(child);
+          if (h) out += "\n\n" + "######".slice(0, hl) + " " + h + "\n";
+          continue;
+        }
+        // Tables/grids → one line per row, cells joined with " | ".
+        if (isTable(child)) {
+          out += serializeTable(child);
+          continue;
+        }
+        // List items → "- item", each on its own line.
+        if (tag === "LI" || roleOf(child) === "listitem") {
+          const li = inline(child);
+          if (li) out += "\n- " + li;
+          continue;
+        }
+
         const inner = gather(child);
         if (BLOCK_TAGS[tag]) out += "\n" + inner + "\n";
         else out += inner;
@@ -1177,6 +1306,7 @@ async function askConversation(userText, ctx, asrConf, signal) {
 const MAX_AGENT_STEPS = 8;
 let agentTask = null; // { goal, log, steps, acted } while a task runs
 let pendingPlan = null; // an action plan awaiting the user's spoken "yes"
+let pendingConfirm = null; // a low-confidence transcript awaiting a yes/no
 
 function collectInteractive(opts) {
   var MAX = (opts && opts.max) || 120;
@@ -1711,7 +1841,7 @@ function refreshTabCard(tab) {
  * ------------------------------------------------------------------ */
 async function runAskLane(
   instruction,
-  { remember = false, defaultRead = false, asrConf = null } = {}
+  { remember = false, defaultRead = false, asrConf = null, hedge = false } = {}
 ) {
   instruction = (instruction || "").trim();
   if (!instruction) return;
@@ -1753,7 +1883,14 @@ async function runAskLane(
     clearThinking(think);
 
     if (data && data.ok && data.result) {
-      const reply = data.result.reply || "(no reply)";
+      let reply = data.result.reply || "(no reply)";
+      // Very shaky transcript: prepend a gentle, honest hedge to the spoken
+      // answer. It never blocks the reply and the user could already edit it.
+      if (hedge) {
+        reply =
+          "I wasn't fully sure I caught that, but here's what I can tell you. " +
+          reply;
+      }
       const { lead, body } = splitLead(reply);
       if (lead && body) {
         addGistCard(lead);
@@ -2024,8 +2161,27 @@ function classifyLane(text) {
   return "ask";
 }
 
+// Does this lane ACT on the user's behalf — write a note, or act on the page?
+// Those are the lanes we will not run on a low-confidence transcript without a
+// spoken confirmation first. Recall (look-up) and read/answer don't act.
+function laneActs(lane) {
+  if (lane === "save") return true;
+  if (lane === "ask" && settings.allowActions) return true; // on-page agent
+  return false;
+}
+
 function routeUtterance(content, raw, conf) {
   const lane = classifyLane(content);
+  // Low-confidence repair loop: if Sharon is about to ACT on a shaky transcript,
+  // read it back and wait for a spoken (or on-screen) yes/no instead of acting.
+  if (laneActs(lane) && isLowConfidence(conf)) {
+    requestAsrConfirmation(content, raw, conf, lane);
+    return;
+  }
+  proceedWithLane(lane, content, raw, conf);
+}
+
+function proceedWithLane(lane, content, raw, conf) {
   if (speaking) stopSpeaking();
   if (lane === "save") {
     saveLane(content, raw, conf);
@@ -2039,8 +2195,41 @@ function routeUtterance(content, raw, conf) {
   if (settings.allowActions) {
     startAgentTask(content);
   } else {
-    runAskLane(content, { remember: true, asrConf: conf });
+    // Read/answer never blocks on low confidence; only add a gentle spoken hedge
+    // when the transcript was very shaky. The user can always edit before this.
+    runAskLane(content, {
+      remember: true,
+      asrConf: conf,
+      hedge: isVeryLowConfidence(conf),
+    });
   }
+}
+
+// Ask the user to confirm a shaky transcript before acting on it. Reuses the
+// same yes/no handling path as action confirmations (see handleUserUtterance).
+function requestAsrConfirmation(content, raw, conf, lane) {
+  if (speaking) stopSpeaking();
+  pendingConfirm = { content, raw, conf, lane };
+  const heard = (raw || content || "").trim();
+  sharonSay(
+    "I think I heard “" +
+      heard +
+      "” — is that right? Say “yes” to go ahead, or “no” to fix it."
+  );
+  updateStatus();
+}
+
+// On "no" (or to edit), reopen an editable transcript pre-filled with what
+// Sharon heard so the user can correct it and send, or just say it again.
+function reopenComposeForEdit(text) {
+  resetComposeState();
+  enterStack();
+  ensureComposeCard();
+  composeRaw = (text || "").trim();
+  composeEl.textContent = composeRaw;
+  composeEdited = true; // they're fixing it — never auto-send
+  composeEl.focus();
+  placeCaretEnd(composeEl);
 }
 
 /* ------------------------------------------------------------------ *
@@ -2562,6 +2751,34 @@ function handleUserUtterance(text, conf) {
     .toLowerCase()
     .replace(/[.!?,]+$/g, "")
     .trim();
+
+  // A shaky transcript waiting for the user to confirm before Sharon acts on it.
+  if (pendingConfirm) {
+    const yes = /^(yes|yeah|yep|yup|sure|ok|okay|correct|that'?s right|right|go ahead|do it|confirm|sounds good)$/.test(
+      cmd
+    );
+    const no = /^(no|nope|nah|wrong|not quite|that'?s wrong|cancel|never ?mind|let me|redo|try again)$/.test(
+      cmd
+    );
+    if (yes) {
+      const p = pendingConfirm;
+      pendingConfirm = null;
+      discardCompose();
+      // Confirmed — proceed even though confidence was low (skip the recheck).
+      proceedWithLane(p.lane, p.content, p.raw, p.conf);
+      return;
+    }
+    if (no) {
+      const p = pendingConfirm;
+      pendingConfirm = null;
+      reopenComposeForEdit(p.content);
+      sharonSay("No problem — say it again, or tap the text to fix it.");
+      updateStatus();
+      return;
+    }
+    // Neither yes nor no — treat what they just said as the correction itself.
+    pendingConfirm = null;
+  }
 
   // An action plan waiting for the user's okay — yes / no answers it instantly.
   if (pendingPlan) {

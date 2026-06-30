@@ -259,6 +259,17 @@ html[data-state="thinking"] .status-line{color:var(--think)}
 .transcript:empty:before{content:attr(data-placeholder);color:var(--faint);font-weight:500}
 .transcript .interim{color:var(--faint);font-weight:500}
 
+/* subtle low-confidence flag on the "You said" card */
+.conf-tag{
+  display:inline-flex;align-items:center;gap:5px;
+  text-transform:none;letter-spacing:normal;font-weight:600;font-size:10.5px;
+  color:#B07A1E;
+}
+.conf-dot{
+  width:6px;height:6px;border-radius:50%;background:#E5A23B;
+  box-shadow:0 0 0 3px rgba(229,162,59,.18);
+}
+
 .edit-hint{
   display:flex;align-items:center;gap:6px;
   font-size:12px;color:var(--muted);margin-top:9px;
