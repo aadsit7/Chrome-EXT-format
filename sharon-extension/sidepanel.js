@@ -176,6 +176,7 @@ let lastUserInstruction = null; // the most recent spoken instruction (if any)
 let abortController = null; // cancels an in-flight "ask" request
 let evalSeq = 0; // guards against out-of-order tab evaluations
 let ready = false; // settings loaded — safe to auto-read
+let skipFirstAutoRead = true; // initial open waits and listens — never auto-reads
 
 // Speech synthesis (reading aloud)
 const synth = window.speechSynthesis;
@@ -269,14 +270,12 @@ function updateStatus() {
     state = "idle";
     line = "Muted";
     sub = "Tap the mic to turn me back on";
-  } else if (!settings.autoRead) {
-    state = "listening";
-    line = "Ask me to read this page";
-    sub = "I'm listening";
   } else {
+    // Sharon waits and listens for the user on open and after every turn,
+    // regardless of the auto-read setting.
     state = "listening";
     line = "Listening…";
-    sub = "I'm ready when you are";
+    sub = "I'm ready — what can I help with?";
   }
   els.html.setAttribute("data-state", state);
   setStatusText(line, sub);
@@ -722,6 +721,23 @@ function discardCompose() {
   resetComposeState();
   maybeShowCaps();
   updateStatus();
+}
+
+/* ------------------------------------------------------------------ *
+ * Return to the LISTENING state for the next turn. After Sharon finishes
+ * responding she re-arms on her own so the conversation flows back and forth:
+ * the mic stays live, a fresh transcript card shows its waiting placeholder,
+ * and the status returns to "Listening…". Skipped while she's still busy, mid
+ * on-page task, awaiting a spoken yes/no, or the mic is blocked.
+ * ------------------------------------------------------------------ */
+function returnToListening() {
+  if (micBlocked) return; // keep the existing mic-blocked message + behavior
+  if (agentTask || pendingPlan) return; // mid task / awaiting a spoken yes-no
+  if (busy || thinking) return; // a fresh request is already underway
+  if (speaking) return; // still talking
+  if (composeCard) return; // the user is already composing the next turn
+  ensureComposeCard(); // fresh, empty transcript → placeholder shows
+  updateStatus(); // restore "Listening…"
 }
 
 /* ------------------------------------------------------------------ *
@@ -2044,9 +2060,18 @@ async function evaluateActiveTab() {
   updateStatus();
 
   if (!ready) return;
-  if (!settings.autoRead) return;
 
   const key = tab.id + "::" + tab.url;
+  // The very first evaluation after the panel opens must WAIT and LISTEN — she
+  // never auto-reads on open, regardless of the auto-read setting. Mark this
+  // page as already handled so LATER tab navigations still auto-read normally.
+  if (skipFirstAutoRead) {
+    skipFirstAutoRead = false;
+    lastReadKey = key;
+    return;
+  }
+
+  if (!settings.autoRead) return;
   if (key === lastReadKey) return;
   lastReadKey = key;
   autoRead();
@@ -2078,8 +2103,13 @@ function pickEnglishVoice() {
 }
 
 function speakText(text) {
-  if (!synth) return;
-  if (!settings.readAloud) return;
+  if (!synth || !settings.readAloud) {
+    // Nothing will be spoken (no synth, or Sharon's voice is muted), so there's
+    // no utterance-end event to wait for — re-arm listening for the next turn
+    // once the current call settles.
+    queueMicrotask(returnToListening);
+    return;
+  }
   synth.cancel();
   const utt = new SpeechSynthesisUtterance(text);
   const voice = pickEnglishVoice();
@@ -2111,6 +2141,8 @@ function speakText(text) {
     currentUtterance = null;
     currentSpokenText = "";
     updateStatus();
+    // Sharon's read-aloud has finished — return to listening for the next turn.
+    returnToListening();
   };
   utt.onend = finish;
   utt.onerror = finish;
@@ -2702,5 +2734,8 @@ setTimeout(() => {
   updateReadAloudUI();
   updateStatus();
   startRecognition();
+  // Open straight into LISTENING: show the waiting transcript card now and stay
+  // silent — no greeting, no auto-read — until the user speaks.
+  returnToListening();
   evaluateActiveTab();
 })();
