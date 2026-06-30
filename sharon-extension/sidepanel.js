@@ -1098,14 +1098,46 @@ async function handleScroll(direction) {
  * new { api_key, action, payload } envelope, no extra headers. Read success
  * data from data.result.*, and show data.error on { ok:false }.
  * ------------------------------------------------------------------ */
+// Has the user pasted real values into config.js? The extension ships with
+// "<…>" placeholders; until they're replaced (with a real https /exec URL and
+// a non-placeholder key) every fetch fails at the network layer with the
+// cryptic "Failed to fetch", so we catch that here and explain what to do.
+function configReady() {
+  const url = (PROXY_URL || "").trim();
+  const key = (API_KEY || "").trim();
+  const isPlaceholder = (s) => !s || /^<.*>$/.test(s);
+  if (isPlaceholder(url) || isPlaceholder(key)) return false;
+  return /^https?:\/\//i.test(url);
+}
+
 async function callApi(action, payload, signal) {
+  if (!configReady()) {
+    throw new Error(
+      "I'm not connected to your backend yet. Open config.js and paste your " +
+        "Apps Script /exec URL into PROXY_URL and your key into API_KEY (it must " +
+        "match the API_KEY Script Property), then reload Sharon at " +
+        "chrome://extensions."
+    );
+  }
   const body = { api_key: API_KEY, action, payload };
-  const res = await fetch(PROXY_URL, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=UTF-8" },
-    body: JSON.stringify(body),
-    signal,
-  });
+  let res;
+  try {
+    res = await fetch(PROXY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=UTF-8" },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (e) {
+    if (e && e.name === "AbortError") throw e;
+    // "Failed to fetch" when the URL is set but unreachable — most often a
+    // wrong /exec URL, a web app not deployed for "Anyone", or no connection.
+    throw new Error(
+      "I couldn't reach the server. Check that PROXY_URL is your correct " +
+        "Apps Script /exec URL and that the web app is deployed with " +
+        "“Who has access: Anyone”."
+    );
+  }
   const raw = await res.text();
   let data;
   try {
