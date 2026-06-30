@@ -226,6 +226,9 @@
       .chat-user { background: var(--primary); color: #fff; border-radius: 18px 18px 6px 18px; max-width: 70%; }
       .chat-bot { background: #fff; color: var(--dark); border: 1px solid var(--divider); border-radius: 6px 18px 18px 18px; box-shadow: var(--shadow-card); }
       .chat-bubble.typing { display: inline-flex; gap: 4px; padding: 14px 16px; }
+      /* Typing dots shown beneath the "Technical assist" badge in the single
+         in-flight answer bubble (the badge sits on its own line above). */
+      .bubble-dots { display: flex; gap: 4px; padding: 2px 0; }
       .msg-wrap { position: relative; max-width: 86%; }
       .msg-wrap .chat-bubble { max-width: 100%; }
 

@@ -4019,6 +4019,14 @@
       function renderChat(slot, idx) {
         const vm = voiceModel(slot, idx);
         const hasMsgs = slot.messages.length > 0;
+        // While loading, the trailing assistant message IS the in-flight answer
+        // and already renders as a single "R" bubble — typing dots while it's
+        // empty, then the streaming text (see renderBotMessage). So it carries
+        // the working indicator on its own. Only fall back to a standalone dots
+        // row if, somehow, there's no trailing assistant message to host it, so
+        // the indicator is never doubled (the old "two Randys") nor lost.
+        const lastMsg = slot.messages[slot.messages.length - 1];
+        const placeholderPending = !!(lastMsg && lastMsg.role === 'assistant');
         return `
           ${renderChatHeader(slot, idx, vm)}
           <div class="split-row">
@@ -4032,7 +4040,7 @@
                     <div class="msg-row ${m.role === 'user' ? 'me' : ''}">
                       ${m.role === 'user' ? renderUserMessage(m) : renderBotMessage(slot, m, mi, idx)}
                     </div>
-                  `).join('') + (slot.loading ? `
+                  `).join('') + (slot.loading && !placeholderPending ? `
                     <div class="msg-row">
                       <div class="msg-av">${escHtml(slot.label.charAt(0))}</div>
                       <div class="chat-bubble chat-bot typing"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>
@@ -4072,6 +4080,22 @@
         const badge = m.kind === 'assist'
           ? `<div class="assist-badge"><i data-lucide="ear" class="w-3 h-3"></i>Technical assist</div>`
           : '';
+        // While the answer is still arriving the placeholder has no content yet.
+        // Show the typing dots inside this single bubble (keeping the badge) so
+        // there's only ever one "R" avatar while Randy is working — instead of
+        // this empty bubble PLUS a second avatar row of dots (renderChat used to
+        // append that, which read as two Randys for every action in flight).
+        if (!m.content) {
+          const dots = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
+          return badge
+            ? `${av}
+              <div class="msg-wrap"><div class="chat-bubble chat-bot" style="white-space:normal">
+                ${badge}
+                <span class="bubble-dots">${dots}</span>
+              </div></div>`
+            : `${av}
+              <div class="msg-wrap"><div class="chat-bubble chat-bot typing">${dots}</div></div>`;
+        }
         return `${av}
           <div class="msg-wrap"><div class="chat-bubble chat-bot chat-md" style="padding-right:38px;white-space:normal">
             ${badge}
