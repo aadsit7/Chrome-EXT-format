@@ -1097,6 +1097,30 @@
         }
       }
 
+      // Silently copy a finished answer to the clipboard the moment it's
+      // shown, so the user can paste it straight into an email without ever
+      // clicking the copy button. Unlike copyTextToClipboard this stays quiet
+      // — no toast, no button highlight — because it fires automatically on
+      // every answer (including overheard ones mid-call) and shouldn't nag.
+      // The manual copy button still gives explicit feedback when used.
+      function autoCopyAnswer(text) {
+        const t = String(text || '').trim();
+        if (!t) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(t).catch(() => {
+            // Clipboard may reject without focus/permission; the copy button
+            // remains available as the explicit fallback. Stay silent.
+          });
+          return;
+        }
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select();
+          document.execCommand('copy'); document.body.removeChild(ta);
+        } catch { /* best-effort; manual copy button still works */ }
+      }
+
       function hostnameOf(url) {
         try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
       }
@@ -3295,6 +3319,9 @@
           if (Array.isArray(data.sources) && data.sources.length) {
             msg.sources = data.sources.slice(0, 6);
           }
+          // Auto-copy the answer so it's ready to paste — same text the manual
+          // copy button would put on the clipboard (stripMarkdown of content).
+          autoCopyAnswer(stripMarkdown(msg.content));
           notePipAnswerArrived();
 
           // Background save (the proxy only saved non-empty replies; mirror that).
@@ -3578,6 +3605,9 @@
           if (Array.isArray(data.sources) && data.sources.length) {
             msg.sources = data.sources.slice(0, 6);
           }
+          // Auto-copy the answer so it's ready to paste — same text the manual
+          // copy button would put on the clipboard (stripMarkdown of content).
+          autoCopyAnswer(stripMarkdown(msg.content));
 
           // Streaming already spoke the summary sentence-by-sentence; only the
           // non-streaming path needs the one-shot read here.
