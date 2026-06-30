@@ -113,6 +113,20 @@
             <p class="set-help">When on, Sharon starts reading each page on her own. When off, she waits until you ask.</p>
           </div>
           <div class="set-group">
+            <div class="set-row"><div class="set-name">Sharon's voice</div></div>
+            <p class="set-help">Choose the voice Sharon uses to read aloud. "Auto" picks the most natural voice your browser offers.</p>
+            <select class="set-select" id="voiceSelect" aria-label="Sharon's voice">
+              <option value="">Auto (best available)</option>
+            </select>
+            <div class="set-row" style="margin-top:13px"><div class="set-name">Speaking speed</div></div>
+            <select class="set-select" id="voiceSpeed" aria-label="Speaking speed" style="margin-top:8px">
+              <option value="slow">Slow</option>
+              <option value="normal">Normal</option>
+              <option value="brisk">Brisk</option>
+            </select>
+            <button class="btn-text" id="voicePreview" type="button">&#9658; Preview voice</button>
+          </div>
+          <div class="set-group">
             <div class="set-row"><div class="set-name">Let Sharon scroll the page</div>
               <label class="switch"><input type="checkbox" id="scrollToggle" aria-label="Let Sharon scroll the page"><span class="track"></span><span class="thumb"></span></label></div>
             <p class="set-help">Say "scroll down", "go to the top", or "read more" and she'll move through long pages for you.</p>
