@@ -123,8 +123,19 @@ class Component extends DCLogic {
     };
     this._sheet = Object.assign({}, C, {
       token: this.sheetResolveToken(C),
-      online: true, snapshot: Object.create(null), flushing: false, ready: false, seq: Date.now()
+      online: true, snapshot: Object.create(null), flushing: false, ready: false, seq: Date.now(),
+      // Durable record of the user's own changes that the sheet has not yet
+      // confirmed via a pull. Unlike the outbox (which is emptied the instant a
+      // write flushes), this survives the flush, so a pull that was already in
+      // flight when the write landed can't quietly drop the change from the UI.
+      // Cleared per-id only once a pull actually reflects it.
+      inflight: Object.create(null)
     });
+    // Baseline the snapshot from whatever is already in local state BEFORE the
+    // first pull lands. This lets sheetSync() queue a user's own add/edit/delete
+    // immediately (diffed against this baseline) without re-queuing the whole
+    // existing list, so no change is ever gated behind the initial pull.
+    this.sheetBaselineFromLocal();
     // Console helper, same name/behaviour as the web app.
     try {
       window.bbSetToken = (t) => {
@@ -134,7 +145,37 @@ class Component extends DCLogic {
         return this._sheet.token ? 'app_token set — syncing with your sheet' : 'app_token cleared';
       };
     } catch {}
+    // Re-flush the outbox whenever connectivity or attention returns, so writes
+    // that failed while offline/hidden get resent without waiting for a reload.
+    this.sheetAttachConnectivity();
     if (this.sheetEnabled()) this.syncFromSheet();
+  }
+  // Snapshot the current local bookmarks as the "last-known sheet state" so the
+  // diff in sheetSync() only ever surfaces genuine user changes.
+  sheetBaselineFromLocal() {
+    const pl = this.sheetPlacements();
+    this._sheet.snapshot = Object.create(null);
+    for (const bm of this.state.bookmarks) this._sheet.snapshot[bm.id] = JSON.stringify(this.sheetRow(bm, pl[bm.id]));
+  }
+  sheetAttachConnectivity() {
+    if (this._sheetConnAttached) return; this._sheetConnAttached = true;
+    const tryFlush = () => { if (this.sheetEnabled()) { this._sheet.online = true; this.sheetFlush(); } };
+    this._sheetOnlineH = () => tryFlush();
+    this._sheetVisH = () => { if (!document.hidden) tryFlush(); };
+    this._sheetFocusH = () => tryFlush();
+    try {
+      window.addEventListener('online', this._sheetOnlineH);
+      document.addEventListener('visibilitychange', this._sheetVisH);
+      window.addEventListener('focus', this._sheetFocusH);
+    } catch {}
+  }
+  sheetDetachConnectivity() {
+    if (!this._sheetConnAttached) return; this._sheetConnAttached = false;
+    try {
+      if (this._sheetOnlineH) window.removeEventListener('online', this._sheetOnlineH);
+      if (this._sheetVisH) document.removeEventListener('visibilitychange', this._sheetVisH);
+      if (this._sheetFocusH) window.removeEventListener('focus', this._sheetFocusH);
+    } catch {}
   }
   sheetResolveToken(C) {
     try {
@@ -157,6 +198,17 @@ class Component extends DCLogic {
     let data = {}; try { data = await res.json(); } catch {}
     if (data && data.ok === false) throw new Error(data.error || 'sheet rejected the write');
     return data;
+  }
+  sheetDelay(ms) { return new Promise(r => setTimeout(r, ms)); }
+  // Retry a failed POST a few times with short backoff before giving up for now
+  // (the item stays in the persistent outbox and is retried later regardless).
+  async sheetPostWithRetry(payload, tries) {
+    tries = tries || 3; let lastErr;
+    for (let i = 0; i < tries; i++) {
+      try { return await this.sheetPost(payload); }
+      catch (e) { lastErr = e; if (i < tries - 1) await this.sheetDelay(400 * Math.pow(2, i)); }
+    }
+    throw lastErr;
   }
   async sheetGet() {
     const u = new URL(this._sheet.url);
@@ -182,6 +234,11 @@ class Component extends DCLogic {
       }
     }
     item.seq = ++this._sheet.seq; q.push(item); this.sheetSaveOutbox(q);
+    // Remember this change as in-flight until a pull confirms it (see sheetBoot).
+    if (this._sheet.inflight) {
+      if (item.action === 'saveBookmark') { const id = item.bookmark['Bookmark ID']; const bm = this.state.bookmarks.find(b => b.id === id); this._sheet.inflight[id] = { action: 'save', bm: bm ? Object.assign({}, bm) : null }; }
+      else if (item.action === 'deleteBookmark') { this._sheet.inflight[item.id] = { action: 'delete' }; }
+    }
     if (this._sheet.online) this.sheetFlush();
   }
   async sheetFlush() {
@@ -192,12 +249,48 @@ class Component extends DCLogic {
         const q = this.sheetLoadOutbox();
         if (!q.length) { this._sheet.online = true; break; }
         const item = q[0];
-        try { const { seq, ...body } = item; await this.sheetPost(body); }
-        catch { this._sheet.online = false; break; }
+        const itemId = item.action === 'saveBookmark' ? (item.bookmark && item.bookmark['Bookmark ID']) : item.id;
+        try { const { seq, ...body } = item; await this.sheetPostWithRetry(body); }
+        catch { this._sheet.online = false; this.sheetNotify(itemId, false); break; }
         this._sheet.online = true;
         this.sheetSaveOutbox(this.sheetLoadOutbox().filter(x => x.seq !== item.seq));
+        this.sheetNotify(itemId, true);
       }
     } finally { this._sheet.flushing = false; }
+  }
+  // The ids of changes still pending in the outbox right now.
+  sheetPendingIds() {
+    const q = this.sheetLoadOutbox();
+    const saves = new Set(), deletes = new Set();
+    for (const it of q) {
+      if (it.action === 'saveBookmark' && it.bookmark) saves.add(it.bookmark['Bookmark ID']);
+      else if (it.action === 'deleteBookmark') deletes.add(it.id);
+    }
+    return { saves, deletes };
+  }
+  // Honest save feedback: resolve a queued user change to a real success/failure
+  // toast once the sheet actually confirms (or refuses to accept) the write.
+  sheetNotify(id, ok) {
+    const n = this._pendingNote;
+    if (!n || n.id !== id) return;
+    if (ok) { this.toastReplace(n.successMsg, n.successIcon); this._pendingNote = null; }
+    else { this.toastReplace('Couldn’t reach the sheet — will retry', 'cloud-off'); }
+  }
+  // Tell the user a change was made. When the sheet is active we only *queued*
+  // the write, so we show a "Saving…" state and let sheetNotify() upgrade it to
+  // success (or a retry notice) when the write is actually confirmed. With no
+  // sheet configured (localStorage-only) we show the plain success toast as before.
+  sheetAnnounce(id, msg, icon) {
+    if (this.sheetEnabled()) { this._pendingNote = { id, successMsg: msg, successIcon: icon }; this.toast('Saving…', 'refresh-cw'); }
+    else this.toast(msg, icon);
+  }
+  // Force the toast to remount before showing a new message. lucide rewrites the
+  // toast's <i> into an <svg> outside React's control, so swapping data-lucide on
+  // a still-mounted toast would leave a stale icon; clearing first avoids that.
+  toastReplace(msg, icon) {
+    if (this._toastT) clearTimeout(this._toastT);
+    this.setState({ toast: '' });
+    setTimeout(() => this.toast(msg, icon), 40);
   }
   /* springboard arrangement <-> sheet columns (same encoding as the web app) */
   sheetPlacements() {
@@ -231,7 +324,11 @@ class Component extends DCLogic {
   }
   // Diff the current list against the last-known sheet state; queue only changes.
   sheetSync() {
-    if (!this.sheetEnabled() || !this._sheet.ready) return;
+    // No _sheet.ready gate here: a user's own add/edit/delete must reach the
+    // outbox even before (or if) the initial pull lands. The snapshot baseline
+    // (set at boot in sheetBaselineFromLocal and re-set after every pull) is the
+    // tool that prevents echoing the sheet's own rows back — not this gate.
+    if (!this.sheetEnabled()) return;
     const pl = this.sheetPlacements(); const seen = new Set();
     for (const bm of this.state.bookmarks) {
       seen.add(bm.id);
@@ -284,7 +381,17 @@ class Component extends DCLogic {
     if (!this.sheetEnabled()) return;
     let rows;
     try { rows = await this.sheetGet(); }
-    catch (e) { this._sheet.online = false; console.warn('Bookmarks Buddy: could not reach the sheet — using local data.', e); return; }
+    catch (e) {
+      this._sheet.online = false;
+      console.warn('Bookmarks Buddy: could not reach the sheet — using local data.', e);
+      // The pull failed, but the session must NOT get stuck never queuing. Queuing
+      // no longer depends on the pull (the gate is gone), so just keep the local
+      // baseline and try to drain whatever is already queued; it will retry on the
+      // next online/focus/visibility event or relaunch.
+      this._sheet.ready = true;
+      this.sheetFlush();
+      return;
+    }
     this._sheet.online = true;
     const str = v => (v == null ? '' : String(v));
     const remote = rows.map(r => ({
@@ -299,9 +406,54 @@ class Component extends DCLogic {
       _lastOpened: r['Last Opened'] != null ? r['Last Opened'] : '',
       _timesOpened: r['Times Opened'] != null ? r['Times Opened'] : ''
     })).filter(b => b.url);
-    // The sheet is authoritative — the extension shows exactly your sheet.
-    this.state.bookmarks = remote.map(b => ({ id: b.id, name: b.name, url: b.url, notes: b.notes, icon: b.icon, _owner: b._owner, _dateAdded: b._dateAdded, _lastOpened: b._lastOpened, _timesOpened: b._timesOpened }));
-    this.applyLayout(this.sheetBuildLayout(remote), this.state.bookmarks);
+    // The sheet is authoritative for ordering/layout, but the pull must NOT drop a
+    // user's change the sheet hasn't confirmed yet. Reconcile: drop bookmarks the
+    // user deleted locally (delete unconfirmed), and re-apply locally-pending
+    // adds/edits on top of the remote rows so a just-added bookmark survives this
+    // pull — even if it already flushed and is gone from the outbox. The pending
+    // set is the durable inflight map unioned with any leftover outbox items
+    // (e.g. restored from a previous session); local copies come from the inflight
+    // record or current state (still intact before we overwrite it below).
+    const inflight = this._sheet.inflight || Object.create(null);
+    const pend = { saves: new Set(), deletes: new Set(), localById: Object.create(null) };
+    for (const id of Object.keys(inflight)) {
+      const rec = inflight[id];
+      if (rec.action === 'delete') pend.deletes.add(id);
+      else { pend.saves.add(id); if (rec.bm) pend.localById[id] = rec.bm; }
+    }
+    const ob = this.sheetPendingIds();
+    ob.saves.forEach(id => pend.saves.add(id));
+    ob.deletes.forEach(id => pend.deletes.add(id));
+    for (const bm of this.state.bookmarks) if (pend.saves.has(bm.id)) pend.localById[bm.id] = bm;
+    let merged = remote
+      .map(b => ({ id: b.id, name: b.name, url: b.url, notes: b.notes, icon: b.icon, _owner: b._owner, _dateAdded: b._dateAdded, _lastOpened: b._lastOpened, _timesOpened: b._timesOpened }))
+      .filter(b => !pend.deletes.has(b.id));
+    for (const id of pend.saves) {
+      const local = pend.localById[id]; if (!local) continue;
+      const keep = { id: local.id, name: local.name, url: local.url, notes: local.notes || '', icon: local.icon || '', _owner: local._owner, _dateAdded: local._dateAdded, _lastOpened: local._lastOpened, _timesOpened: local._timesOpened };
+      const idx = merged.findIndex(b => b.id === id);
+      if (idx >= 0) merged[idx] = keep; else merged.push(keep);
+    }
+    this.state.bookmarks = merged;
+    // Build the layout from the remote rows, but strip any locally-deleted ids and
+    // let applyLayout() auto-place locally-added bookmarks the sheet doesn't know yet.
+    const layout = this.sheetBuildLayout(remote);
+    if (pend.deletes.size) {
+      layout.pages = layout.pages.map(pg => pg.map(c => {
+        if (c.type === 'folder') { const items = c.items.filter(x => !pend.deletes.has(x)); return items.length ? { type: 'folder', name: c.name, items } : null; }
+        return pend.deletes.has(c.id) ? null : c;
+      }).filter(Boolean));
+    }
+    this.applyLayout(layout, this.state.bookmarks);
+    // Retire inflight intents the sheet has now confirmed: a save that shows up in
+    // this pull, or a delete whose row is now gone. Anything not yet reflected
+    // stays inflight so the next pull keeps preserving it until it lands.
+    const remoteIds = new Set(remote.map(b => b.id));
+    for (const id of Object.keys(inflight)) {
+      const rec = inflight[id];
+      if (rec.action === 'save' && remoteIds.has(id)) delete inflight[id];
+      else if (rec.action === 'delete' && !remoteIds.has(id)) delete inflight[id];
+    }
     try { localStorage.setItem(this._sheet.LS_SYNCED, '1'); } catch {}
     try { localStorage.setItem(this.LS_B, JSON.stringify(this.state.bookmarks)); } catch {}
     try { localStorage.setItem(this.LS_L, JSON.stringify({ pages: this.state.pages, pageNames: this.state.pageNames })); } catch {}
@@ -774,7 +926,7 @@ class Component extends DCLogic {
     if (pages[pi].length >= this.PER_PAGE) { pages.push([]); pi = pages.length - 1; }
     pages[pi] = pages[pi].concat([{ type: 'app', id }]);
     this.setState({ bookmarks: bms, pages, currentPage: pi }, () => this.save());
-    if (!silent) this.toast('Added ' + name, 'check');
+    if (!silent) this.sheetAnnounce(id, 'Added ' + name, 'check');
     return true;
   }
   addByVoice(rawQuery) {
@@ -793,7 +945,7 @@ class Component extends DCLogic {
     while (pages.length > 1 && !pages[pages.length - 1].length) pages.pop();
     let cur = Math.min(this.state.currentPage, pages.length - 1);
     this.setState({ bookmarks: bms, pages, currentPage: cur }, () => this.save());
-    this.toast('Removed', 'trash-2');
+    this.sheetAnnounce(id, 'Removed', 'trash-2');
   }
 
   /* ---------- per-bookmark editing (matches the web app's edit flow) ----------
@@ -827,7 +979,7 @@ class Component extends DCLogic {
     // editing never moves a tile. sheetSync() diffs and queues only this change.
     const bms = this.state.bookmarks.map(b => b.id === id ? { ...b, name, url, icon, notes } : b);
     this.setState({ bookmarks: bms, editing: null, editConfirmDelete: false }, () => this.save());
-    this.toast('Saved', 'check');
+    this.sheetAnnounce(id, 'Saved', 'check');
   }
   confirmDeleteEdit() {
     const id = this.state.editing; if (!id) return;
@@ -967,7 +1119,7 @@ class Component extends DCLogic {
   postRender() { this.applyTheme(); this.applyTransform(); this.applyEdit(); this.refreshIcons(); this.handleIcons(); this.applyHit(); }
   componentDidMount() { this.postRender(); this.attachGestures(); this.attachFolderGestures(); this.attachPageGestures(); this.attachKeys(); this.attachLifecycle(); this.sheetBoot(); this.autoStartMic(); }
   componentDidUpdate() { this.postRender(); }
-  componentWillUnmount() { this.stopListen(); this.detachLifecycle(); if (this._hitT) clearTimeout(this._hitT); if (this._keyH) window.removeEventListener('keydown', this._keyH); }
+  componentWillUnmount() { this.stopListen(); this.detachLifecycle(); this.sheetDetachConnectivity(); if (this._hitT) clearTimeout(this._hitT); if (this._keyH) window.removeEventListener('keydown', this._keyH); }
 
   /* ---------- side-panel lifecycle (revive-only) ----------
    * A side panel keeps its own document alive for the whole session; clicking
