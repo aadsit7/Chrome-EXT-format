@@ -12,9 +12,7 @@
             "what's the weather looking like in Chicago",
             "remind me to call mom at five"
           ],
-          "keywords": ["assistant", "chat", "claude", "ai"],
-          "smallIconUri": "TODO: 108x108 PNG icon URI",
-          "largeIconUri": "TODO: 512x512 PNG icon URI"
+          "keywords": ["assistant", "chat", "claude", "ai"]
         }
       },
       "isAvailableWorldwide": false,
