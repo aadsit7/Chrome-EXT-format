@@ -1,0 +1,50 @@
+{
+  "manifest": {
+    "manifestVersion": "1.0",
+    "publishingInformation": {
+      "locales": {
+        "en-US": {
+          "name": "Kyle",
+          "summary": "Kyle - a conversational assistant powered by Claude",
+          "description": "Kyle is a natural-conversation voice assistant powered by the Claude API. He can chat about anything, search the web for current information, create reminders, and set timers. Development-mode skill; not intended for public certification with the one-word invocation name.",
+          "examplePhrases": [
+            "Alexa, open kyle",
+            "what's the weather looking like in Chicago",
+            "remind me to call mom at five"
+          ],
+          "keywords": ["assistant", "chat", "claude", "ai"],
+          "smallIconUri": "TODO: 108x108 PNG icon URI",
+          "largeIconUri": "TODO: 512x512 PNG icon URI"
+        }
+      },
+      "isAvailableWorldwide": false,
+      "distributionCountries": ["US"],
+      "testingInstructions": "Development-mode skill backed by an AWS Lambda that calls the Claude API.",
+      "category": "KNOWLEDGE_AND_TRIVIA"
+    },
+    "privacyAndCompliance": {
+      "allowsPurchases": false,
+      "usesPersonalInfo": false,
+      "isChildDirected": false,
+      "isExportCompliant": true,
+      "containsAds": false,
+      "locales": {
+        "en-US": {
+          "privacyPolicyUrl": "",
+          "termsOfUseUrl": ""
+        }
+      }
+    },
+    "apis": {
+      "custom": {
+        "endpoint": {
+          "uri": "TODO: paste your Lambda ARN here, e.g. arn:aws:lambda:us-east-1:123456789012:function:kyle-alexa-assistant"
+        }
+      }
+    },
+    "permissions": [
+      { "name": "alexa::alerts:reminders:skill:readwrite" },
+      { "name": "alexa::alerts:timers:skill:readwrite" }
+    ]
+  }
+}

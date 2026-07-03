@@ -1,0 +1,21 @@
+{
+  "name": "kyle-alexa-assistant",
+  "version": "1.0.0",
+  "description": "Kyle - an Alexa custom skill powered by the Claude API, with web search, reminders, and timers via tool use.",
+  "type": "module",
+  "main": "index.mjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test:local": "node ../scripts/test-local.mjs",
+    "build": "rm -f ../lambda.zip && zip -qr ../lambda.zip . -x '.env' -x '*.zip' && echo 'Built lambda.zip in kyle-alexa-assistant/'"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "ask-sdk-core": "^2.14.0"
+  },
+  "devDependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
