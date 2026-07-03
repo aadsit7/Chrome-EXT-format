@@ -101,6 +101,31 @@ Edit `lambda/system-prompt.md` — persona, tone, tool judgment, and limits all 
 ./scripts/deploy.sh
 ```
 
+## Privacy & Amazon policy compliance
+
+How the solution maps to Amazon's skill policies — **review the [Alexa Skills Certification requirements](https://developer.amazon.com/en-US/docs/alexa/custom-skills/certification-requirements-for-custom-skills.html) and [Alexa privacy requirements](https://developer.amazon.com/en-US/docs/alexa/custom-skills/policy-requirements-for-an-alexa-skill.html) carefully before any public distribution.**
+
+**1. No personal data stored or shared outside Amazon's ecosystem.**
+- Nothing is *stored* anywhere: no database, no files, no third-party storage. Conversation history lives only in Alexa **session attributes** (inside Amazon's infrastructure) and is discarded when the session ends.
+- No Alexa identifiers ever leave Amazon: the `apiAccessToken`, `deviceId`, and `userId` are used exclusively to call Amazon's own REST APIs and are **never included** in requests to the Anthropic API (enforced in `claude.mjs` — see the privacy-boundary note on `runKyle`).
+- No user content is written to CloudWatch logs — handlers log only error objects and session-end reasons, never utterances or history.
+- **Disclosure required:** utterance *text* is transiently processed by the Anthropic API to generate replies (that is the skill's core function). Anthropic's API does not train on API data by default, but this is a third-party data processor — it must be disclosed in your privacy policy before certification, and users of a public skill must be able to find that disclosure.
+- Kyle's system prompt instructs him not to solicit personal details and to actively deflect sensitive information (passwords, SSNs, payment, health/financial data).
+
+**2. Official Reminder API only.**
+Reminders use Amazon's official Alexa Reminders API (`POST/GET/DELETE {apiEndpoint}/v1/alerts/reminders`) with the Alexa-issued bearer token, gated behind the user-granted `alexa::alerts:reminders:skill:readwrite` permission and the voice-consent flow. Timers likewise use the official Alexa Timers API. No unofficial endpoints, no scraping, no workarounds.
+
+**3. Third-party connection policy.**
+The only third-party connection is the Anthropic API: HTTPS-only, authenticated with an API key held in a Lambda environment variable (never in the repo — `.env` is gitignored), with Alexa tokens never forwarded. The companion web page is a separate, non-Alexa surface and does not touch any Alexa API.
+
+**Certification checklist before going public:**
+- [ ] Set a real `privacyPolicyUrl` and `termsOfUseUrl` in `skill.json` — **mandatory** for skills that request permissions (reminders/timers)
+- [ ] Disclose Anthropic as a data processor in that privacy policy
+- [ ] Replace the one-word invocation name (`kyle` → e.g. `hey kyle`)
+- [ ] Provide real 108px/512px skill icons
+- [ ] Secure the web Function URL (auth) or exclude the web surface from the public offering
+- [ ] Re-review the certification requirements linked above — they change over time
+
 ## Outstanding components (not blockers, but know about them)
 
 - **Deploy-time TODOs you must fill in:** the Lambda ARN in `skill-package/skill.json`, skill icons (108px/512px URIs in the manifest), `ANTHROPIC_API_KEY` on the Lambda, and the Function URL in `web/index.html`.

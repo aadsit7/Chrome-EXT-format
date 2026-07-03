@@ -108,6 +108,11 @@ export function stripMarkdown(text) {
 /**
  * Run the Claude agentic loop over the conversation history.
  *
+ * Privacy boundary: `alexaContext` (Alexa access token, endpoint) is used ONLY
+ * to call Amazon's own REST APIs from the tool executors. It is never placed in
+ * the system prompt or messages, so no Alexa identifiers or tokens are ever
+ * transmitted to the Anthropic API — only the utterance text and local time.
+ *
  * @param {Array<{role: string, content: any}>} history - conversation turns, last one the new user message
  * @param {object} options
  * @param {object|null} options.alexaContext - { apiEndpoint, apiAccessToken } for tool execution; null on the web path
