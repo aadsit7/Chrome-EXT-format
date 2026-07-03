@@ -3,6 +3,13 @@ import { runKyle } from './claude.mjs';
 
 const MAX_HISTORY_MESSAGES = 20; // last 10 user/assistant turn pairs
 const REMINDERS_PERMISSION = 'alexa::alerts:reminders:skill:readwrite';
+const TIMERS_PERMISSION = 'alexa::alerts:timers:skill:readwrite';
+
+// Alexa wraps speech in an SSML <speak> envelope; unescaped &, <, > in the
+// model's reply would make the SSML invalid and error on the device.
+function escapeForSsml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -87,7 +94,7 @@ async function chatTurn(handlerInput, userText) {
   history.push({ role: 'user', content: userText });
 
   const timeContext = await getTimeContext(handlerInput);
-  const { reply, needsReminderPermission } = await runKyle(history, {
+  const { reply, needsPermission } = await runKyle(history, {
     alexaContext: getAlexaContext(handlerInput),
     timeContext,
   });
@@ -96,11 +103,11 @@ async function chatTurn(handlerInput, userText) {
   saveHistory(handlerInput, history);
 
   const builder = handlerInput.responseBuilder
-    .speak(reply)
+    .speak(escapeForSsml(reply))
     .reprompt('Anything else?')
     .withShouldEndSession(false);
 
-  if (needsReminderPermission) {
+  if (needsPermission === 'reminders') {
     const supportsVoicePermissions =
       handlerInput.requestEnvelope.context?.System?.device?.supportedInterfaces != null;
     if (supportsVoicePermissions) {
@@ -113,6 +120,9 @@ async function chatTurn(handlerInput, userText) {
     }
     // Fallback: send a permissions consent card to the Alexa app.
     builder.withAskForPermissionsConsentCard([REMINDERS_PERMISSION]);
+  } else if (needsPermission === 'timers') {
+    // Timers have no voice-permission flow — send a consent card to the app.
+    builder.withAskForPermissionsConsentCard([TIMERS_PERMISSION]);
   }
 
   return builder.getResponse();

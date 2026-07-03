@@ -37,6 +37,24 @@ const TOOLS = [
     },
   },
   {
+    name: 'list_reminders',
+    description:
+      'List active reminders previously created by this skill, with their alertToken, text, and scheduled time. Use before cancelling a reminder, or when the user asks what reminders they have.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'cancel_reminder',
+    description:
+      'Cancel a reminder created by this skill. Requires the alertToken from list_reminders — call that first if you do not have it.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        alert_token: { type: 'string', description: 'The alertToken of the reminder to cancel, from list_reminders.' },
+      },
+      required: ['alert_token'],
+    },
+  },
+  {
     name: 'set_timer',
     description:
       'Start a countdown timer on the user’s Echo device. Use for requests like "set a timer for 10 minutes".',
@@ -47,6 +65,23 @@ const TOOLS = [
         label: { type: 'string', description: 'Short label for the timer, e.g. "pasta".' },
       },
       required: ['duration_minutes', 'label'],
+    },
+  },
+  {
+    name: 'manage_timers',
+    description:
+      'List, pause, resume, or cancel timers on the user’s Echo. Use "list" to see timers (returns timer_id per timer), "cancel_all" to clear every timer, or "pause"/"resume"/"cancel" with a timer_id from list.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        operation: {
+          type: 'string',
+          enum: ['list', 'pause', 'resume', 'cancel', 'cancel_all'],
+          description: 'What to do with the timers.',
+        },
+        timer_id: { type: 'string', description: 'Timer id from operation "list". Required for pause, resume, and cancel.' },
+      },
+      required: ['operation'],
     },
   },
 ];
@@ -78,11 +113,11 @@ export function stripMarkdown(text) {
  * @param {object|null} options.alexaContext - { apiEndpoint, apiAccessToken } for tool execution; null on the web path
  * @param {string} options.timeContext - "Current local datetime: ... Timezone: ..." string injected per turn
  * @param {boolean} options.isWeb - true when serving the web chat page (Alexa tools unavailable)
- * @returns {Promise<{reply: string, needsReminderPermission: boolean}>}
+ * @returns {Promise<{reply: string, needsPermission: 'reminders'|'timers'|null}>}
  */
 export async function runKyle(history, { alexaContext = null, timeContext = '', isWeb = false } = {}) {
   const deadline = Date.now() + OVERALL_TIMEOUT_MS;
-  let needsReminderPermission = false;
+  let needsPermission = null;
 
   const systemBlocks = [
     { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
@@ -100,7 +135,7 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
   for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
     const remaining = deadline - Date.now();
     if (remaining <= 300) {
-      return { reply: TIMEOUT_FALLBACK, needsReminderPermission };
+      return { reply: TIMEOUT_FALLBACK, needsPermission };
     }
 
     let response;
@@ -117,7 +152,7 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
       );
     } catch (err) {
       if (err instanceof Anthropic.APIConnectionError || err?.name === 'APIConnectionTimeoutError') {
-        return { reply: TIMEOUT_FALLBACK, needsReminderPermission };
+        return { reply: TIMEOUT_FALLBACK, needsPermission };
       }
       throw err;
     }
@@ -127,7 +162,7 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
         .filter((b) => b.type === 'text')
         .map((b) => b.text)
         .join(' ');
-      return { reply: stripMarkdown(text) || "Hmm, I came up empty on that one.", needsReminderPermission };
+      return { reply: stripMarkdown(text) || "Hmm, I came up empty on that one.", needsPermission };
     }
 
     // Claude wants tools: echo the assistant turn, execute each custom tool,
@@ -138,7 +173,7 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
     const toolResults = [];
     for (const toolUse of toolUses) {
       const result = await executeAlexaTool(toolUse.name, toolUse.input, alexaContext, { isWeb });
-      if (result.needsPermission) needsReminderPermission = true;
+      if (result.needsPermission && !needsPermission) needsPermission = result.needsPermission;
       toolResults.push({
         type: 'tool_result',
         tool_use_id: toolUse.id,
@@ -149,5 +184,5 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
     messages.push({ role: 'user', content: toolResults });
   }
 
-  return { reply: "I got a little tangled up there — could you ask me that again?", needsReminderPermission };
+  return { reply: "I got a little tangled up there — could you ask me that again?", needsPermission };
 }

@@ -101,6 +101,15 @@ Edit `lambda/system-prompt.md` — persona, tone, tool judgment, and limits all 
 ./scripts/deploy.sh
 ```
 
+## Outstanding components (not blockers, but know about them)
+
+- **Deploy-time TODOs you must fill in:** the Lambda ARN in `skill-package/skill.json`, skill icons (108px/512px URIs in the manifest), `ANTHROPIC_API_KEY` on the Lambda, and the Function URL in `web/index.html`.
+- **Live-key verification:** the test suite has only been run with the Claude API mocked in this environment. Run `npm run test:local` with a real key in `lambda/.env` before first deploy.
+- **Function URL is unauthenticated:** anyone with the URL can chat with Kyle on your API bill. Fine for personal use; add an auth header check or IAM auth before sharing the URL.
+- **Not certifiable as-is:** the one-word invocation name and dev-mode manifest are for personal devices. Public certification would need a compliant invocation name, icons, and privacy policy URLs.
+- **Reminder recurrence uses the legacy `freq` format** (`DAILY`/`WEEKLY`), which Alexa still accepts but has superseded with RRULE-based `recurrenceRules`. Upgrade if recurring reminders become important.
+- **Timers voice-permission flow:** reminders use Alexa's voice-consent flow; timers fall back to a consent card in the Alexa app (Alexa has no voice flow for timers).
+
 ## Architecture notes
 
 - **No database.** Conversation history is stored in Alexa session attributes (capped at the last 10 turns) and vanishes when the session ends. The web page keeps its own history client-side and sends it with each request.
