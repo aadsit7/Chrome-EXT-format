@@ -476,3 +476,14 @@ html[data-state="listening"] .dock-mic{animation:micThrob 1.6s ease-in-out infin
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
 }
+
+/* inline note/task actions (Done / Reopen / Delete) */
+.note-item .ni-actions{margin-left:auto;display:flex;gap:6px}
+.note-item .ni-btn{
+  border:1px solid var(--hairline);background:transparent;color:var(--ink-soft);
+  font-family:inherit;font-size:11.5px;font-weight:700;border-radius:var(--r-pill);
+  padding:3px 10px;cursor:pointer;
+}
+.note-item .ni-btn:hover{border-color:var(--coral-deep);color:var(--coral-deep)}
+.note-item .ni-btn.danger:hover{border-color:#c0392b;color:#c0392b}
+.note-item.done .ni-title,.note-item.done .ni-body{opacity:.55;text-decoration:line-through}

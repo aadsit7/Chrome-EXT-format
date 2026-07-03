@@ -1,0 +1,870 @@
+/**
+ * Speaking_Assistant — Sharon's backend (Google Apps Script web app).
+ *
+ * Paste this whole file into your Apps Script project (bound to the
+ * "Speaking Assistant" Google Sheet or standalone with SPREADSHEET_ID set),
+ * set the Script Properties below, and deploy as a Web App
+ * ("Execute as: me", "Who has access: Anyone").
+ *
+ * Script Properties (File > Project Settings > Script Properties):
+ *   API_KEY            — shared secret; must match config.js in the extension
+ *   ANTHROPIC_API_KEY  — your Anthropic key (never ships in the extension)
+ *   MODEL              — optional; defaults to "claude-opus-4-8"
+ *   SPREADSHEET_ID     — optional; only needed if the script is NOT bound
+ *                        to the Speaking Assistant spreadsheet
+ *
+ * Request envelope (always POSTed as text/plain to dodge CORS preflight):
+ *   { "api_key": "...", "action": "...", "payload": { ... } }
+ *
+ * Response envelope:
+ *   { "ok": true,  "result": ... }
+ *   { "ok": false, "error": "human readable message" }
+ *
+ * Actions:
+ *   assist            — the brain. One round trip: Claude decides whether to
+ *                       just answer, or to call tools that read/write the
+ *                       Sheet (save_memory, update_memory, search_memory,
+ *                       summarize_memory) or act on the page (act_on_page —
+ *                       returned to the extension, never executed here).
+ *                       Logs both turns and returns { reply, plan?, events }.
+ *   ask               — legacy conversational call (no tools). Kept for
+ *                       compatibility; logs both turns.
+ *   append_turn       — log one row to conversation_turns.
+ *   distill_to_memory — write one row to memory_log.
+ *   search_memory     — keyword search over memory_log.
+ *   update_memory     — patch a memory_log row (status/done/deleted/edits).
+ *   summarize_memory  — fetch matching memory rows and have the model
+ *                       compose a short spoken summary.
+ *   get_recent_turns  — recent conversation_turns for a session (lets the
+ *                       panel restore context after a reopen).
+ */
+
+/* ------------------------------------------------------------------ *
+ * Config
+ * ------------------------------------------------------------------ */
+var DEFAULT_MODEL = "claude-opus-4-8";
+var ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+var ANTHROPIC_VERSION = "2023-06-01";
+var MAX_TOOL_ROUNDS = 4;
+var REPLY_MAX_TOKENS = 1200;
+var HISTORY_FALLBACK_TURNS = 12;
+
+var SHEETS = {
+  turns: "conversation_turns",
+  memory: "memory_log",
+  sessions: "sessions",
+};
+
+function props_() {
+  return PropertiesService.getScriptProperties();
+}
+
+function ss_() {
+  var id = props_().getProperty("SPREADSHEET_ID");
+  if (id) return SpreadsheetApp.openById(id);
+  var active = SpreadsheetApp.getActiveSpreadsheet();
+  if (!active) throw new Error("Set the SPREADSHEET_ID script property.");
+  return active;
+}
+
+function model_() {
+  return props_().getProperty("MODEL") || DEFAULT_MODEL;
+}
+
+/* ------------------------------------------------------------------ *
+ * Entry point
+ * ------------------------------------------------------------------ */
+function doPost(e) {
+  var out;
+  try {
+    var body = JSON.parse((e && e.postData && e.postData.contents) || "{}");
+    var expected = props_().getProperty("API_KEY");
+    if (!expected || body.api_key !== expected) {
+      out = { ok: false, error: "unauthorized" };
+    } else {
+      var payload = body.payload || {};
+      switch (body.action) {
+        case "assist":            out = { ok: true, result: actionAssist_(payload) }; break;
+        case "ask":               out = { ok: true, result: actionAsk_(payload) }; break;
+        case "append_turn":       out = { ok: true, result: actionAppendTurn_(payload) }; break;
+        case "distill_to_memory": out = { ok: true, result: actionDistill_(payload) }; break;
+        case "search_memory":     out = { ok: true, result: searchMemory_(payload) }; break;
+        case "update_memory":     out = { ok: true, result: updateMemory_(payload) }; break;
+        case "summarize_memory":  out = { ok: true, result: actionSummarize_(payload) }; break;
+        case "get_recent_turns":  out = { ok: true, result: recentTurns_(payload) }; break;
+        default: out = { ok: false, error: "unknown action: " + body.action };
+      }
+    }
+  } catch (err) {
+    out = { ok: false, error: String((err && err.message) || err) };
+  }
+  return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(
+    ContentService.MimeType.JSON
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * The system prompt (stable — first so prompt caching can key on it)
+ * ------------------------------------------------------------------ */
+var SYSTEM_CORE =
+  "You are Sharon, a warm, fast, hands-free voice assistant that lives in the " +
+  "user's browser side panel. The user is LISTENING, not reading, so keep " +
+  "spoken replies short, natural, and conversational — a few sentences unless " +
+  "they asked you to read something long. Never use markdown, headings, " +
+  "bullets, or emoji: plain spoken prose only.\n\n" +
+  "What you can see: each user message may include a PAGE CONTEXT block with " +
+  "the text currently visible on their active browser tab. Treat it as the " +
+  "only thing on their screen. When answering questions about the page, use " +
+  "ONLY that content — never invent or pad with outside knowledge, and say " +
+  "plainly when the answer isn't on the page. General conversation that is " +
+  "not about the page (greetings, questions about your notes, planning) is " +
+  "normal conversation — answer helpfully.\n\n" +
+  "Your database: you have a persistent memory store (the user's notes, " +
+  "tasks, decisions, and preferences) that you read and write through tools:\n" +
+  "- save_memory: when the user asks you to remember, note, or track " +
+  "something, save it with a clean short title and the content in your own " +
+  "clear words. Choose entry_type task for to-dos/reminders, note otherwise.\n" +
+  "- search_memory: when they ask what they saved, or a question your memory " +
+  "might answer, search first, then answer from the results.\n" +
+  "- update_memory: when they say a task is done, or want a note changed or " +
+  "deleted, find it (search first if you don't have its id) and update it.\n" +
+  "- summarize_memory: when they want an overview — 'summarize my notes', " +
+  "'what are my open tasks', 'recap what we discussed' — call this and then " +
+  "relay the summary conversationally.\n" +
+  "Use tools decisively whenever the request maps to one; don't ask " +
+  "permission for a simple save or search. After a tool result, always give " +
+  "a short spoken confirmation or answer.\n\n" +
+  "If the transcript may be misheard (a low confidence flag appears), " +
+  "confirm before saving/updating anything, but answer questions normally.\n\n" +
+  "Honesty over helpfulness: never claim you saved, found, or did something " +
+  "unless the tool result confirms it.";
+
+var AGENT_ADDON =
+  "\n\nActing on the page: the user has allowed you to operate their current " +
+  "tab. When the message includes an INTERACTIVE ELEMENTS list and the user " +
+  "wants something DONE on the page (click, type, reply, search, select…), " +
+  "call act_on_page with the next SMALL step (1-3 actions), using ONLY " +
+  "element ids from the list. You'll be shown the refreshed page after the " +
+  "actions run, and can continue step by step. Set done=true when finished " +
+  "or when you're only answering. NEVER type or submit passwords, payment " +
+  "card numbers, or security codes — refuse plainly instead. If the request " +
+  "is only to read or answer, don't call act_on_page at all — just answer.";
+
+/* ------------------------------------------------------------------ *
+ * Tool definitions
+ * ------------------------------------------------------------------ */
+function memoryTools_() {
+  return [
+    {
+      name: "save_memory",
+      description:
+        "Save a note, task, decision, or preference to the user's persistent memory store. Use when the user asks to remember, note, save, or track something.",
+      input_schema: {
+        type: "object",
+        properties: {
+          entry_type: { type: "string", enum: ["note", "task", "decision", "preference"] },
+          title: { type: "string", description: "Short clean title, under 80 chars" },
+          content: { type: "string", description: "The full thing to remember, clearly worded" },
+          tags: { type: "array", items: { type: "string" } },
+          importance: { type: "integer", description: "1 (trivial) to 5 (critical)" },
+        },
+        required: ["entry_type", "title", "content"],
+      },
+    },
+    {
+      name: "search_memory",
+      description:
+        "Keyword-search the user's saved notes/tasks/decisions. Returns matching entries with their entry_id, title, content, type, status, and created date.",
+      input_schema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Keywords to search for; empty returns the most recent entries" },
+          entry_type: { type: "string", enum: ["note", "task", "decision", "preference"] },
+          limit: { type: "integer" },
+        },
+        required: ["query"],
+      },
+    },
+    {
+      name: "update_memory",
+      description:
+        "Update one saved entry: mark a task done, change its title/content, or delete it. Requires the entry_id (search_memory returns it).",
+      input_schema: {
+        type: "object",
+        properties: {
+          entry_id: { type: "string" },
+          status: { type: "string", enum: ["open", "done", "dropped"] },
+          title: { type: "string" },
+          content: { type: "string" },
+          deleted: { type: "boolean", description: "true to remove the entry" },
+        },
+        required: ["entry_id"],
+      },
+    },
+    {
+      name: "summarize_memory",
+      description:
+        "Fetch the user's saved entries (optionally filtered) so you can summarize them. Returns the matching entries; compose the spoken summary yourself from what comes back.",
+      input_schema: {
+        type: "object",
+        properties: {
+          scope: { type: "string", enum: ["notes", "tasks", "open_tasks", "all"] },
+          query: { type: "string", description: "Optional topic filter" },
+          days: { type: "integer", description: "Only entries from the last N days" },
+        },
+        required: ["scope"],
+      },
+    },
+  ];
+}
+
+function actOnPageTool_() {
+  return {
+    name: "act_on_page",
+    description:
+      "Perform the next small batch of actions on the user's current tab. Only available when an INTERACTIVE ELEMENTS list is present. Use element ids from that list only.",
+    input_schema: {
+      type: "object",
+      properties: {
+        say: { type: "string", description: "One short spoken sentence about what you're doing" },
+        actions: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: ["click", "type", "clear", "select", "key", "scroll"] },
+              id: { type: "integer" },
+              text: { type: "string" },
+              append: { type: "boolean" },
+              option: { type: "string" },
+              key: { type: "string" },
+              direction: { type: "string", enum: ["up", "down", "top", "bottom"] },
+            },
+            required: ["type"],
+          },
+        },
+        done: { type: "boolean", description: "true when the goal is complete after these actions (or no actions needed)" },
+      },
+      required: ["say", "actions", "done"],
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * assist — the brain
+ * ------------------------------------------------------------------ */
+function actionAssist_(p) {
+  var userText = String(p.user_text || "").trim();
+  if (!userText) throw new Error("user_text is required");
+  var sessionId = String(p.session_id || "");
+  var userId = String(p.user_id || "");
+  var assistantId = String(p.assistant_id || "");
+  var agentMode = !!(p.agent && p.agent.enabled);
+  var page = p.page || {};
+
+  // System: stable core (+ agent addon when the page is operable).
+  var systemText = SYSTEM_CORE + (agentMode ? AGENT_ADDON : "");
+  var system = [
+    { type: "text", text: systemText, cache_control: { type: "ephemeral" } },
+  ];
+
+  // Conversation history: client-provided, else rebuilt from the sheet.
+  var history = sanitizeHistory_(p.history);
+  if (!history.length && sessionId) {
+    history = historyFromSheet_(sessionId, HISTORY_FALLBACK_TURNS);
+  }
+
+  // The user turn: volatile context blocks + what they said.
+  var userBlock = buildUserBlock_(userText, page, p, agentMode);
+  var messages = history.concat([{ role: "user", content: userBlock }]);
+
+  var tools = memoryTools_();
+  if (agentMode) tools.push(actOnPageTool_());
+
+  var events = [];
+  var plan = null;
+  var replyParts = [];
+  var response = null;
+
+  for (var round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+    response = callClaude_({ system: system, messages: messages, tools: tools });
+
+    var toolUses = [];
+    for (var i = 0; i < response.content.length; i++) {
+      var block = response.content[i];
+      if (block.type === "text" && block.text) replyParts.push(block.text);
+      else if (block.type === "tool_use") toolUses.push(block);
+    }
+
+    if (response.stop_reason !== "tool_use" || !toolUses.length) break;
+
+    // act_on_page is executed by the EXTENSION — return it as the plan.
+    var pageCall = toolUses.filter(function (t) { return t.name === "act_on_page"; })[0];
+    if (pageCall) {
+      plan = {
+        say: String(pageCall.input.say || ""),
+        actions: Array.isArray(pageCall.input.actions) ? pageCall.input.actions : [],
+        done: pageCall.input.done === true,
+      };
+      break;
+    }
+
+    // Execute memory tools against the Sheet, feed results back.
+    messages.push({ role: "assistant", content: response.content });
+    var results = [];
+    for (var t = 0; t < toolUses.length; t++) {
+      var call = toolUses[t];
+      var result;
+      try {
+        result = runMemoryTool_(call.name, call.input || {}, {
+          user_id: userId,
+          assistant_id: assistantId,
+          session_id: sessionId,
+          page_url: page.url || "",
+        });
+        events.push({ tool: call.name, ok: true, data: result.event || null });
+        results.push({
+          type: "tool_result",
+          tool_use_id: call.id,
+          content: JSON.stringify(result.forModel),
+        });
+      } catch (toolErr) {
+        events.push({ tool: call.name, ok: false, error: String(toolErr) });
+        results.push({
+          type: "tool_result",
+          tool_use_id: call.id,
+          content: "Error: " + String((toolErr && toolErr.message) || toolErr),
+          is_error: true,
+        });
+      }
+    }
+    messages.push({ role: "user", content: results });
+    replyParts = []; // the final answer comes after the tool results
+  }
+
+  var reply = replyParts.join(" ").trim();
+  if (!reply && plan) reply = plan.say;
+  if (!reply) reply = "I'm not sure what to say to that — try me again?";
+
+  // Log both turns in one batched write. Agent continuation steps set
+  // log:false so synthetic "(continue)" turns don't pollute the transcript.
+  if (p.log !== false) logTurns_(p, userText, reply, page);
+
+  return { reply: reply, plan: plan, events: events, model: model_() };
+}
+
+function buildUserBlock_(userText, page, p, agentMode) {
+  var parts = [];
+  var excerpt = String(page.excerpt || "").trim();
+  if (excerpt) {
+    parts.push(
+      "PAGE CONTEXT (the user's active tab right now)\nTitle: " +
+        (page.title || "(untitled)") +
+        "\nURL: " +
+        (page.url || "") +
+        "\n---\n" +
+        excerpt +
+        "\n---"
+    );
+  }
+  if (agentMode && p.agent) {
+    if (p.agent.elements) {
+      parts.push("INTERACTIVE ELEMENTS on the page right now:\n" + p.agent.elements);
+    }
+    if (p.agent.log && p.agent.log.length) {
+      parts.push("ACTIONS ALREADY TAKEN this task:\n" + p.agent.log.join("\n"));
+    }
+    if (p.agent.goal) {
+      parts.push("ONGOING GOAL: " + p.agent.goal);
+    }
+  }
+  var conf = p.asr_confidence;
+  if (conf != null && conf !== "" && Number(conf) < 0.6) {
+    parts.push("(Note: the speech transcript below is LOW CONFIDENCE — confirm before saving or acting.)");
+  }
+  parts.push("USER SAYS: " + userText);
+  return parts.join("\n\n");
+}
+
+function sanitizeHistory_(history) {
+  var out = [];
+  if (!Array.isArray(history)) return out;
+  for (var i = 0; i < history.length; i++) {
+    var h = history[i] || {};
+    var role = h.role === "assistant" ? "assistant" : h.role === "user" ? "user" : null;
+    var content = String(h.content || "").trim();
+    if (role && content) out.push({ role: role, content: content.slice(0, 4000) });
+  }
+  // API requires the first message to be from the user.
+  while (out.length && out[0].role !== "user") out.shift();
+  return out.slice(-2 * HISTORY_FALLBACK_TURNS);
+}
+
+function historyFromSheet_(sessionId, limit) {
+  try {
+    var rows = recentTurns_({ session_id: sessionId, limit: limit });
+    var out = [];
+    for (var i = 0; i < rows.length; i++) {
+      var role = rows[i].role === "assistant" ? "assistant" : "user";
+      var content = String(rows[i].content || "").trim();
+      if (content) out.push({ role: role, content: content.slice(0, 4000) });
+    }
+    while (out.length && out[0].role !== "user") out.shift();
+    return out;
+  } catch (_) {
+    return [];
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Legacy ask — single conversational call, no tools
+ * ------------------------------------------------------------------ */
+function actionAsk_(p) {
+  var userText = String(p.user_text || "").trim();
+  if (!userText) throw new Error("user_text is required");
+  var system = [{ type: "text", text: String(p.system || SYSTEM_CORE) }];
+  var messages = sanitizeHistory_(p.history);
+  messages.push({ role: "user", content: userText });
+  var response = callClaude_({ system: system, messages: messages, tools: null });
+  var reply = "";
+  for (var i = 0; i < response.content.length; i++) {
+    if (response.content[i].type === "text") reply += response.content[i].text;
+  }
+  logTurns_(p, userText, reply, p.page || {});
+  return { reply: reply.trim(), model: model_() };
+}
+
+/* ------------------------------------------------------------------ *
+ * Anthropic transport
+ * ------------------------------------------------------------------ */
+function callClaude_(opts) {
+  var key = props_().getProperty("ANTHROPIC_API_KEY");
+  if (!key) throw new Error("ANTHROPIC_API_KEY script property is not set");
+
+  var body = {
+    model: model_(),
+    max_tokens: REPLY_MAX_TOKENS,
+    system: opts.system,
+    messages: opts.messages,
+  };
+  if (opts.tools && opts.tools.length) body.tools = opts.tools;
+
+  var res = UrlFetchApp.fetch(ANTHROPIC_URL, {
+    method: "post",
+    contentType: "application/json",
+    headers: { "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION },
+    payload: JSON.stringify(body),
+    muteHttpExceptions: true,
+  });
+
+  var code = res.getResponseCode();
+  var data = JSON.parse(res.getContentText());
+  if (code >= 300) {
+    var msg = (data && data.error && data.error.message) || "model call failed (" + code + ")";
+    throw new Error(msg);
+  }
+  if (data.stop_reason === "refusal") {
+    return {
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "I can't help with that request." }],
+    };
+  }
+  return data;
+}
+
+/* ------------------------------------------------------------------ *
+ * Memory tools — executed against the Sheet
+ * ------------------------------------------------------------------ */
+function runMemoryTool_(name, input, ctx) {
+  if (name === "save_memory") {
+    var saved = actionDistill_({
+      entry_type: input.entry_type || "note",
+      title: input.title || "",
+      content: input.content || "",
+      tags: input.tags || [],
+      importance: input.importance || 3,
+      user_id: ctx.user_id,
+      assistant_id: ctx.assistant_id,
+      session_id: ctx.session_id,
+      page_url: ctx.page_url,
+      source_turn_ids: [],
+    });
+    return {
+      forModel: { saved: true, entry_id: saved.entry_id, title: input.title },
+      event: {
+        kind: "saved",
+        entry_id: saved.entry_id,
+        entry_type: input.entry_type || "note",
+        title: input.title || "",
+        content: input.content || "",
+      },
+    };
+  }
+  if (name === "search_memory") {
+    var hits = searchMemory_({
+      query: input.query || "",
+      entry_type: input.entry_type || "",
+      limit: input.limit || 6,
+      user_id: ctx.user_id,
+      assistant_id: ctx.assistant_id,
+      touch: true,
+    });
+    return {
+      forModel: { count: hits.length, results: hits },
+      event: { kind: "found", count: hits.length, hits: hits },
+    };
+  }
+  if (name === "update_memory") {
+    var updated = updateMemory_({
+      entry_id: input.entry_id,
+      status: input.status,
+      title: input.title,
+      content: input.content,
+      deleted: input.deleted,
+    });
+    return {
+      forModel: updated,
+      event: { kind: "updated", entry_id: input.entry_id, patch: input },
+    };
+  }
+  if (name === "summarize_memory") {
+    var rows = memoryForScope_({
+      scope: input.scope || "all",
+      query: input.query || "",
+      days: input.days || 0,
+      user_id: ctx.user_id,
+      assistant_id: ctx.assistant_id,
+      limit: 40,
+    });
+    return {
+      forModel: { count: rows.length, entries: rows },
+      event: { kind: "summarized", count: rows.length },
+    };
+  }
+  throw new Error("unknown tool: " + name);
+}
+
+/* ------------------------------------------------------------------ *
+ * Sheet helpers
+ * ------------------------------------------------------------------ */
+function sheet_(name) {
+  var sh = ss_().getSheetByName(name);
+  if (!sh) throw new Error("missing sheet tab: " + name);
+  return sh;
+}
+
+function headers_(sh) {
+  return sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
+}
+
+function rowFromObject_(headers, obj) {
+  return headers.map(function (h) {
+    var v = obj[h];
+    return v == null ? "" : v;
+  });
+}
+
+function readAll_(name) {
+  var sh = sheet_(name);
+  var last = sh.getLastRow();
+  if (last < 2) return { sh: sh, headers: headers_(sh), rows: [] };
+  var headers = headers_(sh);
+  var values = sh.getRange(2, 1, last - 1, headers.length).getValues();
+  return { sh: sh, headers: headers, rows: values };
+}
+
+function uuid_() {
+  return Utilities.getUuid();
+}
+
+function nowIso_() {
+  return new Date().toISOString();
+}
+
+function domainOf_(url) {
+  var m = String(url || "").match(/^[a-z]+:\/\/(?:www\.)?([^\/]+)/i);
+  return m ? m[1] : "";
+}
+
+/* ------------------------------------------------------------------ *
+ * conversation_turns
+ * ------------------------------------------------------------------ */
+function turnRow_(headers, p, role, content, extra) {
+  var obj = {
+    turn_id: uuid_(),
+    session_id: p.session_id || "",
+    user_id: p.user_id || "",
+    assistant_id: p.assistant_id || "",
+    created_at: nowIso_(),
+    seq: extra.seq || "",
+    role: role,
+    modality: p.modality || "voice",
+    content: content,
+    transcript_raw: role === "user" ? p.transcript_raw || "" : "",
+    asr_confidence: role === "user" && p.asr_confidence != null ? p.asr_confidence : "",
+    language: p.language || "en-US",
+    model: role === "assistant" ? model_() : "",
+    page_url: (p.page && p.page.url) || p.page_url || "",
+    page_title: (p.page && p.page.title) || p.page_title || "",
+    page_domain: domainOf_((p.page && p.page.url) || p.page_url || ""),
+    screen_excerpt: role === "user" ? String((p.page && p.page.excerpt) || p.screen_excerpt || "").slice(0, 2000) : "",
+    sensitive: "",
+    client_msg_id: role === "user" ? p.client_msg_id || "" : "",
+    embedding: "",
+  };
+  return { id: obj.turn_id, values: rowFromObject_(headers, obj) };
+}
+
+// Batched: user + assistant rows in one appendRows-equivalent write.
+function logTurns_(p, userText, reply, page) {
+  try {
+    var sh = sheet_(SHEETS.turns);
+    var headers = headers_(sh);
+    var seqBase = sh.getLastRow(); // cheap monotonic-ish sequence
+    var q = Object.create(null);
+    for (var k in p) q[k] = p[k];
+    q.page = page;
+    var u = turnRow_(headers, q, "user", userText, { seq: seqBase });
+    var a = turnRow_(headers, q, "assistant", reply, { seq: seqBase + 1 });
+    sh.getRange(sh.getLastRow() + 1, 1, 2, headers.length).setValues([u.values, a.values]);
+    touchSession_(p, page);
+    return { user_turn_id: u.id, assistant_turn_id: a.id };
+  } catch (err) {
+    // Logging must never break the conversation.
+    return { error: String(err) };
+  }
+}
+
+function actionAppendTurn_(p) {
+  var sh = sheet_(SHEETS.turns);
+  var headers = headers_(sh);
+  var row = turnRow_(headers, p, p.role === "assistant" ? "assistant" : "user", String(p.content || ""), {
+    seq: sh.getLastRow(),
+  });
+  sh.appendRow(row.values);
+  return { turn_id: row.id };
+}
+
+function recentTurns_(p) {
+  var sessionId = String(p.session_id || "");
+  var limit = Math.max(1, Math.min(50, Number(p.limit) || HISTORY_FALLBACK_TURNS));
+  var data = readAll_(SHEETS.turns);
+  var idx = indexMap_(data.headers);
+  var out = [];
+  for (var i = data.rows.length - 1; i >= 0 && out.length < limit; i--) {
+    var r = data.rows[i];
+    if (sessionId && String(r[idx.session_id]) !== sessionId) continue;
+    out.push({
+      turn_id: r[idx.turn_id],
+      role: r[idx.role],
+      content: r[idx.content],
+      created_at: isoOf_(r[idx.created_at]),
+    });
+  }
+  return out.reverse();
+}
+
+/* ------------------------------------------------------------------ *
+ * sessions — cheap upsert, cached so we don't re-scan every call
+ * ------------------------------------------------------------------ */
+function touchSession_(p, page) {
+  var sessionId = String(p.session_id || "");
+  if (!sessionId) return;
+  var cache = CacheService.getScriptCache();
+  if (cache.get("sess:" + sessionId)) return; // already registered recently
+  var sh = sheet_(SHEETS.sessions);
+  var found = sh.createTextFinder(sessionId).matchEntireCell(true).findNext();
+  if (!found) {
+    var headers = headers_(sh);
+    sh.appendRow(
+      rowFromObject_(headers, {
+        session_id: sessionId,
+        user_id: p.user_id || "",
+        assistant_id: p.assistant_id || "",
+        started_at: nowIso_(),
+        browser: p.browser || "chrome",
+        extension_version: p.extension_version || "",
+        primary_url: (page && page.url) || "",
+        primary_domain: domainOf_((page && page.url) || ""),
+        status: "active",
+      })
+    );
+  }
+  cache.put("sess:" + sessionId, "1", 21600);
+}
+
+/* ------------------------------------------------------------------ *
+ * memory_log
+ * ------------------------------------------------------------------ */
+function actionDistill_(p) {
+  var sh = sheet_(SHEETS.memory);
+  var headers = headers_(sh);
+  var entryId = uuid_();
+  sh.appendRow(
+    rowFromObject_(headers, {
+      entry_id: entryId,
+      user_id: p.user_id || "",
+      assistant_id: p.assistant_id || "",
+      session_id: p.session_id || "",
+      source_turn_ids: JSON.stringify(p.source_turn_ids || []),
+      created_at: nowIso_(),
+      updated_at: nowIso_(),
+      entry_type: p.entry_type || "note",
+      title: String(p.title || "").slice(0, 120),
+      content: String(p.content || ""),
+      tags: JSON.stringify(p.tags || []),
+      project: p.project || "",
+      status: p.entry_type === "task" ? "open" : "",
+      importance: p.importance || 3,
+      access_count: 0,
+      linked_ids: "",
+      page_url: p.page_url || "",
+      deleted: "",
+      embedding: "",
+    })
+  );
+  return { entry_id: entryId };
+}
+
+function indexMap_(headers) {
+  var m = {};
+  for (var i = 0; i < headers.length; i++) m[headers[i]] = i;
+  return m;
+}
+
+function isoOf_(v) {
+  if (v instanceof Date) return v.toISOString();
+  return String(v || "");
+}
+
+function memoryRowToObj_(r, idx) {
+  return {
+    entry_id: r[idx.entry_id],
+    entry_type: r[idx.entry_type],
+    title: r[idx.title],
+    content: r[idx.content],
+    tags: r[idx.tags],
+    status: r[idx.status],
+    importance: r[idx.importance],
+    created_at: isoOf_(r[idx.created_at]),
+    page_url: r[idx.page_url],
+  };
+}
+
+function searchMemory_(p) {
+  var query = String(p.query || "").toLowerCase().trim();
+  var limit = Math.max(1, Math.min(25, Number(p.limit) || 5));
+  var wantType = String(p.entry_type || "");
+  var userId = String(p.user_id || "");
+
+  var data = readAll_(SHEETS.memory);
+  var idx = indexMap_(data.headers);
+  var terms = query ? query.split(/\s+/).filter(function (t) { return t.length > 1; }) : [];
+
+  var scored = [];
+  for (var i = 0; i < data.rows.length; i++) {
+    var r = data.rows[i];
+    if (String(r[idx.deleted]).toLowerCase() === "true") continue;
+    if (userId && String(r[idx.user_id]) && String(r[idx.user_id]) !== userId) continue;
+    if (wantType && String(r[idx.entry_type]) !== wantType) continue;
+    var hay = (String(r[idx.title]) + " " + String(r[idx.content]) + " " + String(r[idx.tags])).toLowerCase();
+    var score = 0;
+    for (var t = 0; t < terms.length; t++) {
+      if (hay.indexOf(terms[t]) >= 0) score += 2;
+    }
+    if (terms.length && score === 0) continue;
+    scored.push({ score: score, rowIndex: i + 2, obj: memoryRowToObj_(r, idx) });
+  }
+  scored.sort(function (a, b) {
+    if (b.score !== a.score) return b.score - a.score;
+    return String(b.obj.created_at).localeCompare(String(a.obj.created_at));
+  });
+  var hits = scored.slice(0, limit);
+
+  if (p.touch && hits.length && idx.access_count != null) {
+    var sh = sheet_(SHEETS.memory);
+    for (var h = 0; h < hits.length; h++) {
+      var cell = sh.getRange(hits[h].rowIndex, idx.access_count + 1);
+      cell.setValue((Number(cell.getValue()) || 0) + 1);
+    }
+  }
+  return hits.map(function (h) { return h.obj; });
+}
+
+function updateMemory_(p) {
+  var entryId = String(p.entry_id || "");
+  if (!entryId) throw new Error("entry_id is required");
+  var data = readAll_(SHEETS.memory);
+  var idx = indexMap_(data.headers);
+  for (var i = 0; i < data.rows.length; i++) {
+    if (String(data.rows[i][idx.entry_id]) !== entryId) continue;
+    var sh = data.sh;
+    var rowNum = i + 2;
+    var set = function (col, val) {
+      if (idx[col] != null) sh.getRange(rowNum, idx[col] + 1).setValue(val);
+    };
+    if (p.status != null) set("status", p.status);
+    if (p.title != null) set("title", p.title);
+    if (p.content != null) set("content", p.content);
+    if (p.deleted != null) set("deleted", p.deleted ? "TRUE" : "");
+    set("updated_at", nowIso_());
+    return { updated: true, entry_id: entryId };
+  }
+  throw new Error("entry not found: " + entryId);
+}
+
+function memoryForScope_(p) {
+  var scope = p.scope || "all";
+  var days = Number(p.days) || 0;
+  var cutoff = days > 0 ? Date.now() - days * 86400000 : 0;
+  var wantType = scope === "notes" ? "note" : scope === "tasks" || scope === "open_tasks" ? "task" : "";
+  var hits = searchMemory_({
+    query: p.query || "",
+    entry_type: wantType,
+    limit: p.limit || 40,
+    user_id: p.user_id || "",
+    touch: false,
+  });
+  return hits.filter(function (h) {
+    if (scope === "open_tasks" && String(h.status) === "done") return false;
+    if (cutoff && new Date(h.created_at).getTime() < cutoff) return false;
+    return true;
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * summarize_memory as a direct action (also reachable via assist tool)
+ * ------------------------------------------------------------------ */
+function actionSummarize_(p) {
+  var rows = memoryForScope_(p);
+  if (!rows.length) {
+    return { summary: "There's nothing saved that matches that yet.", count: 0 };
+  }
+  var listing = rows
+    .map(function (r) {
+      return (
+        "- [" + r.entry_type + (r.status ? "/" + r.status : "") + "] " +
+        r.title + ": " + String(r.content).slice(0, 300) +
+        " (" + String(r.created_at).slice(0, 10) + ")"
+      );
+    })
+    .join("\n");
+  var response = callClaude_({
+    system: [
+      {
+        type: "text",
+        text:
+          "You summarize a user's saved notes and tasks for a VOICE assistant. " +
+          "Reply with a short, natural spoken summary — plain prose, no markdown, " +
+          "no lists — grouping related items and calling out anything urgent or due.",
+      },
+    ],
+    messages: [{ role: "user", content: "Summarize these saved entries:\n" + listing }],
+    tools: null,
+  });
+  var text = "";
+  for (var i = 0; i < response.content.length; i++) {
+    if (response.content[i].type === "text") text += response.content[i].text;
+  }
+  return { summary: text.trim(), count: rows.length };
+}
