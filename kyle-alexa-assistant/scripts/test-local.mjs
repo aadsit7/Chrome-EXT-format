@@ -56,12 +56,30 @@ function mockClaudeResponse(requestBody) {
     return {
       id: 'msg_mock_2', type: 'message', role: 'assistant', model: 'claude-haiku-4-5',
       stop_reason: 'end_turn',
-      content: [{ type: 'text', text: "Done — I'll remind you to stretch at five." }],
+      content: [{ type: 'text', text: 'Done deal, dude.' }],
       usage: { input_tokens: 100, output_tokens: 15 },
     };
   }
 
   const userText = lastContent.filter((b) => b.type === 'text').map((b) => b.text).join(' ');
+  if (/cancel.*timer/i.test(userText)) {
+    return {
+      id: 'msg_mock_t1', type: 'message', role: 'assistant', model: 'claude-haiku-4-5',
+      stop_reason: 'tool_use',
+      content: [
+        { type: 'tool_use', id: 'toolu_mock_t1', name: 'manage_timers', input: { operation: 'cancel_all' } },
+      ],
+      usage: { input_tokens: 100, output_tokens: 30 },
+    };
+  }
+  if (/ampersand/i.test(userText)) {
+    return {
+      id: 'msg_mock_a1', type: 'message', role: 'assistant', model: 'claude-haiku-4-5',
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Tom & Jerry is a classic, dude — cats < dogs though.' }],
+      usage: { input_tokens: 50, output_tokens: 15 },
+    };
+  }
   if (/remind/i.test(userText)) {
     return {
       id: 'msg_mock_1', type: 'message', role: 'assistant', model: 'claude-haiku-4-5',
@@ -90,11 +108,27 @@ globalThis.fetch = async (input, init = {}) => {
   // Alexa REST APIs — always mocked so nothing real is created.
   if (url.includes('api.amazonalexa.com') || url.includes('/v1/alerts/') || url.includes('/v2/devices/')) {
     alexaApiCalls.push({ url, method: init.method ?? 'GET' });
+    const method = init.method ?? 'GET';
     if (url.includes('System.timeZone')) return jsonResponse('America/Chicago');
     if (url.includes('/v1/alerts/reminders')) {
+      if (method === 'GET') {
+        return jsonResponse({
+          totalCount: '1',
+          alerts: [{
+            alertToken: 'tok-1', status: 'ON',
+            trigger: { scheduledTime: '2026-07-03T17:00:00' },
+            alertInfo: { spokenInfo: { content: [{ text: 'stretch' }] } },
+          }],
+        });
+      }
+      if (method === 'DELETE') return jsonResponse({}, 200);
       return jsonResponse({ alertToken: 'mock-alert-token', status: 'ON' }, 201);
     }
     if (url.includes('/v1/alerts/timers')) {
+      if (method === 'GET') {
+        return jsonResponse({ totalCount: 1, timers: [{ id: 'timer-1', timerLabel: 'pasta', status: 'ON' }] });
+      }
+      if (method === 'DELETE') return jsonResponse({}, 200);
       return jsonResponse({ id: 'mock-timer-id', status: 'ON' }, 200);
     }
     return jsonResponse({}, 200);
@@ -207,6 +241,22 @@ await test('ChatIntent reminder triggers create_reminder against the mocked Alex
   assert(speechOf(res).length > 0, 'expected output speech');
   const reminderCall = alexaApiCalls.find((c) => c.url.includes('/v1/alerts/reminders') && c.method === 'POST');
   assert(reminderCall, `expected a POST to /v1/alerts/reminders; saw: ${JSON.stringify(alexaApiCalls)}`);
+});
+
+await test('ChatIntent "cancel my timers" drives manage_timers cancel_all against the mocked Alexa API', async () => {
+  alexaApiCalls.length = 0;
+  const res = await handler(alexaEnvelope(chatIntent('cancel my timers')), {});
+  assert(speechOf(res).length > 0, 'expected output speech');
+  const cancelCall = alexaApiCalls.find((c) => c.url.endsWith('/v1/alerts/timers') && c.method === 'DELETE');
+  assert(cancelCall, `expected a DELETE to /v1/alerts/timers; saw: ${JSON.stringify(alexaApiCalls)}`);
+});
+
+await test('Spoken replies are SSML-escaped (& < > cannot break the <speak> envelope)', async () => {
+  const res = await handler(alexaEnvelope(chatIntent('tell me about the ampersand show')), {});
+  const ssml = res.response.outputSpeech.ssml ?? '';
+  assert(ssml.includes('&amp;'), `expected & to be escaped as &amp; in: ${ssml}`);
+  assert(ssml.includes('&lt;'), `expected < to be escaped as &lt; in: ${ssml}`);
+  assert(!/& /.test(ssml), `expected no raw ampersand in: ${ssml}`);
 });
 
 await test('AMAZON.HelpIntent responds', async () => {
