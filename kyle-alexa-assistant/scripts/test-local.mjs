@@ -321,6 +321,39 @@ await test('APL display device gets the Kyle avatar RenderDocument directive', a
   assert(res.response.shouldEndSession === false, 'expected session to stay open');
 });
 
+await test('APL document passes schema basics (valid RenderDocument, Frame has single item)', async () => {
+  const res = await handler(alexaEnvelope(chatIntent('say hello'), {}, { apl: true }), {});
+  const apl = (res.response.directives ?? []).find((d) => d.type === 'Alexa.Presentation.APL.RenderDocument');
+  assert(apl, 'expected an APL directive');
+  assert(typeof apl.token === 'string' && apl.token.length > 0, 'expected a non-empty token');
+  assert(apl.document?.type === 'APL', 'expected document.type "APL"');
+  assert(parseFloat(apl.document?.version) >= 1.6, `expected APL version >= 1.6, got ${apl.document?.version}`);
+  const mt = apl.document.mainTemplate;
+  assert(Array.isArray(mt?.parameters) && Array.isArray(mt?.items) && mt.items.length > 0,
+    'expected mainTemplate with parameters[] and items[]');
+  const frame = mt.items[0];
+  assert(frame.type === 'Frame' && frame.item && !frame.items,
+    'Frame must use a single `item` child, not `items` (device-side APL rejects it)');
+  // speak/reprompt/shouldEndSession must ride the SAME response as the directive
+  assert(res.response.outputSpeech, 'expected speech on the APL response');
+  assert(res.response.reprompt?.outputSpeech, 'expected reprompt on the APL response');
+  assert(res.response.shouldEndSession === false, 'expected open session on the APL response');
+});
+
+await test('DISABLE_APL=true kill switch strips all APL even on display devices', async () => {
+  process.env.DISABLE_APL = 'true';
+  try {
+    const res = await handler(alexaEnvelope(chatIntent('say hello'), {}, { apl: true }), {});
+    const directives = res.response.directives ?? [];
+    assert(!directives.some((d) => String(d.type).startsWith('Alexa.Presentation.APL')),
+      `expected no APL with kill switch on; got ${JSON.stringify(directives.map((d) => d.type))}`);
+    assert(speechOf(res).length > 0 && res.response.shouldEndSession === false,
+      'expected the plain voice response to be unaffected');
+  } finally {
+    delete process.env.DISABLE_APL;
+  }
+});
+
 await test('Speaker (no display) gets no APL directive and unchanged behavior', async () => {
   const res = await handler(alexaEnvelope(chatIntent('say hello')), {});
   const directives = res.response.directives ?? [];

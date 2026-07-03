@@ -22,8 +22,16 @@ function escapeForSsml(text) {
 const ASSETS_BASE =
   'https://raw.githubusercontent.com/aadsit7/Chrome-EXT-format/refs/heads/claude/bookmarks-buddy-extension-cuwn8o/kyle-alexa-assistant/assets';
 
-// Two stacked frames; the open-mouth frame's opacity is toggled every 150ms
-// by an onMount animation loop, giving a talk cycle while Kyle speaks.
+// APL document for the talking-Kyle screen. Notes on validity — a malformed
+// document is rendered device-side, where a failure can drop the session with
+// nothing in CloudWatch, so this must stay strictly to spec:
+//   - Frame takes a SINGLE `item` child (an `items` array here is a spec
+//     violation — the bug that broke real Echo Shows while the no-APL
+//     simulator looked fine)
+//   - two stacked Image frames; the open-mouth frame's opacity toggles every
+//     150ms via an onMount loop for the talk cycle
+//   - the caption Text is a sibling of the image stack, so a missing/failed
+//     image just leaves blank space and the spoken text stays readable
 const KYLE_APL_DOCUMENT = {
   type: 'APL',
   version: '1.8',
@@ -35,90 +43,121 @@ const KYLE_APL_DOCUMENT = {
         width: '100vw',
         height: '100vh',
         backgroundColor: '#10141a',
-        items: [
-          {
-            type: 'Container',
-            width: '100vw',
-            height: '100vh',
-            alignItems: 'center',
-            justifyContent: 'center',
-            onMount: [
-              {
-                type: 'Sequential',
-                repeatCount: 40,
-                commands: [
-                  { type: 'AnimateItem', componentId: 'kyleMouthOpen', duration: 150, value: [{ property: 'opacity', from: 1, to: 0 }] },
-                  { type: 'AnimateItem', componentId: 'kyleMouthOpen', duration: 150, value: [{ property: 'opacity', from: 0, to: 1 }] },
-                ],
-              },
-            ],
-            items: [
-              {
-                type: 'Container',
-                width: '60vh',
-                height: '60vh',
-                items: [
-                  {
-                    type: 'Image',
-                    id: 'kyleMouthClosed',
-                    source: '${payload.kyle.closedUrl}',
-                    width: '100%',
-                    height: '100%',
-                    scale: 'best-fit',
-                  },
-                  {
-                    type: 'Image',
-                    id: 'kyleMouthOpen',
-                    source: '${payload.kyle.openUrl}',
-                    width: '100%',
-                    height: '100%',
-                    scale: 'best-fit',
-                    position: 'absolute',
-                  },
-                ],
-              },
-              {
-                type: 'Text',
-                id: 'kyleCaption',
-                text: '${payload.kyle.caption}',
-                width: '86vw',
-                paddingTop: '3vh',
-                textAlign: 'center',
-                textAlignVertical: 'top',
-                fontSize: '4.5vh',
-                color: '#e8ecf1',
-                maxLines: 4,
-              },
-            ],
-          },
-        ],
+        item: {
+          type: 'Container',
+          width: '100vw',
+          height: '100vh',
+          alignItems: 'center',
+          justifyContent: 'center',
+          onMount: [
+            {
+              type: 'Sequential',
+              repeatCount: 40,
+              commands: [
+                { type: 'AnimateItem', componentId: 'kyleMouthOpen', duration: 150, value: [{ property: 'opacity', from: 1, to: 0 }] },
+                { type: 'AnimateItem', componentId: 'kyleMouthOpen', duration: 150, value: [{ property: 'opacity', from: 0, to: 1 }] },
+              ],
+            },
+          ],
+          items: [
+            {
+              type: 'Container',
+              width: '60vh',
+              height: '60vh',
+              items: [
+                {
+                  type: 'Image',
+                  id: 'kyleMouthClosed',
+                  source: '${payload.kyle.closedUrl}',
+                  width: '100%',
+                  height: '100%',
+                  scale: 'best-fit',
+                },
+                {
+                  type: 'Image',
+                  id: 'kyleMouthOpen',
+                  source: '${payload.kyle.openUrl}',
+                  width: '100%',
+                  height: '100%',
+                  scale: 'best-fit',
+                  position: 'absolute',
+                },
+              ],
+            },
+            {
+              type: 'Text',
+              id: 'kyleCaption',
+              text: '${payload.kyle.caption}',
+              width: '86vw',
+              paddingTop: '3vh',
+              textAlign: 'center',
+              textAlignVertical: 'top',
+              fontSize: '4.5vh',
+              color: '#e8ecf1',
+              maxLines: 4,
+            },
+          ],
+        },
       },
     ],
   },
 };
 
 function supportsApl(handlerInput) {
+  if (String(process.env.DISABLE_APL).toLowerCase() === 'true') return false; // kill switch
   const interfaces = Alexa.getSupportedInterfaces(handlerInput.requestEnvelope);
   return Boolean(interfaces['Alexa.Presentation.APL']);
 }
 
+// Basic structural validation against the APL 1.6+ / RenderDocument schema.
+// Throws on any violation so withKyleScreen falls back to plain voice.
+function validateAplDirective(directive) {
+  if (directive.type !== 'Alexa.Presentation.APL.RenderDocument') {
+    throw new Error(`bad directive type: ${directive.type}`);
+  }
+  if (typeof directive.token !== 'string' || directive.token.length === 0) {
+    throw new Error('RenderDocument requires a non-empty token');
+  }
+  const doc = directive.document;
+  if (!doc || doc.type !== 'APL') throw new Error('document.type must be "APL"');
+  if (typeof doc.version !== 'string' || parseFloat(doc.version) < 1.6) {
+    throw new Error(`document.version must be an APL 1.6+ string, got ${doc.version}`);
+  }
+  const mt = doc.mainTemplate;
+  if (!mt || !Array.isArray(mt.parameters) || !Array.isArray(mt.items) || mt.items.length === 0) {
+    throw new Error('mainTemplate must have parameters[] and items[]');
+  }
+}
+
+function buildKyleAplDirective(caption) {
+  const directive = {
+    type: 'Alexa.Presentation.APL.RenderDocument',
+    token: 'kyleAvatar',
+    document: KYLE_APL_DOCUMENT,
+    datasources: {
+      kyle: {
+        openUrl: `${ASSETS_BASE}/kyle_talk_open_512.png`,
+        closedUrl: `${ASSETS_BASE}/kyle_talk_closed_512.png`,
+        caption: typeof caption === 'string' ? caption : '',
+      },
+    },
+  };
+  validateAplDirective(directive);
+  return directive;
+}
+
 // Attach the Kyle avatar screen on display devices, with the spoken reply as
 // a readable caption under the character; a no-op on speakers so voice-only
-// behavior is completely unchanged.
+// behavior is completely unchanged. A display bug must NEVER kill the
+// conversation: any failure building/validating/attaching the directive is
+// logged and the plain voice response goes out instead.
 function withKyleScreen(handlerInput, builder, caption = '') {
-  if (supportsApl(handlerInput)) {
-    builder.addDirective({
-      type: 'Alexa.Presentation.APL.RenderDocument',
-      token: 'kyleAvatar',
-      document: KYLE_APL_DOCUMENT,
-      datasources: {
-        kyle: {
-          openUrl: `${ASSETS_BASE}/kyle_talk_open_512.png`,
-          closedUrl: `${ASSETS_BASE}/kyle_talk_closed_512.png`,
-          caption,
-        },
-      },
-    });
+  try {
+    if (supportsApl(handlerInput)) {
+      builder.addDirective(buildKyleAplDirective(caption));
+    }
+  } catch (err) {
+    console.error('APL disabled for this response (falling back to voice):', err);
   }
   return builder;
 }
