@@ -54,21 +54,40 @@ const KYLE_APL_DOCUMENT = {
             ],
             items: [
               {
-                type: 'Image',
-                id: 'kyleMouthClosed',
-                source: '${payload.kyle.closedUrl}',
+                type: 'Container',
                 width: '60vh',
                 height: '60vh',
-                scale: 'best-fit',
+                items: [
+                  {
+                    type: 'Image',
+                    id: 'kyleMouthClosed',
+                    source: '${payload.kyle.closedUrl}',
+                    width: '100%',
+                    height: '100%',
+                    scale: 'best-fit',
+                  },
+                  {
+                    type: 'Image',
+                    id: 'kyleMouthOpen',
+                    source: '${payload.kyle.openUrl}',
+                    width: '100%',
+                    height: '100%',
+                    scale: 'best-fit',
+                    position: 'absolute',
+                  },
+                ],
               },
               {
-                type: 'Image',
-                id: 'kyleMouthOpen',
-                source: '${payload.kyle.openUrl}',
-                width: '60vh',
-                height: '60vh',
-                scale: 'best-fit',
-                position: 'absolute',
+                type: 'Text',
+                id: 'kyleCaption',
+                text: '${payload.kyle.caption}',
+                width: '86vw',
+                paddingTop: '3vh',
+                textAlign: 'center',
+                textAlignVertical: 'top',
+                fontSize: '4.5vh',
+                color: '#e8ecf1',
+                maxLines: 4,
               },
             ],
           },
@@ -83,9 +102,10 @@ function supportsApl(handlerInput) {
   return Boolean(interfaces['Alexa.Presentation.APL']);
 }
 
-// Attach the Kyle avatar screen on display devices; a no-op on speakers so
-// voice-only behavior is completely unchanged.
-function withKyleScreen(handlerInput, builder) {
+// Attach the Kyle avatar screen on display devices, with the spoken reply as
+// a readable caption under the character; a no-op on speakers so voice-only
+// behavior is completely unchanged.
+function withKyleScreen(handlerInput, builder, caption = '') {
   if (supportsApl(handlerInput)) {
     builder.addDirective({
       type: 'Alexa.Presentation.APL.RenderDocument',
@@ -95,6 +115,7 @@ function withKyleScreen(handlerInput, builder) {
         kyle: {
           openUrl: `${ASSETS_BASE}/kyle_talk_open_512.png`,
           closedUrl: `${ASSETS_BASE}/kyle_talk_closed_512.png`,
+          caption,
         },
       },
     });
@@ -195,6 +216,7 @@ async function chatTurn(handlerInput, userText) {
       .speak(escapeForSsml(reply))
       .reprompt('Anything else?')
       .withShouldEndSession(false),
+    reply,
   );
 
   if (needsPermission === 'reminders') {
@@ -234,6 +256,7 @@ const LaunchRequestHandler = {
         .speak(greeting)
         .reprompt('Ask me anything, or say help.')
         .withShouldEndSession(false),
+      greeting,
     ).getResponse();
   },
 };
@@ -310,11 +333,14 @@ const RepeatIntentHandler = {
     const speech = typeof lastReply === 'string' && lastReply
       ? lastReply
       : "I haven't said anything yet — ask me something.";
-    return handlerInput.responseBuilder
-      .speak(escapeForSsml(speech))
-      .reprompt('Anything else?')
-      .withShouldEndSession(false)
-      .getResponse();
+    return withKyleScreen(
+      handlerInput,
+      handlerInput.responseBuilder
+        .speak(escapeForSsml(speech))
+        .reprompt('Anything else?')
+        .withShouldEndSession(false),
+      speech,
+    ).getResponse();
   },
 };
 
