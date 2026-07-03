@@ -313,6 +313,11 @@ await test('APL display device gets the Kyle avatar RenderDocument directive', a
   const apl = directives.find((d) => d.type === 'Alexa.Presentation.APL.RenderDocument');
   assert(apl, `expected an APL RenderDocument directive; got ${JSON.stringify(directives.map((d) => d.type))}`);
   assert(apl.datasources?.kyle?.openUrl?.includes('kyle_talk_open_512.png'), 'expected talk-frame datasource URLs');
+  assert(typeof apl.datasources?.kyle?.caption === 'string' && apl.datasources.kyle.caption.length > 0,
+    'expected the spoken reply as the APL caption');
+  const spoken = speechOf(res).replace(/<[^>]+>/g, '').trim();
+  assert(spoken.includes(apl.datasources.kyle.caption.slice(0, 20)) || apl.datasources.kyle.caption.includes(spoken.slice(0, 20)),
+    `expected caption to match spoken reply; caption="${apl.datasources.kyle.caption}" speech="${spoken}"`);
   assert(res.response.shouldEndSession === false, 'expected session to stay open');
 });
 
