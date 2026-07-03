@@ -128,7 +128,9 @@ The only third-party connection is the Anthropic API: HTTPS-only, authenticated 
 
 ## Outstanding components (not blockers, but know about them)
 
-- **Deploy-time TODO you must fill in:** `ANTHROPIC_API_KEY` on the Lambda. The Lambda ARN (`skill-package/skill.json`) and Function URL (`web/index.html`) are already configured. Icon URIs are intentionally omitted from the manifest (Amazon rejected placeholder values); add real `smallIconUri`/`largeIconUri` under `publishingInformation.locales.en-US` only when you have hosted 108px/512px PNGs — required for certification, optional in dev mode.
+- **Deploy-time TODO you must fill in:** `ANTHROPIC_API_KEY` on the Lambda. The Lambda ARN (`skill-package/skill.json`) and Function URL (`web/index.html`) are already configured.
+- **Replace the placeholder art in `assets/`:** the skill icons and Kyle talk frames are generated placeholders served from this repo's raw GitHub URLs (this repo is public, so Amazon and browsers can fetch them). Overwrite `assets/*.png` with your real images — same filenames — and re-run `ask deploy` so Amazon re-fetches the icons. See `assets/README.md` for the file mapping.
+- **Talking animation:** the web page swaps Kyle's open/closed mouth frames every 150 ms while a reply is in flight and while it's "speaking" on screen (falls back to a CSS mouth-cover if the closed frame is missing). Echo Show devices get an APL screen with the same frame-swap loop; regular speakers are untouched. The APL interface is declared in the manifest, so the next `ask deploy` picks it up.
 - **Live-key verification:** the test suite has only been run with the Claude API mocked in this environment. Run `npm run test:local` with a real key in `lambda/.env` before first deploy.
 - **Function URL is unauthenticated:** anyone with the URL can chat with Kyle on your API bill. Fine for personal use; add an auth header check or IAM auth before sharing the URL.
 - **Not certifiable as-is:** the one-word invocation name and dev-mode manifest are for personal devices. Public certification would need a compliant invocation name, icons, and privacy policy URLs.
