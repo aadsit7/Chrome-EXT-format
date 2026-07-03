@@ -13,7 +13,9 @@ const MAX_TOOL_ITERATIONS = 3;
 const OVERALL_TIMEOUT_MS = 6500;
 const TIMEOUT_FALLBACK = "That's taking me a moment — ask me again.";
 
-const client = new Anthropic();
+// Late-bound wrapper: uses Node 20's native fetch and lets the local test
+// harness stub globalThis.fetch to intercept API calls.
+const client = new Anthropic({ fetch: (...args) => globalThis.fetch(...args) });
 
 const TOOLS = [
   { type: 'web_search_20250305', name: 'web_search', max_uses: 2 },
