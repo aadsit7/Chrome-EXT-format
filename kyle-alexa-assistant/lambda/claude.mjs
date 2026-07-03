@@ -10,8 +10,10 @@ const SYSTEM_PROMPT = readFileSync(path.join(here, 'system-prompt.md'), 'utf8');
 const MODEL = 'claude-haiku-4-5';
 const MAX_TOKENS = 400;
 const MAX_TOOL_ITERATIONS = 3;
-const OVERALL_TIMEOUT_MS = 6500;
-const TIMEOUT_FALLBACK = "That's taking me a moment — ask me again.";
+// Hard budget across the whole tool loop. Lambda timeout is 10s; leave ~1.5s
+// of headroom for handler overhead and the Alexa response round-trip.
+const OVERALL_TIMEOUT_MS = 8500;
+const TIMEOUT_FALLBACK = 'Still digging — ask me that again.';
 
 // Late-bound wrapper: uses Node's native fetch and lets the local test
 // harness stub globalThis.fetch to intercept API calls.

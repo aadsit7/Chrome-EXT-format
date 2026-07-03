@@ -12,7 +12,6 @@
             }
           ],
           "samples": [
-            "{query}",
             "ask {query}",
             "tell me {query}",
             "answer {query}",
@@ -29,6 +28,18 @@
             "hey {query}",
             "about {query}"
           ]
+        },
+        {
+          "name": "AMAZON.YesIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NoIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.RepeatIntent",
+          "samples": []
         },
         {
           "name": "AMAZON.StopIntent",

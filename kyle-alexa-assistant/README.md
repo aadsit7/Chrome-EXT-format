@@ -138,6 +138,7 @@ The only third-party connection is the Anthropic API: HTTPS-only, authenticated 
 ## Architecture notes
 
 - **No database.** Conversation history is stored in Alexa session attributes (capped at the last 10 turns) and vanishes when the session ends. The web page keeps its own history client-side and sends it with each request.
-- **Latency budget.** Alexa requires a response within ~8 seconds. The Claude loop enforces a hard 6.5-second budget across all tool iterations (max 3), with 3-second timeouts on each Alexa REST call; on breach Kyle says "That's taking me a moment — ask me again."
+- **Latency budget.** The Lambda timeout is 10 seconds. The Claude loop enforces a hard 8.5-second budget across all tool iterations (max 3), with 3-second timeouts on each Alexa REST call; on breach Kyle says "Still digging — ask me that again." and the session stays open.
+- **The mic stays open.** Every response sets `shouldEndSession: false` with a reprompt; only Stop/Cancel end the session. Bare "yes"/"no" answers route to AMAZON.YesIntent/NoIntent and are fed to Claude as ordinary conversation turns, and AMAZON.RepeatIntent re-speaks Kyle's last reply.
 - **Permissions flow.** If Claude tries to create a reminder without the grant, the handler responds with the `AskFor` voice-permissions directive (`Connections.SendRequest`) — Alexa asks the user out loud, and the answer comes back as a `Connections.Response` request that Kyle handles gracefully. Devices without voice-permission support get a consent card in the Alexa app instead.
 - **Dual path.** The same Lambda serves Alexa envelopes and plain JSON POSTs (`{ messages: [...] }` → `{ reply: "..." }`) from the Function URL, with CORS handled.
