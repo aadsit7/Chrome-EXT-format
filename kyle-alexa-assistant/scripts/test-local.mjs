@@ -329,6 +329,38 @@ await test('Speaker (no display) gets no APL directive and unchanged behavior', 
   assert(speechOf(res).length > 0 && res.response.shouldEndSession === false, 'expected normal spoken response');
 });
 
+await test('EVERY non-Stop/Cancel response keeps the session open with a reprompt (incl. APL branch)', async () => {
+  const cases = [
+    ['LaunchRequest', alexaEnvelope({ type: 'LaunchRequest', requestId: 'ka1', timestamp: new Date().toISOString(), locale: 'en-US' })],
+    ['ChatIntent plain', alexaEnvelope(chatIntent('say hello'))],
+    ['ChatIntent + APL display', alexaEnvelope(chatIntent('say hello'), {}, { apl: true })],
+    ['ChatIntent reminder (tool use)', alexaEnvelope(chatIntent('remind me to stretch today at 5 pm'))],
+    ['ChatIntent timer cancel (tool use)', alexaEnvelope(chatIntent('cancel my timers'))],
+    ['ChatIntent empty slot', alexaEnvelope(intentRequest('ChatIntent', { query: { name: 'query', confirmationStatus: 'NONE' } }))],
+    ['AMAZON.YesIntent', alexaEnvelope(intentRequest('AMAZON.YesIntent'))],
+    ['AMAZON.NoIntent', alexaEnvelope(intentRequest('AMAZON.NoIntent'))],
+    ['AMAZON.RepeatIntent', alexaEnvelope(intentRequest('AMAZON.RepeatIntent'))],
+    ['AMAZON.HelpIntent', alexaEnvelope(intentRequest('AMAZON.HelpIntent'))],
+    ['AMAZON.FallbackIntent', alexaEnvelope(intentRequest('AMAZON.FallbackIntent'))],
+    ['Unknown intent (error handler)', alexaEnvelope(intentRequest('TotallyUnknownIntent'))],
+    ['Connections.Response accepted', alexaEnvelope({ type: 'Connections.Response', requestId: 'kc1', timestamp: new Date().toISOString(), locale: 'en-US', name: 'AskFor', payload: { status: 'ACCEPTED' }, status: { code: '200', message: 'OK' }, token: 'kyle-reminders-consent' })],
+    ['Connections.Response denied', alexaEnvelope({ type: 'Connections.Response', requestId: 'kc2', timestamp: new Date().toISOString(), locale: 'en-US', name: 'AskFor', payload: { status: 'DENIED' }, status: { code: '200', message: 'OK' }, token: 'kyle-reminders-consent' })],
+  ];
+  for (const [name, envelope] of cases) {
+    const res = await handler(envelope, {});
+    assert(res.response.shouldEndSession === false, `${name}: expected shouldEndSession false, got ${res.response.shouldEndSession}`);
+    assert(res.response.reprompt?.outputSpeech, `${name}: expected a reprompt`);
+  }
+});
+
+await test('Stop and Cancel are the ONLY intents that end the session', async () => {
+  for (const intent of ['AMAZON.StopIntent', 'AMAZON.CancelIntent']) {
+    const res = await handler(alexaEnvelope(intentRequest(intent)), {});
+    assert(res.response.shouldEndSession === true, `${intent}: expected session to end`);
+    assert(speechOf(res).length > 0, `${intent}: expected a goodbye`);
+  }
+});
+
 await test('AMAZON.HelpIntent responds', async () => {
   const res = await handler(alexaEnvelope(intentRequest('AMAZON.HelpIntent')), {});
   assert(speechOf(res).toLowerCase().includes('kyle'), 'expected help speech mentioning Kyle');

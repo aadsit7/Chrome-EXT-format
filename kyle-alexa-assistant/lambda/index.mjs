@@ -417,6 +417,35 @@ const ErrorHandler = {
   },
 };
 
+// Defensive final safeguard: on real devices, a response missing a reprompt
+// often closes the session even with shouldEndSession false — both are
+// required. Force them on EVERY outgoing response except:
+//   - Stop/Cancel (the only intents allowed to end the session)
+//   - SessionEndedRequest (no speakable response permitted)
+//   - responses carrying Connections.SendRequest (Alexa's voice-permission
+//     flow owns the session and resumes it via Connections.Response)
+const KeepSessionOpenInterceptor = {
+  process(handlerInput, response) {
+    if (!response) return;
+    const req = handlerInput.requestEnvelope.request;
+    const isStopOrCancel =
+      req.type === 'IntentRequest' &&
+      (req.intent?.name === 'AMAZON.StopIntent' || req.intent?.name === 'AMAZON.CancelIntent');
+    const isSessionEnded = req.type === 'SessionEndedRequest';
+    const handsOffToConnections = (response.directives ?? []).some(
+      (d) => d.type === 'Connections.SendRequest',
+    );
+    if (isStopOrCancel || isSessionEnded || handsOffToConnections) return;
+
+    response.shouldEndSession = false;
+    if (!response.reprompt?.outputSpeech) {
+      response.reprompt = {
+        outputSpeech: { type: 'SSML', ssml: '<speak>Anything else?</speak>' },
+      };
+    }
+  },
+};
+
 const skill = Alexa.SkillBuilders.custom()
   .addRequestHandlers(
     LaunchRequestHandler,
@@ -430,6 +459,7 @@ const skill = Alexa.SkillBuilders.custom()
     SessionEndedRequestHandler,
   )
   .addErrorHandlers(ErrorHandler)
+  .addResponseInterceptors(KeepSessionOpenInterceptor)
   .withCustomUserAgent('kyle-alexa-assistant/1.0')
   .create();
 
