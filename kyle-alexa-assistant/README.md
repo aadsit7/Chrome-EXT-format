@@ -20,7 +20,7 @@ Kyle's system prompt makes him explain these limits when asked (e.g. *"I can't s
 
 ```
 kyle-alexa-assistant/
-  lambda/               Lambda source (Node.js 20.x, ES modules)
+  lambda/               Lambda source (Node.js 22.x, ES modules)
     index.mjs           Handler: Alexa skill + web POST dual path
     claude.mjs          Claude API client with agentic tool loop
     alexa-tools.mjs     Reminders + Timers REST executors
@@ -34,7 +34,7 @@ kyle-alexa-assistant/
 
 ## 1. Prerequisites
 
-- **Node.js 20+**
+- **Node.js 22+**
 - An **Amazon Developer account** (developer.amazon.com)
 - An **AWS account**
 - **ASK CLI** installed and configured: `npm i -g ask-cli && ask configure`
@@ -44,7 +44,7 @@ kyle-alexa-assistant/
 ## 2. One-time Lambda setup
 
 1. Create a Lambda function named `kyle-alexa-assistant`:
-   - Runtime: **Node.js 20.x**, architecture: arm64 or x86_64
+   - Runtime: **Node.js 22.x**, architecture: arm64 or x86_64
    - Handler: `index.handler`
    - Timeout: **10 seconds**, memory: 256 MB+
 2. Add the environment variable **`ANTHROPIC_API_KEY`** with your key.
@@ -59,7 +59,7 @@ cd kyle-alexa-assistant     # ask deploy must run from inside this folder
 ask deploy
 ```
 
-Before deploying, paste your **Lambda ARN** into `skill-package/skill.json` at `apis.custom.endpoint.uri` (marked TODO). `ask deploy` creates the skill and prints the Skill ID — use it for the Lambda trigger in step 2.3.
+The **Lambda ARN** is already set in `skill-package/skill.json` at `apis.custom.endpoint.uri` (`arn:aws:lambda:us-east-1:611491981154:function:kyle-alexa-assistant`) — update it there if you redeploy the function under a different name or region. `ask deploy` creates the skill and prints the Skill ID — use it for the Lambda trigger in step 2.3.
 
 > **Invocation name note:** the model uses the one-word invocation `"kyle"`. One-word invocation names are **not certifiable for public skills**, but they work fine in development mode on your own devices. If your device won't open the skill, change `invocationName` in `skill-package/interactionModels/custom/en-US.json` to `"hey kyle"` and redeploy.
 
@@ -89,7 +89,7 @@ Reminders require an explicit user grant. **Without this, reminder creation retu
 
 ## 6. Web chat page
 
-1. Open `web/index.html` and paste your **Function URL** into the `FUNCTION_URL` constant at the top of the `<script>`.
+1. The **Function URL** is already set in the `FUNCTION_URL` constant at the top of the `<script>` in `web/index.html` — change it there if your Function URL ever rotates.
 2. Open the file in a browser (or host it anywhere static). Chat history is kept client-side in a JS array.
 3. On the web path Kyle knows he's not on an Echo — he'll tell you reminders/timers only work on the device.
 
@@ -128,7 +128,7 @@ The only third-party connection is the Anthropic API: HTTPS-only, authenticated 
 
 ## Outstanding components (not blockers, but know about them)
 
-- **Deploy-time TODOs you must fill in:** the Lambda ARN in `skill-package/skill.json`, skill icons (108px/512px URIs in the manifest), `ANTHROPIC_API_KEY` on the Lambda, and the Function URL in `web/index.html`.
+- **Deploy-time TODOs you must fill in:** skill icons (108px/512px URIs in the manifest) and `ANTHROPIC_API_KEY` on the Lambda. The Lambda ARN (`skill-package/skill.json`) and Function URL (`web/index.html`) are already configured.
 - **Live-key verification:** the test suite has only been run with the Claude API mocked in this environment. Run `npm run test:local` with a real key in `lambda/.env` before first deploy.
 - **Function URL is unauthenticated:** anyone with the URL can chat with Kyle on your API bill. Fine for personal use; add an auth header check or IAM auth before sharing the URL.
 - **Not certifiable as-is:** the one-word invocation name and dev-mode manifest are for personal devices. Public certification would need a compliant invocation name, icons, and privacy policy URLs.

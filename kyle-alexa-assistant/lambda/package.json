@@ -5,7 +5,7 @@
   "type": "module",
   "main": "index.mjs",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "test:local": "node ../scripts/test-local.mjs",

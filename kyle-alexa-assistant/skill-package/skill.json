@@ -38,7 +38,7 @@
     "apis": {
       "custom": {
         "endpoint": {
-          "uri": "TODO: paste your Lambda ARN here, e.g. arn:aws:lambda:us-east-1:123456789012:function:kyle-alexa-assistant"
+          "uri": "arn:aws:lambda:us-east-1:611491981154:function:kyle-alexa-assistant"
         }
       }
     },
