@@ -128,7 +128,7 @@ The only third-party connection is the Anthropic API: HTTPS-only, authenticated 
 
 ## Outstanding components (not blockers, but know about them)
 
-- **Deploy-time TODOs you must fill in:** skill icons (108px/512px URIs in the manifest) and `ANTHROPIC_API_KEY` on the Lambda. The Lambda ARN (`skill-package/skill.json`) and Function URL (`web/index.html`) are already configured.
+- **Deploy-time TODO you must fill in:** `ANTHROPIC_API_KEY` on the Lambda. The Lambda ARN (`skill-package/skill.json`) and Function URL (`web/index.html`) are already configured. Icon URIs are intentionally omitted from the manifest (Amazon rejected placeholder values); add real `smallIconUri`/`largeIconUri` under `publishingInformation.locales.en-US` only when you have hosted 108px/512px PNGs — required for certification, optional in dev mode.
 - **Live-key verification:** the test suite has only been run with the Claude API mocked in this environment. Run `npm run test:local` with a real key in `lambda/.env` before first deploy.
 - **Function URL is unauthenticated:** anyone with the URL can chat with Kyle on your API bill. Fine for personal use; add an auth header check or IAM auth before sharing the URL.
 - **Not certifiable as-is:** the one-word invocation name and dev-mode manifest are for personal devices. Public certification would need a compliant invocation name, icons, and privacy policy URLs.
@@ -138,6 +138,7 @@ The only third-party connection is the Anthropic API: HTTPS-only, authenticated 
 ## Architecture notes
 
 - **No database.** Conversation history is stored in Alexa session attributes (capped at the last 10 turns) and vanishes when the session ends. The web page keeps its own history client-side and sends it with each request.
-- **Latency budget.** Alexa requires a response within ~8 seconds. The Claude loop enforces a hard 6.5-second budget across all tool iterations (max 3), with 3-second timeouts on each Alexa REST call; on breach Kyle says "That's taking me a moment — ask me again."
+- **Latency budget.** The Lambda timeout is 10 seconds. The Claude loop enforces a hard 8.5-second budget across all tool iterations (max 3), with 3-second timeouts on each Alexa REST call; on breach Kyle says "Still digging — ask me that again." and the session stays open.
+- **The mic stays open.** Every response sets `shouldEndSession: false` with a reprompt; only Stop/Cancel end the session. Bare "yes"/"no" answers route to AMAZON.YesIntent/NoIntent and are fed to Claude as ordinary conversation turns, and AMAZON.RepeatIntent re-speaks Kyle's last reply.
 - **Permissions flow.** If Claude tries to create a reminder without the grant, the handler responds with the `AskFor` voice-permissions directive (`Connections.SendRequest`) — Alexa asks the user out loud, and the answer comes back as a `Connections.Response` request that Kyle handles gracefully. Devices without voice-permission support get a consent card in the Alexa app instead.
 - **Dual path.** The same Lambda serves Alexa envelopes and plain JSON POSTs (`{ messages: [...] }` → `{ reply: "..." }`) from the Function URL, with CORS handled.

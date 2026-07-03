@@ -190,6 +190,42 @@ const ConnectionsResponseHandler = {
   },
 };
 
+// Yes/No must CONTINUE the conversation — Kyle often ends a reply with a
+// follow-up hook, and a bare "yes"/"no" routes to these built-ins instead of
+// ChatIntent. Feed them to Claude as ordinary turns; never end the session.
+const YesNoIntentHandler = {
+  canHandle(handlerInput) {
+    if (Alexa.getRequestType(handlerInput.requestEnvelope) !== 'IntentRequest') return false;
+    const intent = Alexa.getIntentName(handlerInput.requestEnvelope);
+    return intent === 'AMAZON.YesIntent' || intent === 'AMAZON.NoIntent';
+  },
+  async handle(handlerInput) {
+    const isYes = Alexa.getIntentName(handlerInput.requestEnvelope) === 'AMAZON.YesIntent';
+    return chatTurn(handlerInput, isYes ? 'yes' : 'no');
+  },
+};
+
+const RepeatIntentHandler = {
+  canHandle(handlerInput) {
+    return (
+      Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+      Alexa.getIntentName(handlerInput.requestEnvelope) === 'AMAZON.RepeatIntent'
+    );
+  },
+  handle(handlerInput) {
+    const history = getHistory(handlerInput);
+    const lastReply = [...history].reverse().find((m) => m.role === 'assistant')?.content;
+    const speech = typeof lastReply === 'string' && lastReply
+      ? lastReply
+      : "I haven't said anything yet — ask me something.";
+    return handlerInput.responseBuilder
+      .speak(escapeForSsml(speech))
+      .reprompt('Anything else?')
+      .withShouldEndSession(false)
+      .getResponse();
+  },
+};
+
 const HelpIntentHandler = {
   canHandle(handlerInput) {
     return (
@@ -231,8 +267,8 @@ const FallbackIntentHandler = {
   },
   handle(handlerInput) {
     return handlerInput.responseBuilder
-      .speak("Hmm, I didn't get that. Try asking me a question.")
-      .reprompt('Try asking me a question.')
+      .speak('Say ask, tell me, or question before your request.')
+      .reprompt('Say ask, tell me, or question before your request.')
       .withShouldEndSession(false)
       .getResponse();
   },
@@ -268,6 +304,8 @@ const skill = Alexa.SkillBuilders.custom()
     LaunchRequestHandler,
     ChatIntentHandler,
     ConnectionsResponseHandler,
+    YesNoIntentHandler,
+    RepeatIntentHandler,
     HelpIntentHandler,
     StopCancelIntentHandler,
     FallbackIntentHandler,

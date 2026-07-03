@@ -259,6 +259,51 @@ await test('Spoken replies are SSML-escaped (& < > cannot break the <speak> enve
   assert(!/& /.test(ssml), `expected no raw ampersand in: ${ssml}`);
 });
 
+await test('AMAZON.YesIntent continues the conversation via Claude with session open', async () => {
+  const priorHistory = [
+    { role: 'user', content: 'tell me about surfing' },
+    { role: 'assistant', content: 'Surfing is rad. Want the long version?' },
+  ];
+  const res = await handler(alexaEnvelope(intentRequest('AMAZON.YesIntent'), { history: priorHistory }), {});
+  assert(speechOf(res).length > 0, 'expected output speech');
+  assert(res.response.shouldEndSession === false, 'expected session to stay open');
+  assert(res.response.reprompt, 'expected a reprompt');
+  const history = res.sessionAttributes?.history ?? [];
+  assert(history.some((m) => m.role === 'user' && m.content === 'yes'),
+    `expected "yes" appended to history; got ${JSON.stringify(history)}`);
+});
+
+await test('AMAZON.NoIntent continues the conversation with session open', async () => {
+  const res = await handler(alexaEnvelope(intentRequest('AMAZON.NoIntent')), {});
+  assert(res.response.shouldEndSession === false, 'expected session to stay open');
+  const history = res.sessionAttributes?.history ?? [];
+  assert(history.some((m) => m.role === 'user' && m.content === 'no'), 'expected "no" appended to history');
+});
+
+await test('AMAZON.RepeatIntent re-speaks the last reply with session open', async () => {
+  const priorHistory = [
+    { role: 'user', content: 'hi' },
+    { role: 'assistant', content: 'Sixty-eight and sunny, dude.' },
+  ];
+  const res = await handler(alexaEnvelope(intentRequest('AMAZON.RepeatIntent'), { history: priorHistory }), {});
+  assert(speechOf(res).includes('Sixty-eight and sunny'), `expected last reply repeated; got ${speechOf(res)}`);
+  assert(res.response.shouldEndSession === false, 'expected session to stay open');
+});
+
+await test('AMAZON.FallbackIntent coaches carrier phrases with session open', async () => {
+  const res = await handler(alexaEnvelope(intentRequest('AMAZON.FallbackIntent')), {});
+  assert(/ask, tell me, or question/i.test(speechOf(res)), `expected carrier-phrase coaching; got ${speechOf(res)}`);
+  assert(res.response.shouldEndSession === false, 'expected session to stay open');
+  assert(res.response.reprompt, 'expected a reprompt');
+});
+
+await test('Reminder tool-use turn still saves history to session attributes', async () => {
+  const res = await handler(alexaEnvelope(chatIntent('remind me to stretch today at 5 pm')), {});
+  const history = res.sessionAttributes?.history ?? [];
+  assert(history.length >= 2 && history[history.length - 1].role === 'assistant',
+    `expected user+assistant turns saved on a tool-use turn; got ${JSON.stringify(history)}`);
+});
+
 await test('AMAZON.HelpIntent responds', async () => {
   const res = await handler(alexaEnvelope(intentRequest('AMAZON.HelpIntent')), {});
   assert(speechOf(res).toLowerCase().includes('kyle'), 'expected help speech mentioning Kyle');
