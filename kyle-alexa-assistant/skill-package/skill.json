@@ -12,7 +12,9 @@
             "what's the weather looking like in Chicago",
             "remind me to call mom at five"
           ],
-          "keywords": ["assistant", "chat", "claude", "ai"]
+          "keywords": ["assistant", "chat", "claude", "ai"],
+          "smallIconUri": "https://raw.githubusercontent.com/aadsit7/Chrome-EXT-format/refs/heads/claude/bookmarks-buddy-extension-cuwn8o/kyle-alexa-assistant/assets/alexa_skill_icon_small_108.png",
+          "largeIconUri": "https://raw.githubusercontent.com/aadsit7/Chrome-EXT-format/refs/heads/claude/bookmarks-buddy-extension-cuwn8o/kyle-alexa-assistant/assets/alexa_skill_icon_large_512.png"
         }
       },
       "isAvailableWorldwide": false,
@@ -37,7 +39,10 @@
       "custom": {
         "endpoint": {
           "uri": "arn:aws:lambda:us-east-1:611491981154:function:kyle-alexa-assistant"
-        }
+        },
+        "interfaces": [
+          { "type": "ALEXA_PRESENTATION_APL" }
+        ]
       }
     },
     "permissions": [

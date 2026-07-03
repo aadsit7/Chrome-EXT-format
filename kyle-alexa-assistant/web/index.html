@@ -35,6 +35,33 @@
     width: 10px; height: 10px; border-radius: 50%;
     background: #3ecf8e;
   }
+  #avatar {
+    position: relative;
+    width: 44px; height: 44px;
+    border-radius: 10px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  #avatar img {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+    object-fit: contain;
+  }
+  #avatar img.frame-closed { opacity: 0; }
+  #avatar.talking img.frame-closed { opacity: 1; }
+  #avatar.talking img.frame-open { opacity: 0; }
+  /* Fallback when no closed-mouth image exists: cover the mouth region on
+     alternate frames. Tune the inset percentages to your artwork. */
+  #avatar .mouth-cover {
+    display: none;
+    position: absolute;
+    left: 34%; right: 34%;
+    top: 76%; bottom: 12%;
+    background: #2f6fed; /* match the face/background color around the mouth */
+    border-radius: 40%;
+  }
+  #avatar.talking.css-mouth .mouth-cover { display: block; }
   header h1 { font-size: 17px; font-weight: 600; }
   header span { color: var(--muted); font-size: 13px; }
   #chat {
@@ -111,6 +138,11 @@
 </head>
 <body>
 <header>
+  <div id="avatar">
+    <img class="frame-open" alt="Kyle" />
+    <img class="frame-closed" alt="" aria-hidden="true" />
+    <div class="mouth-cover"></div>
+  </div>
   <div class="dot"></div>
   <h1>Kyle</h1>
   <span>powered by Claude</span>
@@ -127,6 +159,14 @@
   // Lambda Function URL (auth type NONE)
   const FUNCTION_URL = "https://ajht3pxatlnabyj54skhdmu2uy0heodw.lambda-url.us-east-1.on.aws/";
 
+  // Kyle character frames (raw GitHub URLs — replace the repo assets to change).
+  // If KYLE_FRAME_CLOSED is empty, a CSS mouth-cover animates instead.
+  const ASSETS = "https://raw.githubusercontent.com/aadsit7/Chrome-EXT-format/refs/heads/claude/bookmarks-buddy-extension-cuwn8o/kyle-alexa-assistant/assets/";
+  const KYLE_FRAME_OPEN = ASSETS + "kyle_talk_open_512.png";
+  const KYLE_FRAME_CLOSED = ASSETS + "kyle_talk_closed_512.png";
+  const TALK_FRAME_MS = 150;   // mouth open/closed swap cadence
+  const MS_PER_WORD = 320;     // how long the "speaking" animation runs per word of reply
+
   const MAX_HISTORY = 20;
   const messages = []; // [{ role: "user" | "assistant", content: "..." }]
 
@@ -134,6 +174,43 @@
   const formEl = document.getElementById("composer");
   const inputEl = document.getElementById("input");
   const sendEl = document.getElementById("send");
+
+  // --- Talking animation -------------------------------------------------
+  const avatarEl = document.getElementById("avatar");
+  const frameOpenEl = avatarEl.querySelector(".frame-open");
+  const frameClosedEl = avatarEl.querySelector(".frame-closed");
+  frameOpenEl.src = KYLE_FRAME_OPEN;
+  if (KYLE_FRAME_CLOSED) {
+    frameClosedEl.src = KYLE_FRAME_CLOSED;
+    frameClosedEl.addEventListener("error", () => avatarEl.classList.add("css-mouth"));
+  } else {
+    avatarEl.classList.add("css-mouth");
+  }
+
+  let talkTimer = null;
+  let talkStopTimer = null;
+  function startTalking() {
+    if (talkTimer) return;
+    let open = true;
+    talkTimer = setInterval(() => {
+      open = !open;
+      avatarEl.classList.toggle("talking", !open); // "talking" class shows the closed frame
+    }, TALK_FRAME_MS);
+  }
+  function stopTalking() {
+    clearInterval(talkTimer);
+    talkTimer = null;
+    clearTimeout(talkStopTimer);
+    talkStopTimer = null;
+    avatarEl.classList.remove("talking"); // rest on the idle (open) frame
+  }
+  // Keep animating while the reply is "being spoken" on screen, scaled to length.
+  function talkForReply(text) {
+    startTalking();
+    const words = text.trim().split(/\s+/).length;
+    talkStopTimer = setTimeout(stopTalking, Math.min(12000, words * MS_PER_WORD));
+  }
+  // ------------------------------------------------------------------------
 
   function addBubble(role, text, extraClass = "") {
     const div = document.createElement("div");
@@ -174,6 +251,7 @@
     messages.push({ role: "user", content: text });
 
     const thinkingEl = addBubble("assistant", "thinking…", "thinking");
+    startTalking();
     try {
       const res = await fetch(FUNCTION_URL, {
         method: "POST",
@@ -182,6 +260,7 @@
       });
       thinkingEl.remove();
       if (!res.ok) {
+        stopTalking();
         const detail = await res.text().catch(() => "");
         addError(`Kyle hit an error (HTTP ${res.status}). ${detail}`);
         return;
@@ -190,8 +269,10 @@
       const reply = data.reply || "…";
       messages.push({ role: "assistant", content: reply });
       addBubble("assistant", reply);
+      talkForReply(reply);
     } catch (err) {
       thinkingEl.remove();
+      stopTalking();
       addError(`Couldn't reach Kyle: ${err.message}`);
     } finally {
       sendEl.disabled = false;

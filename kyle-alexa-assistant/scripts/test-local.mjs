@@ -149,7 +149,7 @@ const { handler } = await import(path.join(here, '..', 'lambda', 'index.mjs'));
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function alexaEnvelope(request, sessionAttributes = {}) {
+function alexaEnvelope(request, sessionAttributes = {}, { apl = false } = {}) {
   return {
     version: '1.0',
     session: {
@@ -163,7 +163,10 @@ function alexaEnvelope(request, sessionAttributes = {}) {
       System: {
         application: { applicationId: 'amzn1.ask.skill.test' },
         user: { userId: 'amzn1.ask.account.test' },
-        device: { deviceId: 'amzn1.ask.device.test', supportedInterfaces: {} },
+        device: {
+          deviceId: 'amzn1.ask.device.test',
+          supportedInterfaces: apl ? { 'Alexa.Presentation.APL': {} } : {},
+        },
         apiEndpoint: 'https://api.amazonalexa.com',
         apiAccessToken: 'mock-api-access-token',
       },
@@ -302,6 +305,23 @@ await test('Reminder tool-use turn still saves history to session attributes', a
   const history = res.sessionAttributes?.history ?? [];
   assert(history.length >= 2 && history[history.length - 1].role === 'assistant',
     `expected user+assistant turns saved on a tool-use turn; got ${JSON.stringify(history)}`);
+});
+
+await test('APL display device gets the Kyle avatar RenderDocument directive', async () => {
+  const res = await handler(alexaEnvelope(chatIntent('say hello'), {}, { apl: true }), {});
+  const directives = res.response.directives ?? [];
+  const apl = directives.find((d) => d.type === 'Alexa.Presentation.APL.RenderDocument');
+  assert(apl, `expected an APL RenderDocument directive; got ${JSON.stringify(directives.map((d) => d.type))}`);
+  assert(apl.datasources?.kyle?.openUrl?.includes('kyle_talk_open_512.png'), 'expected talk-frame datasource URLs');
+  assert(res.response.shouldEndSession === false, 'expected session to stay open');
+});
+
+await test('Speaker (no display) gets no APL directive and unchanged behavior', async () => {
+  const res = await handler(alexaEnvelope(chatIntent('say hello')), {});
+  const directives = res.response.directives ?? [];
+  assert(!directives.some((d) => String(d.type).startsWith('Alexa.Presentation.APL')),
+    `expected no APL directives on a speaker; got ${JSON.stringify(directives.map((d) => d.type))}`);
+  assert(speechOf(res).length > 0 && res.response.shouldEndSession === false, 'expected normal spoken response');
 });
 
 await test('AMAZON.HelpIntent responds', async () => {

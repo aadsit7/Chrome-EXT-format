@@ -15,6 +15,93 @@ function escapeForSsml(text) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// APL (Echo Show / display devices)
+// ---------------------------------------------------------------------------
+
+const ASSETS_BASE =
+  'https://raw.githubusercontent.com/aadsit7/Chrome-EXT-format/refs/heads/claude/bookmarks-buddy-extension-cuwn8o/kyle-alexa-assistant/assets';
+
+// Two stacked frames; the open-mouth frame's opacity is toggled every 150ms
+// by an onMount animation loop, giving a talk cycle while Kyle speaks.
+const KYLE_APL_DOCUMENT = {
+  type: 'APL',
+  version: '1.8',
+  mainTemplate: {
+    parameters: ['payload'],
+    items: [
+      {
+        type: 'Frame',
+        width: '100vw',
+        height: '100vh',
+        backgroundColor: '#10141a',
+        items: [
+          {
+            type: 'Container',
+            width: '100vw',
+            height: '100vh',
+            alignItems: 'center',
+            justifyContent: 'center',
+            onMount: [
+              {
+                type: 'Sequential',
+                repeatCount: 40,
+                commands: [
+                  { type: 'AnimateItem', componentId: 'kyleMouthOpen', duration: 150, value: [{ property: 'opacity', from: 1, to: 0 }] },
+                  { type: 'AnimateItem', componentId: 'kyleMouthOpen', duration: 150, value: [{ property: 'opacity', from: 0, to: 1 }] },
+                ],
+              },
+            ],
+            items: [
+              {
+                type: 'Image',
+                id: 'kyleMouthClosed',
+                source: '${payload.kyle.closedUrl}',
+                width: '60vh',
+                height: '60vh',
+                scale: 'best-fit',
+              },
+              {
+                type: 'Image',
+                id: 'kyleMouthOpen',
+                source: '${payload.kyle.openUrl}',
+                width: '60vh',
+                height: '60vh',
+                scale: 'best-fit',
+                position: 'absolute',
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+};
+
+function supportsApl(handlerInput) {
+  const interfaces = Alexa.getSupportedInterfaces(handlerInput.requestEnvelope);
+  return Boolean(interfaces['Alexa.Presentation.APL']);
+}
+
+// Attach the Kyle avatar screen on display devices; a no-op on speakers so
+// voice-only behavior is completely unchanged.
+function withKyleScreen(handlerInput, builder) {
+  if (supportsApl(handlerInput)) {
+    builder.addDirective({
+      type: 'Alexa.Presentation.APL.RenderDocument',
+      token: 'kyleAvatar',
+      document: KYLE_APL_DOCUMENT,
+      datasources: {
+        kyle: {
+          openUrl: `${ASSETS_BASE}/kyle_talk_open_512.png`,
+          closedUrl: `${ASSETS_BASE}/kyle_talk_closed_512.png`,
+        },
+      },
+    });
+  }
+  return builder;
+}
+
 function getAlexaContext(handlerInput) {
   const system = handlerInput.requestEnvelope.context?.System ?? {};
   return {
@@ -102,10 +189,13 @@ async function chatTurn(handlerInput, userText) {
   history.push({ role: 'assistant', content: reply });
   saveHistory(handlerInput, history);
 
-  const builder = handlerInput.responseBuilder
-    .speak(escapeForSsml(reply))
-    .reprompt('Anything else?')
-    .withShouldEndSession(false);
+  const builder = withKyleScreen(
+    handlerInput,
+    handlerInput.responseBuilder
+      .speak(escapeForSsml(reply))
+      .reprompt('Anything else?')
+      .withShouldEndSession(false),
+  );
 
   if (needsPermission === 'reminders') {
     const supportsVoicePermissions =
@@ -138,11 +228,13 @@ const LaunchRequestHandler = {
   },
   handle(handlerInput) {
     const greeting = "Hey, Kyle here. What's up?";
-    return handlerInput.responseBuilder
-      .speak(greeting)
-      .reprompt('Ask me anything, or say help.')
-      .withShouldEndSession(false)
-      .getResponse();
+    return withKyleScreen(
+      handlerInput,
+      handlerInput.responseBuilder
+        .speak(greeting)
+        .reprompt('Ask me anything, or say help.')
+        .withShouldEndSession(false),
+    ).getResponse();
   },
 };
 
