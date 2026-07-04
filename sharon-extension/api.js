@@ -29,7 +29,21 @@ async function call(action, payload, signal) {
     throw new Error("Sharon got an unexpected reply from the server. Please try again.");
   }
   if (!data || data.ok !== true) {
-    throw new Error((data && data.error) || "something went wrong on the server.");
+    const message = (data && data.error) || "something went wrong on the server.";
+    // "unknown action: assist" from a working server means the deployed
+    // Apps Script is an older version that predates that action — the URL
+    // and key are fine, the DEPLOYMENT is stale. Flag it so the UI can give
+    // redeploy instructions instead of misdiagnosing the connection.
+    if (/^unknown action\b/i.test(message)) {
+      const err = new Error(
+        "your Google Apps Script backend is running an older version that doesn't know “" +
+          action +
+          "” yet."
+      );
+      err.backendOutdated = true;
+      throw err;
+    }
+    throw new Error(message);
   }
   return data.result;
 }

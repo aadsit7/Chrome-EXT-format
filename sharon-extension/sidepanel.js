@@ -205,6 +205,23 @@ function sharonSay(text) {
   speech.speak(text, { onDone: updateStatus });
 }
 
+// The redeploy walkthrough for a stale Apps Script deployment. Pasting new
+// code into the editor is not enough — /exec serves the version pinned to
+// the deployment, so backend/Code.gs changes only go live via "New version".
+const REDEPLOY_STEPS =
+  "Your PROXY_URL and API_KEY are fine — the deployment itself is just out of date. " +
+  "Open your “Speaking Assistant” Sheet → Extensions → Apps Script, replace the project's code " +
+  "with the latest backend/Code.gs from this folder, then choose Deploy → Manage deployments → " +
+  "edit (✏️) → Version: “New version” → Deploy. The web-app URL stays the same, so nothing else changes.";
+
+function nextStepFor(err) {
+  if (err && err.backendOutdated) return REDEPLOY_STEPS;
+  return (
+    "Check your internet connection and try again. If it keeps happening, make sure PROXY_URL " +
+    "and API_KEY in config.js still match your Apps Script deployment."
+  );
+}
+
 // Every error says what happened AND what to do next. During first-run
 // setup, problems surface as checklist guidance instead of thread noise.
 function reportProblem(msg, nextStep) {
@@ -547,10 +564,7 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true } =
   } catch (err) {
     ui.removeCard(think);
     if (err && err.name === "AbortError") return;
-    reportProblem(
-      err && err.message ? err.message : "I couldn't reach the server.",
-      "Check your internet connection and try again. If it keeps happening, make sure PROXY_URL and API_KEY in config.js still match your Apps Script deployment."
-    );
+    reportProblem(err && err.message ? err.message : "I couldn't reach the server.", nextStepFor(err));
   } finally {
     if (abortController === ac) {
       busy = false;
@@ -842,7 +856,7 @@ async function agentStep() {
     updateStatus();
     reportProblem(
       (err && err.message) || "I couldn't reach the server.",
-      "Check your internet connection, then ask me to try the task again."
+      err && err.backendOutdated ? REDEPLOY_STEPS : "Check your internet connection, then ask me to try the task again."
     );
   }
 }
