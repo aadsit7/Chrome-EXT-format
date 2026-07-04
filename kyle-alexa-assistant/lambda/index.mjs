@@ -1,5 +1,14 @@
 import Alexa from 'ask-sdk-core';
 import { runKyle } from './claude.mjs';
+import {
+  loadMemory,
+  saveConversation,
+  clearConversation,
+  clearAll,
+  isRecent,
+  bumpDailyCalls,
+  getDailyCalls,
+} from './memory.mjs';
 
 const MAX_HISTORY_MESSAGES = 20; // last 10 user/assistant turn pairs
 const REMINDERS_PERMISSION = 'alexa::alerts:reminders:skill:readwrite';
@@ -210,6 +219,35 @@ async function getTimeContext(handlerInput) {
   return `Current local datetime: ${now}. Device timezone: ${timeZone}.`;
 }
 
+// Memory is keyed by personId when Alexa recognizes a voice profile, so each
+// household member gets their own history and notes; falls back to userId.
+function getMemoryId(handlerInput) {
+  const system = handlerInput.requestEnvelope.context?.System ?? {};
+  return system.person?.personId ?? system.user?.userId ?? 'anonymous';
+}
+
+// Load persistent memory into session attributes once per session. Returns
+// the attrs object (already set on the attributes manager).
+async function ensureMemoryLoaded(handlerInput) {
+  const attrs = handlerInput.attributesManager.getSessionAttributes();
+  if (attrs.memoryLoaded) return attrs;
+  try {
+    const stored = await loadMemory(getMemoryId(handlerInput));
+    if (!Array.isArray(attrs.history) || attrs.history.length === 0) {
+      attrs.history = stored.history;
+    }
+    attrs.notes = Array.isArray(attrs.notes) && attrs.notes.length > 0 ? attrs.notes : stored.notes;
+    attrs.lastTurnAt = stored.lastTurnAt;
+  } catch (err) {
+    console.error('Memory load failed (continuing without):', err);
+    attrs.history = Array.isArray(attrs.history) ? attrs.history : [];
+    attrs.notes = Array.isArray(attrs.notes) ? attrs.notes : [];
+  }
+  attrs.memoryLoaded = true;
+  handlerInput.attributesManager.setSessionAttributes(attrs);
+  return attrs;
+}
+
 function getHistory(handlerInput) {
   const attrs = handlerInput.attributesManager.getSessionAttributes();
   return Array.isArray(attrs.history) ? attrs.history : [];
@@ -237,17 +275,59 @@ function askForRemindersPermissionDirective() {
 }
 
 async function chatTurn(handlerInput, userText) {
+  const attrs = await ensureMemoryLoaded(handlerInput);
+  const memoryId = getMemoryId(handlerInput);
+
+  // Cost guardrail: past the daily cap Kyle politely declines until tomorrow.
+  const usage = await bumpDailyCalls();
+  if (!usage.allowed) {
+    return handlerInput.responseBuilder
+      .speak("Dude, I've hit my daily limit — catch me tomorrow and we'll pick it right up.")
+      .reprompt('Catch me tomorrow.')
+      .withShouldEndSession(false)
+      .getResponse();
+  }
+
   const history = getHistory(handlerInput);
   history.push({ role: 'user', content: userText });
+
+  const memoryActions = {
+    async clearHistory(scope) {
+      // Keep only the in-flight exchange so Kyle can confirm naturally.
+      attrs.history = [];
+      history.length = 0;
+      history.push({ role: 'user', content: userText });
+      if (scope === 'everything') {
+        attrs.notes = [];
+        await clearAll(memoryId);
+      } else {
+        await clearConversation(memoryId);
+      }
+      handlerInput.attributesManager.setSessionAttributes(attrs);
+    },
+    async rememberNote(note) {
+      if (!note) throw new Error('empty note');
+      attrs.notes = [...(attrs.notes ?? []), note];
+      handlerInput.attributesManager.setSessionAttributes(attrs);
+      await saveConversation(memoryId, getHistory(handlerInput), attrs.notes);
+    },
+  };
 
   const timeContext = await getTimeContext(handlerInput);
   const { reply, needsPermission } = await runKyle(history, {
     alexaContext: getAlexaContext(handlerInput),
     timeContext,
+    notes: attrs.notes ?? [],
+    memoryActions,
   });
 
   history.push({ role: 'assistant', content: reply });
   saveHistory(handlerInput, history);
+  try {
+    await saveConversation(memoryId, getHistory(handlerInput), attrs.notes ?? []);
+  } catch (err) {
+    console.error('Memory save failed (conversation continues):', err);
+  }
 
   const builder = withKyleScreen(
     handlerInput,
@@ -287,8 +367,15 @@ const LaunchRequestHandler = {
   canHandle(handlerInput) {
     return Alexa.getRequestType(handlerInput.requestEnvelope) === 'LaunchRequest';
   },
-  handle(handlerInput) {
-    const greeting = "Hey, Kyle here. What's up?";
+  async handle(handlerInput) {
+    // Auto-resume: under 2 hours since the last turn, pick the thread back up
+    // with a cue; otherwise greet fresh (long-term notes stay loaded either
+    // way, and history stays available for an explicit "resume" request).
+    const attrs = await ensureMemoryLoaded(handlerInput);
+    const resumable = isRecent(attrs.lastTurnAt) && getHistory(handlerInput).length > 0;
+    const greeting = resumable
+      ? "Hey, Kyle here — picking up where we left off. What's next?"
+      : "Hey, Kyle here. What's up?";
     return withKyleScreen(
       handlerInput,
       handlerInput.responseBuilder
@@ -316,9 +403,28 @@ const ChatIntentHandler = {
         .withShouldEndSession(false)
         .getResponse();
     }
+    // Operations voice command — answered locally, never consumes a Claude call.
+    if (/^(run |kyle )?diagnostics?( report| check)?$/i.test(query.trim())) {
+      return diagnosticsResponse(handlerInput);
+    }
     return chatTurn(handlerInput, query);
   },
 };
+
+async function diagnosticsResponse(handlerInput) {
+  const attrs = await ensureMemoryLoaded(handlerInput);
+  const { count, cap } = await getDailyCalls();
+  const turns = Math.floor(getHistory(handlerInput).length / 2);
+  const notes = (attrs.notes ?? []).length;
+  const report =
+    `Diagnostics: model claude haiku four five. Memory: ${turns} turn${turns === 1 ? '' : 's'} of history ` +
+    `and ${notes} saved note${notes === 1 ? '' : 's'}. Claude calls today: ${count} of ${cap}. All systems go.`;
+  return handlerInput.responseBuilder
+    .speak(report)
+    .reprompt('Anything else?')
+    .withShouldEndSession(false)
+    .getResponse();
+}
 
 const ConnectionsResponseHandler = {
   canHandle(handlerInput) {
@@ -564,10 +670,27 @@ async function handleWebRequest(event) {
 // Entry point — routes Alexa envelopes to the skill, everything else to the web path
 // ---------------------------------------------------------------------------
 
+// Spoken fallback if anything escapes the skill's own error handling — an
+// unexpected crash must never audibly kill the conversation.
+const HICCUP_RESPONSE = {
+  version: '1.0',
+  response: {
+    outputSpeech: { type: 'SSML', ssml: '<speak>I hiccuped — say that again?</speak>' },
+    reprompt: { outputSpeech: { type: 'SSML', ssml: '<speak>Say that again?</speak>' } },
+    shouldEndSession: false,
+  },
+};
+
 export const handler = async (event, context) => {
-  const isAlexaRequest = Boolean(event && event.request && event.version && event.context);
-  if (isAlexaRequest) {
-    return skill.invoke(event, context);
+  try {
+    const isAlexaRequest = Boolean(event && event.request && event.version && event.context);
+    if (isAlexaRequest) {
+      return await skill.invoke(event, context);
+    }
+    return await handleWebRequest(event);
+  } catch (err) {
+    console.error('Kyle top-level crash (returning hiccup fallback):', err);
+    if (event?.request) return HICCUP_RESPONSE;
+    return webResponse(500, { error: 'Kyle hit an internal error. Try again.' });
   }
-  return handleWebRequest(event);
 };
