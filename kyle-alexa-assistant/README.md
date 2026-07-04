@@ -195,8 +195,18 @@ The only third-party connection is the Anthropic API: HTTPS-only, authenticated 
 ## Architecture notes
 
 - **Memory.** During a session, conversation history rides in Alexa session attributes (capped at the last 10 turns). Between sessions, history + long-term notes persist to the `kyle-memory` DynamoDB table (inside your own AWS account), keyed per person (`personId` from Alexa voice profiles, falling back to `userId`). Auto-resume kicks in when the last turn is under 2 hours old. Without the table, Kyle silently degrades to session-only. The web page keeps its own history client-side and sends it with each request.
+- **Observability.** Every request emits one structured JSON log line — `{kyle:1, type, intent, ms, tools, apl, memory, outcome, endSession}` — with no user content, so glitches self-identify in CloudWatch (`filter @message like /"kyle":1/`). `SessionEndedRequest` with reason `ERROR` now logs Alexa's full error object — the only place the platform explains a response rejection.
+- **Optional cold-start warmer.** Cold starts measured ~400ms (usually not worth fixing). If first-question-after-idle ever becomes the glitch pattern, add an EventBridge ping every 5 minutes (the handler answers `{"warm": true}` events in ~1ms):
+  ```bash
+  aws events put-rule --name kyle-warm --schedule-expression 'rate(5 minutes)'
+  aws lambda add-permission --function-name kyle-alexa-assistant --statement-id kyle-warm \
+    --action lambda:InvokeFunction --principal events.amazonaws.com \
+    --source-arn arn:aws:events:us-east-1:ACCOUNT_ID:rule/kyle-warm
+  aws events put-targets --rule kyle-warm --targets \
+    'Id=kyle-warm,Arn=arn:aws:lambda:us-east-1:ACCOUNT_ID:function:kyle-alexa-assistant,Input="{\"warm\": true}"'
+  ```
 - **Never-die errors.** A top-level try/catch around the whole handler returns a spoken "I hiccuped — say that again?" with the session open if anything escapes the skill's own error handler; the full error is logged to CloudWatch (pair with the error alarm in the one-time steps).
-- **Latency budget.** The Lambda timeout is 10 seconds. The Claude loop enforces a hard 8.5-second budget across all tool iterations (max 3), with 3-second timeouts on each Alexa REST call; on breach Kyle says "Still digging — ask me that again." and the session stays open.
+- **Latency budget.** The Lambda timeout is 10 seconds, but the binding constraint is Alexa's ~8-second voice-layer window — a reply that arrives later completes cleanly in CloudWatch while the device silently drops the session. The Claude loop therefore enforces a hard 7-second budget across all tool iterations (max 3), with 3-second timeouts on each Alexa REST call; on breach Kyle says "Still digging — ask me that again." and the session stays open. A progressive response ("One sec.") fires at the start of every chat turn so processing never sounds like a crash. Do NOT raise the Lambda timeout to 15s — replies after ~8s are dead on arrival at the voice layer; a longer timeout only spends money.
 - **The mic stays open.** Every response sets `shouldEndSession: false` with a reprompt; only Stop/Cancel end the session. Bare "yes"/"no" answers route to AMAZON.YesIntent/NoIntent and are fed to Claude as ordinary conversation turns, and AMAZON.RepeatIntent re-speaks Kyle's last reply.
 - **Permissions flow.** If Claude tries to create a reminder without the grant, the handler responds with the `AskFor` voice-permissions directive (`Connections.SendRequest`) — Alexa asks the user out loud, and the answer comes back as a `Connections.Response` request that Kyle handles gracefully. Devices without voice-permission support get a consent card in the Alexa app instead.
 - **Dual path.** The same Lambda serves Alexa envelopes and plain JSON POSTs (`{ messages: [...] }` → `{ reply: "..." }`) from the Function URL, with CORS handled.

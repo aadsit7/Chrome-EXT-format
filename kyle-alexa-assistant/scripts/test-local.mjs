@@ -506,6 +506,40 @@ await test('Diagnostics voice command reports model, memory, and calls without a
   memStore.clear();
 });
 
+await test('Progressive response ("One sec.") fires on every Claude chat turn', async () => {
+  alexaApiCalls.length = 0;
+  await handler(alexaEnvelope(chatIntent('say hello')), {});
+  const progressive = alexaApiCalls.find((c) => c.url.includes('/v1/directives') && c.method === 'POST');
+  assert(progressive, `expected a POST to /v1/directives; saw ${JSON.stringify(alexaApiCalls.map((c) => c.url))}`);
+  memStore.clear();
+});
+
+await test('Structured log line per request: fields present, no user content', async () => {
+  const lines = [];
+  const realLog = console.log;
+  console.log = (...args) => { lines.push(args.join(' ')); realLog(...args); };
+  try {
+    const secret = 'zanzibar purple elephant';
+    await handler(alexaEnvelope(chatIntent(`remind me about ${secret} today at 5 pm`)), {});
+    const jsonLines = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    const entry = jsonLines.find((l) => l.kyle === 1);
+    assert(entry, `expected a structured kyle log line; got ${JSON.stringify(lines)}`);
+    assert(entry.type === 'IntentRequest' && entry.intent === 'ChatIntent', 'expected type + intent fields');
+    assert(typeof entry.ms === 'number' && entry.ms >= 0, 'expected a duration');
+    assert(Array.isArray(entry.tools) && entry.tools.includes('create_reminder'), `expected tools used; got ${JSON.stringify(entry.tools)}`);
+    assert(typeof entry.apl === 'boolean' && entry.outcome === 'ok' && entry.endSession === false, 'expected apl/outcome/endSession fields');
+    assert(!lines.some((l) => l.includes('zanzibar')), 'user content must NEVER appear in logs');
+  } finally {
+    console.log = realLog;
+    memStore.clear();
+  }
+});
+
+await test('EventBridge warming ping returns instantly without touching the skill', async () => {
+  const res = await handler({ warm: true }, {});
+  assert(res.statusCode === 200, `expected 200 from warm ping, got ${JSON.stringify(res)}`);
+});
+
 await test('EVERY non-Stop/Cancel response keeps the session open with a reprompt (incl. APL branch)', async () => {
   const cases = [
     ['LaunchRequest', alexaEnvelope({ type: 'LaunchRequest', requestId: 'ka1', timestamp: new Date().toISOString(), locale: 'en-US' })],

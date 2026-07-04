@@ -10,9 +10,13 @@ const SYSTEM_PROMPT = readFileSync(path.join(here, 'system-prompt.md'), 'utf8');
 const MODEL = 'claude-haiku-4-5';
 const MAX_TOKENS = 400;
 const MAX_TOOL_ITERATIONS = 3;
-// Hard budget across the whole tool loop. Lambda timeout is 10s; leave ~1.5s
-// of headroom for handler overhead and the Alexa response round-trip.
-const OVERALL_TIMEOUT_MS = 8500;
+// Hard budget across the whole tool loop. Alexa's VOICE layer abandons a
+// skill response at roughly 8 seconds end-to-end — a reply that arrives later
+// completes cleanly in CloudWatch but the device has already dropped the
+// session (silent failure). So the cap must sit safely INSIDE that window,
+// not just inside the 10s Lambda timeout: 7s budget + handler overhead +
+// network still lands under 8s.
+const OVERALL_TIMEOUT_MS = 7000;
 const TIMEOUT_FALLBACK = 'Still digging — ask me that again.';
 
 // Late-bound wrapper: uses Node's native fetch and lets the local test
@@ -181,11 +185,12 @@ export function stripMarkdown(text) {
  * @param {boolean} options.isWeb - true when serving the web chat page (Alexa tools unavailable)
  * @param {string[]} options.notes - long-term notes about this user, injected as context
  * @param {object|null} options.memoryActions - { clearHistory(scope), rememberNote(note) } handlers
- * @returns {Promise<{reply: string, needsPermission: 'reminders'|'timers'|null}>}
+ * @returns {Promise<{reply: string, needsPermission: 'reminders'|'timers'|null, toolsUsed: string[], outcome: 'ok'|'timeout'|'loop_cap'}>}
  */
 export async function runKyle(history, { alexaContext = null, timeContext = '', isWeb = false, notes = [], memoryActions = null } = {}) {
   const deadline = Date.now() + OVERALL_TIMEOUT_MS;
   let needsPermission = null;
+  const toolsUsed = [];
 
   const systemBlocks = [
     { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
@@ -204,7 +209,7 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
   for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
     const remaining = deadline - Date.now();
     if (remaining <= 300) {
-      return { reply: TIMEOUT_FALLBACK, needsPermission };
+      return { reply: TIMEOUT_FALLBACK, needsPermission, toolsUsed, outcome: 'timeout' };
     }
 
     let response;
@@ -221,7 +226,7 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
       );
     } catch (err) {
       if (err instanceof Anthropic.APIConnectionError || err?.name === 'APIConnectionTimeoutError') {
-        return { reply: TIMEOUT_FALLBACK, needsPermission };
+        return { reply: TIMEOUT_FALLBACK, needsPermission, toolsUsed, outcome: 'timeout' };
       }
       throw err;
     }
@@ -231,7 +236,7 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
         .filter((b) => b.type === 'text')
         .map((b) => b.text)
         .join(' ');
-      return { reply: stripMarkdown(text) || "Hmm, I came up empty on that one.", needsPermission };
+      return { reply: stripMarkdown(text) || "Hmm, I came up empty on that one.", needsPermission, toolsUsed, outcome: 'ok' };
     }
 
     // Claude wants tools: echo the assistant turn, execute each custom tool,
@@ -241,6 +246,7 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
     const toolUses = response.content.filter((b) => b.type === 'tool_use');
     const toolResults = [];
     for (const toolUse of toolUses) {
+      toolsUsed.push(toolUse.name);
       const result = await executeMemoryOrAlexaTool(toolUse, alexaContext, { isWeb, memoryActions });
       if (result.needsPermission && !needsPermission) needsPermission = result.needsPermission;
       toolResults.push({
@@ -253,5 +259,5 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
     messages.push({ role: 'user', content: toolResults });
   }
 
-  return { reply: "I got a little tangled up there — could you ask me that again?", needsPermission };
+  return { reply: "I got a little tangled up there — could you ask me that again?", needsPermission, toolsUsed, outcome: 'loop_cap' };
 }
