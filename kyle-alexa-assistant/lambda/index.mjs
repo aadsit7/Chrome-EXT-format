@@ -238,10 +238,12 @@ async function ensureMemoryLoaded(handlerInput) {
     }
     attrs.notes = Array.isArray(attrs.notes) && attrs.notes.length > 0 ? attrs.notes : stored.notes;
     attrs.lastTurnAt = stored.lastTurnAt;
+    attrs.memorySource = stored.history.length > 0 || stored.notes.length > 0 ? 'hit' : 'miss';
   } catch (err) {
     console.error('Memory load failed (continuing without):', err);
     attrs.history = Array.isArray(attrs.history) ? attrs.history : [];
     attrs.notes = Array.isArray(attrs.notes) ? attrs.notes : [];
+    attrs.memorySource = 'off';
   }
   attrs.memoryLoaded = true;
   handlerInput.attributesManager.setSessionAttributes(attrs);
@@ -274,12 +276,43 @@ function askForRemindersPermissionDirective() {
   };
 }
 
+// Progressive response: speak a short filler over the Progressive Response
+// API while the Claude turn runs, so 2-5s of processing never reads as a
+// crash. Best-effort fire-and-forget — failures are irrelevant to the turn.
+function sendProgressiveResponse(handlerInput, speech) {
+  try {
+    const { apiEndpoint, apiAccessToken } = getAlexaContext(handlerInput);
+    const requestId = handlerInput.requestEnvelope.request?.requestId;
+    if (!apiEndpoint || !apiAccessToken || !requestId) return Promise.resolve();
+    return fetch(`${apiEndpoint}/v1/directives`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiAccessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        header: { requestId },
+        directive: { type: 'VoicePlayer.Speak', speech },
+      }),
+      signal: AbortSignal.timeout(1500),
+    }).catch(() => {});
+  } catch {
+    return Promise.resolve();
+  }
+}
+
 async function chatTurn(handlerInput, userText) {
-  const attrs = await ensureMemoryLoaded(handlerInput);
+  // Fill the silence immediately, and run the turn-start I/O (memory load,
+  // daily-cap check, timezone fetch) concurrently instead of serially.
+  const progressive = sendProgressiveResponse(handlerInput, 'One sec.');
+  const [attrs, usage, timeContext] = await Promise.all([
+    ensureMemoryLoaded(handlerInput),
+    bumpDailyCalls(),
+    getTimeContext(handlerInput),
+  ]);
   const memoryId = getMemoryId(handlerInput);
 
   // Cost guardrail: past the daily cap Kyle politely declines until tomorrow.
-  const usage = await bumpDailyCalls();
   if (!usage.allowed) {
     return handlerInput.responseBuilder
       .speak("Dude, I've hit my daily limit — catch me tomorrow and we'll pick it right up.")
@@ -313,18 +346,27 @@ async function chatTurn(handlerInput, userText) {
     },
   };
 
-  const timeContext = await getTimeContext(handlerInput);
-  const { reply, needsPermission } = await runKyle(history, {
+  const { reply, needsPermission, toolsUsed, outcome } = await runKyle(history, {
     alexaContext: getAlexaContext(handlerInput),
     timeContext,
     notes: attrs.notes ?? [],
     memoryActions,
   });
 
+  // Structured-log fields for the LogInterceptor (never any user content).
+  const reqAttrs = handlerInput.attributesManager.getRequestAttributes();
+  reqAttrs.kyleTools = toolsUsed;
+  reqAttrs.kyleOutcome = outcome;
+  handlerInput.attributesManager.setRequestAttributes(reqAttrs);
+
   history.push({ role: 'assistant', content: reply });
   saveHistory(handlerInput, history);
   try {
-    await saveConversation(memoryId, getHistory(handlerInput), attrs.notes ?? []);
+    // Persist and let the progressive-response call settle together.
+    await Promise.all([
+      saveConversation(memoryId, getHistory(handlerInput), attrs.notes ?? []),
+      progressive,
+    ]);
   } catch (err) {
     console.error('Memory save failed (conversation continues):', err);
   }
@@ -542,8 +584,13 @@ const SessionEndedRequestHandler = {
     return Alexa.getRequestType(handlerInput.requestEnvelope) === 'SessionEndedRequest';
   },
   handle(handlerInput) {
-    const reason = handlerInput.requestEnvelope.request.reason;
-    console.log(`Session ended: ${reason}`);
+    const req = handlerInput.requestEnvelope.request;
+    console.log(`Session ended: ${req.reason}`);
+    if (req.reason === 'ERROR' && req.error) {
+      // Alexa-side rejection (bad response/APL/etc). This is the only place
+      // the platform tells us WHY — log it verbatim.
+      console.error('Session ended by Alexa with error:', JSON.stringify(req.error));
+    }
     return handlerInput.responseBuilder.getResponse();
   },
 };
@@ -591,6 +638,40 @@ const KeepSessionOpenInterceptor = {
   },
 };
 
+// One structured line per request so future glitches self-identify. Fields
+// only — never user content (utterances/replies stay out of logs by design).
+const RequestClockInterceptor = {
+  process(handlerInput) {
+    const reqAttrs = handlerInput.attributesManager.getRequestAttributes();
+    reqAttrs.kyleT0 = Date.now();
+    handlerInput.attributesManager.setRequestAttributes(reqAttrs);
+  },
+};
+
+const StructuredLogInterceptor = {
+  process(handlerInput, response) {
+    try {
+      const req = handlerInput.requestEnvelope.request;
+      const reqAttrs = handlerInput.attributesManager.getRequestAttributes();
+      const attrs = handlerInput.attributesManager.getSessionAttributes?.() ?? {};
+      const line = {
+        kyle: 1,
+        type: req?.type ?? 'unknown',
+        intent: req?.type === 'IntentRequest' ? req.intent?.name : undefined,
+        ms: reqAttrs.kyleT0 ? Date.now() - reqAttrs.kyleT0 : undefined,
+        tools: reqAttrs.kyleTools?.length ? reqAttrs.kyleTools : undefined,
+        apl: (response?.directives ?? []).some((d) => String(d.type).startsWith('Alexa.Presentation.APL')),
+        memory: attrs.memorySource ?? 'n/a',
+        outcome: reqAttrs.kyleOutcome ?? 'ok',
+        endSession: response?.shouldEndSession === true,
+      };
+      console.log(JSON.stringify(line));
+    } catch {
+      // Logging must never affect the response.
+    }
+  },
+};
+
 const skill = Alexa.SkillBuilders.custom()
   .addRequestHandlers(
     LaunchRequestHandler,
@@ -604,7 +685,8 @@ const skill = Alexa.SkillBuilders.custom()
     SessionEndedRequestHandler,
   )
   .addErrorHandlers(ErrorHandler)
-  .addResponseInterceptors(KeepSessionOpenInterceptor)
+  .addRequestInterceptors(RequestClockInterceptor)
+  .addResponseInterceptors(KeepSessionOpenInterceptor, StructuredLogInterceptor)
   .withCustomUserAgent('kyle-alexa-assistant/1.0')
   .create();
 
@@ -683,6 +765,11 @@ const HICCUP_RESPONSE = {
 
 export const handler = async (event, context) => {
   try {
+    // EventBridge warming ping (optional; see README ops section) — return
+    // immediately so warm invocations cost ~1ms.
+    if (event?.warm === true) {
+      return { statusCode: 200, body: 'warm' };
+    }
     const isAlexaRequest = Boolean(event && event.request && event.version && event.context);
     if (isAlexaRequest) {
       return await skill.invoke(event, context);
