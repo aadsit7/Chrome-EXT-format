@@ -571,9 +571,32 @@ const FallbackIntentHandler = {
     );
   },
   handle(handlerInput) {
+    // Graceful recovery: never feels like a failure. Coach the carrier-phrase
+    // trick exactly ONCE per session; after that, short varied nudges. Marked
+    // distinctly in the structured log so routing improvements are measurable.
+    const attrs = handlerInput.attributesManager.getSessionAttributes();
+    const reqAttrs = handlerInput.attributesManager.getRequestAttributes();
+    reqAttrs.kyleOutcome = 'fallback';
+    handlerInput.attributesManager.setRequestAttributes(reqAttrs);
+
+    const nudges = [
+      "Didn't quite catch that — hit me again?",
+      'That one slipped by me — one more time?',
+      'My bad, say that once more?',
+    ];
+    let speech;
+    if (!attrs.fallbackCoached) {
+      attrs.fallbackCoached = true;
+      speech = "Hmm, missed that one. Pro tip: starting with ask, tell me, or question always gets through — like, ask what's the weather.";
+    } else {
+      const n = attrs.fallbackCount = (attrs.fallbackCount ?? 0) + 1;
+      speech = nudges[n % nudges.length];
+    }
+    handlerInput.attributesManager.setSessionAttributes(attrs);
+
     return handlerInput.responseBuilder
-      .speak('Say ask, tell me, or question before your request.')
-      .reprompt('Say ask, tell me, or question before your request.')
+      .speak(speech)
+      .reprompt("What'll it be?")
       .withShouldEndSession(false)
       .getResponse();
   },

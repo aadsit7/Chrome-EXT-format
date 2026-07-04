@@ -116,7 +116,7 @@ ask deploy
 
 The **Lambda ARN** is already set in `skill-package/skill.json` at `apis.custom.endpoint.uri` (`arn:aws:lambda:us-east-1:611491981154:function:kyle-alexa-assistant`) — update it there if you redeploy the function under a different name or region. `ask deploy` creates the skill and prints the Skill ID — use it for the Lambda trigger in step 2.3.
 
-> **Invocation name note:** the model uses the one-word invocation `"kyle"`. One-word invocation names are **not certifiable for public skills**, but they work fine in development mode on your own devices. If your device won't open the skill, change `invocationName` in `skill-package/interactionModels/custom/en-US.json` to `"hey kyle"` and redeploy.
+> **Invocation name note:** the invocation is **`"hey kyle"`** (say *"Alexa, open hey kyle"*). It was originally the one-word `"kyle"`, but real devices frequently missed or misheard it — the two-word form recognizes far more reliably and is also the certifiable shape. The interaction model also carries ~40 carrier/question-word sample patterns ("what is…", "who is…", "how do I…", "is…", "can…") so natural speech routes to ChatIntent instead of FallbackIntent.
 
 For subsequent deploys, just run:
 

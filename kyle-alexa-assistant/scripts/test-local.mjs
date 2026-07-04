@@ -328,11 +328,46 @@ await test('AMAZON.RepeatIntent re-speaks the last reply with session open', asy
   assert(res.response.shouldEndSession === false, 'expected session to stay open');
 });
 
-await test('AMAZON.FallbackIntent coaches carrier phrases with session open', async () => {
-  const res = await handler(alexaEnvelope(intentRequest('AMAZON.FallbackIntent')), {});
-  assert(/ask, tell me, or question/i.test(speechOf(res)), `expected carrier-phrase coaching; got ${speechOf(res)}`);
-  assert(res.response.shouldEndSession === false, 'expected session to stay open');
-  assert(res.response.reprompt, 'expected a reprompt');
+await test('AMAZON.FallbackIntent coaches ONCE, then varies, always mic open', async () => {
+  const res1 = await handler(alexaEnvelope(intentRequest('AMAZON.FallbackIntent')), {});
+  assert(/ask, tell me, or question/i.test(speechOf(res1)), `expected the one-time coaching; got ${speechOf(res1)}`);
+  assert(res1.response.shouldEndSession === false && res1.response.reprompt, 'expected open session + reprompt');
+
+  const res2 = await handler(alexaEnvelope(intentRequest('AMAZON.FallbackIntent'), res1.sessionAttributes), {});
+  assert(!/ask, tell me, or question/i.test(speechOf(res2)), `expected a short nudge, not repeat coaching; got ${speechOf(res2)}`);
+  assert(speechOf(res2).length > 0 && res2.response.shouldEndSession === false, 'expected varied nudge with session open');
+
+  const res3 = await handler(alexaEnvelope(intentRequest('AMAZON.FallbackIntent'), res2.sessionAttributes), {});
+  assert(speechOf(res3) !== speechOf(res2), 'expected the nudges to vary between consecutive fallbacks');
+});
+
+await test('Fallback hits are marked distinctly in the structured log (outcome: fallback)', async () => {
+  const lines = [];
+  const realLog = console.log;
+  console.log = (...args) => { lines.push(args.join(' ')); realLog(...args); };
+  try {
+    await handler(alexaEnvelope(intentRequest('AMAZON.FallbackIntent')), {});
+    const entry = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean).find((l) => l.kyle === 1);
+    assert(entry, 'expected a structured log line');
+    assert(entry.outcome === 'fallback', `expected outcome "fallback", got ${entry.outcome}`);
+    assert(entry.intent === 'AMAZON.FallbackIntent', 'expected the intent recorded');
+  } finally {
+    console.log = realLog;
+  }
+});
+
+await test('Interaction model: "hey kyle" invocation, broad question-word samples, no bare {query}', async () => {
+  const { readFileSync } = await import('node:fs');
+  const model = JSON.parse(readFileSync(path.join(here, '..', 'skill-package', 'interactionModels', 'custom', 'en-US.json')));
+  const lm = model.interactionModel.languageModel;
+  assert(lm.invocationName === 'hey kyle', `expected invocation "hey kyle", got "${lm.invocationName}"`);
+  const chat = lm.intents.find((i) => i.name === 'ChatIntent');
+  for (const s of ['what is {query}', 'who is {query}', 'how do i {query}', 'why {query}', 'when {query}', 'where {query}', 'is {query}', 'can {query}', 'does {query}', 'do you {query}', 'whats {query}']) {
+    assert(chat.samples.includes(s), `expected sample "${s}"`);
+  }
+  assert(!chat.samples.includes('{query}'), 'bare {query} must stay out (Amazon rejects it)');
+  assert(chat.samples.length >= 40, `expected substantially broadened samples, got ${chat.samples.length}`);
 });
 
 await test('Reminder tool-use turn still saves history to session attributes', async () => {
