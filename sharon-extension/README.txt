@@ -126,6 +126,11 @@ edits here write straight back to the database.
 
 Troubleshooting
 ---------------
+- "unknown action: assist" — your Apps Script DEPLOYMENT is older than the
+  code. Pasting new code into the editor is not enough: the /exec URL serves
+  the version pinned to the deployment. Open the Sheet → Extensions → Apps
+  Script, paste the latest backend/Code.gs, then Deploy → Manage deployments
+  → edit (pencil) → Version: "New version" → Deploy. The URL doesn't change.
 - "Sharon hit a snag…" — the server reported a problem. Check that PROXY_URL
   and API_KEY in config.js match the deployment, and that the Script
   Properties are set. Redeploy the web app after any Code.gs change.
