@@ -1,7 +1,7 @@
 {
   "interactionModel": {
     "languageModel": {
-      "invocationName": "kyle",
+      "invocationName": "hey kyle",
       "intents": [
         {
           "name": "ChatIntent",
@@ -17,6 +17,7 @@
             "answer {query}",
             "question {query}",
             "search for {query}",
+            "search {query}",
             "look up {query}",
             "find out {query}",
             "what about {query}",
@@ -26,7 +27,33 @@
             "help me with {query}",
             "please {query}",
             "hey {query}",
-            "about {query}"
+            "about {query}",
+            "what is {query}",
+            "what {query}",
+            "whats {query}",
+            "who is {query}",
+            "who {query}",
+            "how do i {query}",
+            "how {query}",
+            "why {query}",
+            "when {query}",
+            "where {query}",
+            "is {query}",
+            "are {query}",
+            "was {query}",
+            "can {query}",
+            "could {query}",
+            "would {query}",
+            "will {query}",
+            "does {query}",
+            "did {query}",
+            "do you {query}",
+            "should i {query}",
+            "tell me about {query}",
+            "talk about {query}",
+            "explain {query}",
+            "define {query}",
+            "give me {query}"
           ]
         },
         {
