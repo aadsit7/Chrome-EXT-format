@@ -357,13 +357,13 @@ await test('Fallback hits are marked distinctly in the structured log (outcome: 
   }
 });
 
-await test('Interaction model: "hey kyle" invocation, broad question-word samples, no bare {query}', async () => {
+await test('Interaction model: "my assistant" invocation, broad question-word samples, no bare {query}', async () => {
   const { readFileSync } = await import('node:fs');
   const model = JSON.parse(readFileSync(path.join(here, '..', 'skill-package', 'interactionModels', 'custom', 'en-US.json')));
   const lm = model.interactionModel.languageModel;
-  assert(lm.invocationName === 'hey kyle', `expected invocation "hey kyle", got "${lm.invocationName}"`);
+  assert(lm.invocationName === 'my assistant', `expected invocation "my assistant", got "${lm.invocationName}"`);
   const chat = lm.intents.find((i) => i.name === 'ChatIntent');
-  for (const s of ['what is {query}', 'who is {query}', 'how do i {query}', 'why {query}', 'when {query}', 'where {query}', 'is {query}', 'can {query}', 'does {query}', 'do you {query}', 'whats {query}']) {
+  for (const s of ['what is {query}', 'who is {query}', 'how do i {query}', 'why {query}', 'when {query}', 'where {query}', 'is {query}', 'can {query}', 'does {query}', 'do you {query}', 'whats {query}', "what's {query}"]) {
     assert(chat.samples.includes(s), `expected sample "${s}"`);
   }
   assert(!chat.samples.includes('{query}'), 'bare {query} must stay out (Amazon rejects it)');
