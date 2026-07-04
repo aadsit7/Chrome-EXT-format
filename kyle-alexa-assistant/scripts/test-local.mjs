@@ -62,6 +62,30 @@ function mockClaudeResponse(requestBody) {
   }
 
   const userText = lastContent.filter((b) => b.type === 'text').map((b) => b.text).join(' ');
+  if (/talking about|where we left|resume/i.test(userText)) {
+    return {
+      id: 'msg_mock_r1', type: 'message', role: 'assistant', model: 'claude-haiku-4-5',
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'We were talking about surfing, dude — wanna keep going?' }],
+      usage: { input_tokens: 80, output_tokens: 16 },
+    };
+  }
+  if (/forget everything/i.test(userText)) {
+    return {
+      id: 'msg_mock_f2', type: 'message', role: 'assistant', model: 'claude-haiku-4-5',
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 'toolu_mock_f2', name: 'clear_history', input: { scope: 'everything' } }],
+      usage: { input_tokens: 80, output_tokens: 25 },
+    };
+  }
+  if (/start fresh|new conversation|clear the slate/i.test(userText)) {
+    return {
+      id: 'msg_mock_f1', type: 'message', role: 'assistant', model: 'claude-haiku-4-5',
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 'toolu_mock_f1', name: 'clear_history', input: { scope: 'conversation' } }],
+      usage: { input_tokens: 80, output_tokens: 25 },
+    };
+  }
   if (/cancel.*timer/i.test(userText)) {
     return {
       id: 'msg_mock_t1', type: 'message', role: 'assistant', model: 'claude-haiku-4-5',
@@ -141,6 +165,17 @@ globalThis.fetch = async (input, init = {}) => {
 
   return realFetch(input, init);
 };
+
+// In-memory persistent store — memory.mjs uses this instead of DynamoDB.
+globalThis.__kyleMemoryStore = new Map();
+const memStore = globalThis.__kyleMemoryStore;
+function seedMemory(id, { history = [], notes = [], lastTurnAt = 0 } = {}) {
+  memStore.set(`user#${id}`, { pk: `user#${id}`, history, notes, lastTurnAt });
+}
+function readMemory(id) {
+  return memStore.get(`user#${id}`) ?? { history: [], notes: [], lastTurnAt: 0 };
+}
+const DEFAULT_USER = 'amzn1.ask.account.test';
 
 // Import AFTER stubbing so module init picks up the environment.
 const { handler } = await import(path.join(here, '..', 'lambda', 'index.mjs'));
@@ -360,6 +395,115 @@ await test('Speaker (no display) gets no APL directive and unchanged behavior', 
   assert(!directives.some((d) => String(d.type).startsWith('Alexa.Presentation.APL')),
     `expected no APL directives on a speaker; got ${JSON.stringify(directives.map((d) => d.type))}`);
   assert(speechOf(res).length > 0 && res.response.shouldEndSession === false, 'expected normal spoken response');
+});
+
+await test('Launch auto-resumes when the stored conversation is under 2 hours old', async () => {
+  seedMemory(DEFAULT_USER, {
+    history: [{ role: 'user', content: 'tell me about surfing' }, { role: 'assistant', content: 'Surfing is rad.' }],
+    lastTurnAt: Date.now() - 10 * 60 * 1000, // 10 minutes ago
+  });
+  const res = await handler(alexaEnvelope({ type: 'LaunchRequest', requestId: 'mr1', timestamp: new Date().toISOString(), locale: 'en-US' }), {});
+  assert(/picking up where we left off/i.test(speechOf(res)), `expected resume cue; got ${speechOf(res)}`);
+  assert((res.sessionAttributes?.history ?? []).length === 2, 'expected stored history loaded into the session');
+  memStore.clear();
+});
+
+await test('Launch greets fresh when the stored conversation is stale (>2h), notes still loaded', async () => {
+  seedMemory(DEFAULT_USER, {
+    history: [{ role: 'user', content: 'old topic' }, { role: 'assistant', content: 'Old reply.' }],
+    notes: ['prefers Celsius'],
+    lastTurnAt: Date.now() - 3 * 60 * 60 * 1000, // 3 hours ago
+  });
+  const res = await handler(alexaEnvelope({ type: 'LaunchRequest', requestId: 'mr2', timestamp: new Date().toISOString(), locale: 'en-US' }), {});
+  assert(!/picking up where we left off/i.test(speechOf(res)), 'expected a fresh greeting, not the resume cue');
+  assert((res.sessionAttributes?.notes ?? []).includes('prefers Celsius'), 'expected long-term notes loaded');
+  assert((res.sessionAttributes?.history ?? []).length === 2, 'history stays available for an explicit resume');
+  memStore.clear();
+});
+
+await test('Resume command recaps the stored topic', async () => {
+  seedMemory(DEFAULT_USER, {
+    history: [{ role: 'user', content: 'tell me about surfing' }, { role: 'assistant', content: 'Surfing is rad.' }],
+    lastTurnAt: Date.now() - 5 * 60 * 1000,
+  });
+  const res = await handler(alexaEnvelope(chatIntent('what were we talking about')), {});
+  assert(/surfing/i.test(speechOf(res)), `expected a topic recap; got ${speechOf(res)}`);
+  assert(res.response.shouldEndSession === false, 'expected session open');
+  memStore.clear();
+});
+
+await test('Fresh-start command wipes conversation but long-term notes survive', async () => {
+  seedMemory(DEFAULT_USER, {
+    history: [{ role: 'user', content: 'old stuff' }, { role: 'assistant', content: 'old reply' }],
+    notes: ['allergic to peanuts'],
+    lastTurnAt: Date.now() - 5 * 60 * 1000,
+  });
+  const res = await handler(alexaEnvelope(chatIntent('start fresh')), {});
+  assert(speechOf(res).length > 0, 'expected a spoken confirmation');
+  const stored = readMemory(DEFAULT_USER);
+  assert(!stored.history.some((m) => m.content === 'old stuff'), 'expected old conversation wiped from the store');
+  assert(stored.notes.includes('allergic to peanuts'), 'expected long-term notes to SURVIVE a fresh start');
+  memStore.clear();
+});
+
+await test('"Forget everything about me" wipes notes too', async () => {
+  seedMemory(DEFAULT_USER, {
+    history: [{ role: 'user', content: 'old stuff' }, { role: 'assistant', content: 'old reply' }],
+    notes: ['allergic to peanuts'],
+    lastTurnAt: Date.now() - 5 * 60 * 1000,
+  });
+  await handler(alexaEnvelope(chatIntent('yes forget everything about me')), {});
+  const stored = readMemory(DEFAULT_USER);
+  assert(stored.notes.length === 0, 'expected long-term notes wiped');
+  assert(!stored.history.some((m) => m.content === 'old stuff'), 'expected conversation wiped');
+  memStore.clear();
+});
+
+await test('Multi-turn memory: history persists to the store across turns', async () => {
+  const res1 = await handler(alexaEnvelope(chatIntent('say hello')), {});
+  const res2 = await handler(alexaEnvelope(chatIntent('say hello again'), res1.sessionAttributes), {});
+  assert((res2.sessionAttributes.history ?? []).length >= 4, 'expected history to grow across turns');
+  const stored = readMemory(DEFAULT_USER);
+  assert(stored.history.length >= 4, 'expected the store updated after each turn');
+  assert(stored.lastTurnAt > 0, 'expected lastTurnAt stamped');
+  memStore.clear();
+});
+
+await test('Memory is keyed per person (voice profiles) with userId fallback', async () => {
+  seedMemory('person-A', {
+    history: [{ role: 'user', content: 'A topic' }, { role: 'assistant', content: 'A reply' }],
+    lastTurnAt: Date.now() - 5 * 60 * 1000,
+  });
+  const envelope = alexaEnvelope({ type: 'LaunchRequest', requestId: 'mp1', timestamp: new Date().toISOString(), locale: 'en-US' });
+  envelope.context.System.person = { personId: 'person-A' };
+  const res = await handler(envelope, {});
+  assert(/picking up where we left off/i.test(speechOf(res)), 'expected person-A memory to drive the resume');
+  memStore.clear();
+});
+
+await test('Daily call cap: Kyle declines past DAILY_CALL_CAP with session open', async () => {
+  process.env.DAILY_CALL_CAP = '2';
+  try {
+    memStore.delete('global#daily-calls');
+    await handler(alexaEnvelope(chatIntent('say hello')), {});
+    await handler(alexaEnvelope(chatIntent('say hello')), {});
+    const res3 = await handler(alexaEnvelope(chatIntent('say hello')), {});
+    assert(/daily limit/i.test(speechOf(res3)), `expected the polite decline; got ${speechOf(res3)}`);
+    assert(res3.response.shouldEndSession === false, 'expected session open on the decline');
+  } finally {
+    delete process.env.DAILY_CALL_CAP;
+    memStore.clear();
+  }
+});
+
+await test('Diagnostics voice command reports model, memory, and calls without a Claude call', async () => {
+  memStore.delete('global#daily-calls');
+  const res = await handler(alexaEnvelope(chatIntent('diagnostics')), {});
+  const speech = speechOf(res);
+  assert(/haiku/i.test(speech), `expected the model in the report; got ${speech}`);
+  assert(/calls today: 0/i.test(speech), `expected zero calls counted (diagnostics is free); got ${speech}`);
+  assert(res.response.shouldEndSession === false, 'expected session open');
+  memStore.clear();
 });
 
 await test('EVERY non-Stop/Cancel response keeps the session open with a reprompt (incl. APL branch)', async () => {

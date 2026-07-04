@@ -70,6 +70,34 @@ const TOOLS = [
     },
   },
   {
+    name: 'clear_history',
+    description:
+      'Clear Kyle\'s memory when the user asks to start over in ANY natural phrasing ("start fresh", "new conversation", "clear the slate", "actually forget all that, new topic"). scope "conversation" wipes only the chat history — long-term notes survive. scope "everything" ALSO wipes saved notes; only use it when the user says something like "forget everything about me" AND has verbally confirmed after you warn them.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        scope: {
+          type: 'string',
+          enum: ['conversation', 'everything'],
+          description: '"conversation" = wipe chat history only (default). "everything" = also erase long-term notes; requires prior spoken confirmation.',
+        },
+      },
+      required: ['scope'],
+    },
+  },
+  {
+    name: 'remember_note',
+    description:
+      'Save a short durable fact or preference the user shares that will matter in future conversations ("remember I\'m allergic to peanuts", "my wife\'s name is Sara"). Do not save trivia from ordinary chat.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        note: { type: 'string', description: 'One short sentence stating the fact or preference.' },
+      },
+      required: ['note'],
+    },
+  },
+  {
     name: 'manage_timers',
     description:
       'List, pause, resume, or cancel timers on the user’s Echo. Use "list" to see timers (returns timer_id per timer), "cancel_all" to clear every timer, or "pause"/"resume"/"cancel" with a timer_id from list.',
@@ -87,6 +115,37 @@ const TOOLS = [
     },
   },
 ];
+
+// Memory tools run against the handler-provided actions; everything else goes
+// to the Alexa REST executors. Memory failures return informative tool_result
+// errors so Kyle can explain conversationally — never throw.
+async function executeMemoryOrAlexaTool(toolUse, alexaContext, { isWeb, memoryActions }) {
+  const { name, input } = toolUse;
+  if (name === 'clear_history' || name === 'remember_note') {
+    if (!memoryActions) {
+      return {
+        content: 'Error: memory is not available in this context. On the web page, history lives in the browser — tell the user to refresh the page for a clean slate.',
+        isError: true,
+      };
+    }
+    try {
+      if (name === 'clear_history') {
+        const scope = input.scope === 'everything' ? 'everything' : 'conversation';
+        await memoryActions.clearHistory(scope);
+        return {
+          content: scope === 'everything'
+            ? 'All memory wiped: conversation history and long-term notes are gone.'
+            : 'Conversation history cleared. Long-term notes are still saved.',
+        };
+      }
+      await memoryActions.rememberNote(String(input.note ?? '').trim());
+      return { content: 'Note saved for future conversations.' };
+    } catch (err) {
+      return { content: `Error: memory operation failed (${err.message}).`, isError: true };
+    }
+  }
+  return executeAlexaTool(name, input, alexaContext, { isWeb });
+}
 
 /**
  * Strip markdown so the returned text is safe to speak via Alexa SSML/plain output.
@@ -120,9 +179,11 @@ export function stripMarkdown(text) {
  * @param {object|null} options.alexaContext - { apiEndpoint, apiAccessToken } for tool execution; null on the web path
  * @param {string} options.timeContext - "Current local datetime: ... Timezone: ..." string injected per turn
  * @param {boolean} options.isWeb - true when serving the web chat page (Alexa tools unavailable)
+ * @param {string[]} options.notes - long-term notes about this user, injected as context
+ * @param {object|null} options.memoryActions - { clearHistory(scope), rememberNote(note) } handlers
  * @returns {Promise<{reply: string, needsPermission: 'reminders'|'timers'|null}>}
  */
-export async function runKyle(history, { alexaContext = null, timeContext = '', isWeb = false } = {}) {
+export async function runKyle(history, { alexaContext = null, timeContext = '', isWeb = false, notes = [], memoryActions = null } = {}) {
   const deadline = Date.now() + OVERALL_TIMEOUT_MS;
   let needsPermission = null;
 
@@ -132,6 +193,7 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
   const contextNote = [
     timeContext,
     isWeb ? 'This conversation is happening on the web chat page, not an Echo device.' : '',
+    notes.length > 0 ? `Long-term notes about this user: ${notes.map((n) => `- ${n}`).join(' ')}` : '',
   ].filter(Boolean).join(' ');
   if (contextNote) {
     systemBlocks.push({ type: 'text', text: contextNote });
@@ -179,7 +241,7 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
     const toolUses = response.content.filter((b) => b.type === 'tool_use');
     const toolResults = [];
     for (const toolUse of toolUses) {
-      const result = await executeAlexaTool(toolUse.name, toolUse.input, alexaContext, { isWeb });
+      const result = await executeMemoryOrAlexaTool(toolUse, alexaContext, { isWeb, memoryActions });
       if (result.needsPermission && !needsPermission) needsPermission = result.needsPermission;
       toolResults.push({
         type: 'tool_result',

@@ -1,20 +1,22 @@
 # Kyle — Alexa Voice Assistant Powered by Claude
 
-Kyle is a custom Alexa skill backed by the Claude API (`claude-haiku-4-5`), with a companion single-file web chat page. Claude decides — via tool use — when to search the web, create an Alexa reminder, or set an Alexa timer. Conversation history lives entirely in Alexa session attributes; there is no database.
+Kyle is a custom Alexa skill backed by the Claude API (`claude-haiku-4-5`), with a companion single-file web chat page. Claude decides — via tool use — when to search the web, create an Alexa reminder, set an Alexa timer, or manage his own memory. Conversation history lives in Alexa session attributes during a session and (optionally) in a small DynamoDB table between sessions.
 
-## What Kyle CAN and CANNOT do
+## What Kyle Can Do
 
-Custom Alexa skills run sandboxed, so set expectations accordingly:
+- **Converse naturally, multi-turn** — early-2000s persona, truth and accuracy first, mic stays open every turn
+- **Search the web** for current info (news, weather, scores, prices)
+- **Reminders** — create, list, and cancel, with the voice-permission flow when the grant is missing
+- **Timers** — create, list, pause, resume, cancel (one or all)
+- **Remember between sessions** — auto-resumes conversations under 2 hours old ("picking up where we left off"), keeps long-term notes (preferences, durable facts), separate memory per household member via Alexa voice profiles
+- **Voice control over memory** — "continue where we left off" / "what were we talking about" (recap), "start fresh" / "clear the slate" (wipe conversation, notes survive), "forget everything about me" (wipes notes too, after a spoken confirmation) — all understood in natural phrasing, not rigid commands
+- **Echo Show** — animated talking Kyle with the spoken reply captioned underneath; plain speakers unaffected
+- **Diagnostics** — say "diagnostics" for model, memory status, and Claude calls used today
+- **Cost guardrail** — politely declines past a daily Claude-call cap (`DAILY_CALL_CAP`, default 300)
 
-| Kyle CAN ✅ | Kyle CANNOT ❌ |
-|---|---|
-| Hold natural multi-turn conversations | Set native alarms (offers a timer instead) |
-| Search the web for current info | Control smart home devices |
-| Create reminders (and list/delete ones he created) | Play Amazon Music |
-| Create, pause, and cancel timers | Access shopping lists (Lists API is deprecated) |
-| Explain his own limits gracefully | Invoke or hand off to other skills |
+Kyle CANNOT (sandboxed skill limits): set native alarms (does a timer/reminder instead), control smart home devices, play Amazon Music, access shopping lists, or invoke other skills — and his prompt makes him say so gracefully while doing the nearest thing he can.
 
-Kyle's system prompt makes him explain these limits when asked (e.g. *"I can't set alarms, but I can set a timer for that instead — want me to?"*).
+**Memory degrades gracefully:** without the DynamoDB table (or before you create it), Kyle works exactly like the session-only build — cross-session memory and the call cap simply stay off.
 
 ## Project layout
 
@@ -40,6 +42,59 @@ kyle-alexa-assistant/
 - **ASK CLI** installed and configured: `npm i -g ask-cli && ask configure`
 - **AWS CLI** installed and configured: `aws configure`
 - An **Anthropic API key** (console.anthropic.com)
+
+## ONE-TIME MANUAL AWS STEPS (complete list)
+
+Every manual step you must perform yourself, in order. Steps 1–5 are required for basic operation; 6–8 enable memory, the cost cap, and error alerts.
+
+1. **Create the Lambda** — name `kyle-alexa-assistant`, runtime Node.js 22.x, handler `index.handler`, timeout 10 s, memory 256 MB+.
+2. **Environment variables on the Lambda:**
+   - `ANTHROPIC_API_KEY` = your key *(required)*
+   - `MEMORY_TABLE` = `kyle-memory` *(optional — defaults to this; only set to override)*
+   - `DAILY_CALL_CAP` = `300` *(optional — defaults to 300)*
+   - `DISABLE_APL` = unset *(set to `true` only to kill all display output while debugging)*
+3. **Alexa Skills Kit trigger** on the Lambda, with your Skill ID (printed by `ask deploy`), skill-ID verification enabled.
+4. **Function URL** (auth type NONE) for the web chat page.
+5. **Upload the code** — `./scripts/deploy.sh` (or zip + upload).
+6. **DynamoDB table for memory + call cap** *(skip = Kyle runs session-only)*:
+   ```bash
+   aws dynamodb create-table \
+     --table-name kyle-memory \
+     --attribute-definitions AttributeName=pk,AttributeType=S \
+     --key-schema AttributeName=pk,KeyType=HASH \
+     --billing-mode PAY_PER_REQUEST
+   ```
+7. **IAM permission** — attach this inline policy to the Lambda's execution role (Console → Lambda → Configuration → Permissions → execution role → Add inline policy → JSON), replacing `ACCOUNT_ID`:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
+       "Resource": "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/kyle-memory"
+     }]
+   }
+   ```
+8. **CloudWatch error alarm → SNS email** (>3 Lambda errors in 5 minutes):
+   ```bash
+   # a) SNS topic + your email subscription (confirm the email Amazon sends you!)
+   aws sns create-topic --name kyle-alerts
+   aws sns subscribe \
+     --topic-arn arn:aws:sns:us-east-1:ACCOUNT_ID:kyle-alerts \
+     --protocol email --notification-endpoint aadsit7@gmail.com
+
+   # b) the alarm
+   aws cloudwatch put-metric-alarm \
+     --alarm-name kyle-lambda-errors \
+     --namespace AWS/Lambda --metric-name Errors \
+     --dimensions Name=FunctionName,Value=kyle-alexa-assistant \
+     --statistic Sum --period 300 --evaluation-periods 1 \
+     --threshold 3 --comparison-operator GreaterThanThreshold \
+     --treat-missing-data notBreaching \
+     --alarm-actions arn:aws:sns:us-east-1:ACCOUNT_ID:kyle-alerts
+   ```
+9. **Alexa app permission grant** — see "GRANT PERMISSIONS" below (Reminders toggle; without it reminder creation 403s).
+10. *(Optional, for per-person memory)* each household member sets up an **Alexa voice profile** (Alexa app → Settings → Your Profile → Voice ID); without profiles all household members share the account-level memory.
 
 ## 2. One-time Lambda setup
 
@@ -106,7 +161,7 @@ Edit `lambda/system-prompt.md` — persona, tone, tool judgment, and limits all 
 How the solution maps to Amazon's skill policies — **review the [Alexa Skills Certification requirements](https://developer.amazon.com/en-US/docs/alexa/custom-skills/certification-requirements-for-custom-skills.html) and [Alexa privacy requirements](https://developer.amazon.com/en-US/docs/alexa/custom-skills/policy-requirements-for-an-alexa-skill.html) carefully before any public distribution.**
 
 **1. No personal data stored or shared outside Amazon's ecosystem.**
-- Nothing is *stored* anywhere: no database, no files, no third-party storage. Conversation history lives only in Alexa **session attributes** (inside Amazon's infrastructure) and is discarded when the session ends.
+- Storage stays inside **your own AWS account**: session history lives in Alexa session attributes, and cross-session memory (history + notes) lives in your own DynamoDB table — no third-party storage. Users can wipe their conversation ("start fresh") or all stored data about them ("forget everything about me", spoken confirmation required) by voice at any time.
 - No Alexa identifiers ever leave Amazon: the `apiAccessToken`, `deviceId`, and `userId` are used exclusively to call Amazon's own REST APIs and are **never included** in requests to the Anthropic API (enforced in `claude.mjs` — see the privacy-boundary note on `runKyle`).
 - No user content is written to CloudWatch logs — handlers log only error objects and session-end reasons, never utterances or history.
 - **Disclosure required:** utterance *text* is transiently processed by the Anthropic API to generate replies (that is the skill's core function). Anthropic's API does not train on API data by default, but this is a third-party data processor — it must be disclosed in your privacy policy before certification, and users of a public skill must be able to find that disclosure.
@@ -139,7 +194,8 @@ The only third-party connection is the Anthropic API: HTTPS-only, authenticated 
 
 ## Architecture notes
 
-- **No database.** Conversation history is stored in Alexa session attributes (capped at the last 10 turns) and vanishes when the session ends. The web page keeps its own history client-side and sends it with each request.
+- **Memory.** During a session, conversation history rides in Alexa session attributes (capped at the last 10 turns). Between sessions, history + long-term notes persist to the `kyle-memory` DynamoDB table (inside your own AWS account), keyed per person (`personId` from Alexa voice profiles, falling back to `userId`). Auto-resume kicks in when the last turn is under 2 hours old. Without the table, Kyle silently degrades to session-only. The web page keeps its own history client-side and sends it with each request.
+- **Never-die errors.** A top-level try/catch around the whole handler returns a spoken "I hiccuped — say that again?" with the session open if anything escapes the skill's own error handler; the full error is logged to CloudWatch (pair with the error alarm in the one-time steps).
 - **Latency budget.** The Lambda timeout is 10 seconds. The Claude loop enforces a hard 8.5-second budget across all tool iterations (max 3), with 3-second timeouts on each Alexa REST call; on breach Kyle says "Still digging — ask me that again." and the session stays open.
 - **The mic stays open.** Every response sets `shouldEndSession: false` with a reprompt; only Stop/Cancel end the session. Bare "yes"/"no" answers route to AMAZON.YesIntent/NoIntent and are fed to Claude as ordinary conversation turns, and AMAZON.RepeatIntent re-speaks Kyle's last reply.
 - **Permissions flow.** If Claude tries to create a reminder without the grant, the handler responds with the `AskFor` voice-permissions directive (`Connections.SendRequest`) — Alexa asks the user out loud, and the answer comes back as a `Connections.Response` request that Kyle handles gracefully. Devices without voice-permission support get a consent card in the Alexa app instead.
