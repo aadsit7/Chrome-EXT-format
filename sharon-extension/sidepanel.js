@@ -2,10 +2,11 @@
 // page engines (page.js), the backend brain (api.js), and the UI (ui.js) into
 // one conversation loop:
 //
-//   listen → (instant command? do it locally) → editable transcript →
+//   listen → live transcript streams into the presence card → (instant
+//   command? do it locally) → visible 1.6s countdown (tap to edit) →
 //   assist() one round trip: Claude answers AND/OR reads-writes the Google
 //   Sheet database through tools AND/OR returns an on-page action plan →
-//   render cards → speak → listen again.
+//   answer cards in the thread (+ spoken-aloud line) → undo toast → listen.
 //
 // What makes this fast and conversational:
 //   • Real multi-turn memory: the last HISTORY_TURNS exchanges ride along
@@ -56,9 +57,8 @@ async function saveSettings() {
 }
 
 /* ------------------------------------------------------------------ *
- * First-open setup — the 3-step welcome checklist
- * (mic → connect memory → say hello). Until all three are done, problems
- * show up as checklist guidance instead of error cards.
+ * First-run setup — mic → connect memory → say hello.
+ * Lives in the welcome view once ever, then as status rows in Settings.
  * ------------------------------------------------------------------ */
 const SETUP_KEY = "sharon_setup";
 let setup = { mic: false, memory: false, hello: false };
@@ -83,8 +83,35 @@ function markSetup(step) {
   } catch (_) {
     /* ignore */
   }
-  ui.setWelcomeStep(step, { done: true });
-  if (setupComplete()) ui.hideWelcome();
+  refreshWelcomeSteps();
+  refreshSetupRows();
+  if (setupComplete() && ui.welcomeVisible()) ui.hideWelcome();
+}
+
+// Welcome step states: done steps get checks, the first open step is active.
+function refreshWelcomeSteps() {
+  const order = ["mic", "memory", "hello"];
+  let activeGiven = false;
+  for (const step of order) {
+    if (setup[step]) {
+      ui.setWelcomeStep(step, "done");
+    } else if (!activeGiven) {
+      activeGiven = true;
+      ui.setWelcomeStep(step, "active");
+    } else {
+      ui.setWelcomeStep(step, "pending");
+    }
+  }
+}
+
+function refreshSetupRows() {
+  ui.setSetupRow("mic", setup.mic, setup.mic ? "Allowed — Sharon can hear you" : "Not allowed yet");
+  ui.setSetupRow(
+    "memory",
+    setup.memory,
+    setup.memory ? "“Speaking Assistant” Sheet · connected" : "Not connected yet"
+  );
+  ui.setSetupRow("hello", setup.hello, setup.hello ? "Done — you two have met" : "You two haven't met yet");
 }
 
 // The mic step ticks only when permission is really granted (or when we
@@ -99,7 +126,7 @@ async function watchMicPermission() {
     status.addEventListener("change", check);
     check();
   } catch (_) {
-    /* the "heard you" path in onFinal/onInterim still covers it */
+    /* the "heard you" path still covers it */
   }
 }
 
@@ -155,44 +182,123 @@ async function ensureSessionId() {
 }
 
 /* ------------------------------------------------------------------ *
- * Status — single source of truth for the hero
+ * Status line — single source of truth for the header
  * ------------------------------------------------------------------ */
 let thinking = false;
+let hearing = false; // interim speech is actively streaming
 
 function updateStatus() {
   const micLive = !speech.isMicMuted() && !speech.isMicBlocked();
   ui.setMicIndicator(micLive);
   ui.setVoiceIndicator(!!settings.readAloud);
 
-  if (thinking || busy) {
-    ui.setStatus("thinking", "Thinking…");
-  } else if (pendingPlan) {
-    ui.setStatus("thinking", "Waiting for your okay — say “yes” or “no”");
-  } else if (speech.isPaused()) {
-    ui.setStatus("muted", "Paused — say “resume” to continue");
-  } else if (speech.isSpeaking()) {
-    ui.setStatus("speaking", "Reading aloud");
-  } else if (!micLive) {
-    ui.setStatus("muted", "Mic is off");
-  } else {
-    ui.setStatus("listening", "Listening — just talk");
-  }
-}
-
-function returnToListening() {
-  if (speech.isMicBlocked()) return;
-  if (agentTask || pendingPlan) return;
-  if (busy || thinking) return;
-  if (speech.isSpeaking()) return;
-  if (ui.hasCompose()) return;
-  ui.ensureComposeCard();
-  updateStatus();
+  if (thinking || busy) ui.setPhase("thinking");
+  else if (speech.isSpeaking()) ui.setPhase("speaking");
+  else if (hearing && micLive) ui.setPhase("hearing");
+  else if (!micLive) ui.setPhase("muted");
+  else ui.setPhase("listening");
 }
 
 // Speak + show a short local note from Sharon (no server round trip).
 function sharonSay(text) {
-  ui.addSharonReplyCard(text);
-  speech.speak(text, { onDone: returnToListening });
+  ui.addSharonBubble(text);
+  speech.speak(text, { onDone: updateStatus });
+}
+
+// Every error says what happened AND what to do next. During first-run
+// setup, problems surface as checklist guidance instead of thread noise.
+function reportProblem(msg, nextStep) {
+  if (!setupComplete() && ui.welcomeVisible()) {
+    ui.setWelcomeStep("memory", "active", msg + " " + (nextStep || ""));
+    return;
+  }
+  ui.addSharonBubble("I hit a snag: " + msg + (nextStep ? "\nWhat to do next: " + nextStep : ""));
+}
+
+/* ------------------------------------------------------------------ *
+ * The capture pipeline — stream → countdown → (edit) → send → undo
+ * ------------------------------------------------------------------ */
+const COUNTDOWN_MS = 1600;
+const HEARING_DECAY_MS = 1200;
+
+let pendingText = ""; // committed finals awaiting send
+let pendingConf = null;
+let editing = false;
+let hearingTimer = null;
+
+function resetCapture() {
+  pendingText = "";
+  pendingConf = null;
+  editing = false;
+  hearing = false;
+  if (hearingTimer) {
+    clearTimeout(hearingTimer);
+    hearingTimer = null;
+  }
+  ui.liveClear();
+  ui.setCapture("idle");
+  updateStatus();
+}
+
+function onInterimHeard(text) {
+  markSetup("mic");
+  hearing = true;
+  if (hearingTimer) clearTimeout(hearingTimer);
+  hearingTimer = setTimeout(() => {
+    hearing = false;
+    updateStatus();
+  }, HEARING_DECAY_MS);
+  if (editing) return; // the user took the keyboard — don't fight them
+  ui.liveHideStrip();
+  ui.setCapture("hearing");
+  ui.liveTranscript(pendingText, text);
+  updateStatus();
+}
+
+function startCountdown() {
+  ui.setCapture("counting");
+  ui.liveTranscript(pendingText, "");
+  ui.liveShowStrip(COUNTDOWN_MS, () => commitPending(true));
+}
+
+function openEditor() {
+  editing = true;
+  ui.setCapture("editing");
+  ui.liveOpenEditor(pendingText);
+  updateStatus();
+}
+
+function commitPending(auto) {
+  const text = pendingText.trim();
+  const conf = pendingConf;
+  resetCapture();
+  if (!text) return;
+  const turnEl = ui.addUserTurn(text, { spoken: true });
+  sendTurn(text, { raw: text, conf });
+  if (auto) {
+    ui.showUndoToast({
+      label: "Sent what I heard",
+      onUndo: () => undoTurn(turnEl, text),
+    });
+  }
+}
+
+// Undo cancels the pending answer and returns the text to the composer.
+function undoTurn(turnEl, text) {
+  if (abortController) {
+    try {
+      abortController.abort();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  ui.removeCard(turnEl);
+  if (ui.els.composerInput) {
+    ui.els.composerInput.value = text;
+    ui.setComposerHasText(true);
+    ui.els.composerInput.focus();
+  }
+  updateStatus();
 }
 
 /* ------------------------------------------------------------------ *
@@ -279,7 +385,6 @@ function tryImmediateCommand(text, cmd) {
     speech.stopSpeaking();
     thinking = false;
     updateStatus();
-    returnToListening();
     return true;
   }
   if (cmd === "pause") {
@@ -314,14 +419,14 @@ function handleUserUtterance(text, conf, { typed = false } = {}) {
     const yes = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|confirm|go for it|sounds good)$/.test(cmd);
     const no = /^(no|nope|nah|stop|cancel|don'?t|do not|never ?mind|wait|hold on)$/.test(cmd);
     if (yes) {
-      ui.discardCompose();
+      resetCapture();
       const plan = pendingPlan;
       pendingPlan = null;
       executePlan(plan);
       return;
     }
     if (no) {
-      ui.discardCompose();
+      resetCapture();
       cancelAgentTask();
       sharonSay("Okay, I'll leave it.");
       updateStatus();
@@ -331,30 +436,37 @@ function handleUserUtterance(text, conf, { typed = false } = {}) {
     cancelAgentTask();
   }
 
-  // Instant commands fire immediately and never go through the transcript.
+  // Instant commands fire immediately and never enter the transcript.
   if (tryImmediateCommand(text, cmd)) {
-    ui.discardCompose();
+    if (!typed) resetCapture();
     return;
   }
 
-  // Typed text skips the editable stage (it was typed deliberately) but
-  // rides the exact same pipeline as spoken text from here on.
+  // Typed text was written deliberately — it sends straight away, through
+  // the exact same pipeline as speech.
   if (typed) {
-    ui.discardComposeIfEmpty();
-    ui.addUserCard(text);
+    ui.addUserTurn(text, { spoken: false });
     sendTurn(text, {});
     return;
   }
 
-  // Spoken text becomes editable transcript content with an auto-send.
-  ui.composeAppend(text, conf);
-  ui.setStatus("listening", "Got it — edit anything, then send");
+  // Spoken text: while the editor is open, new words join the draft.
+  if (editing) {
+    if (ui.els.lcEditArea) ui.els.lcEditArea.value = (ui.els.lcEditArea.value + " " + text).trim();
+    return;
+  }
+
+  // Otherwise accumulate and (re)start the visible auto-send countdown.
+  pendingText = pendingText ? pendingText + " " + text : text;
+  if (conf != null && !Number.isNaN(conf)) pendingConf = conf;
+  startCountdown();
+  updateStatus();
 }
 
 /* ------------------------------------------------------------------ *
  * The main turn — one assist() round trip
  * ------------------------------------------------------------------ */
-async function sendTurn(userText, { raw = "", conf = null, showAsUser = true, thinkLabel } = {}) {
+async function sendTurn(userText, { raw = "", conf = null, showAsUser = true } = {}) {
   userText = (userText || "").trim();
   if (!userText) return;
 
@@ -372,7 +484,7 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true, th
   thinking = true;
   updateStatus();
 
-  const think = ui.showThinkingCard(thinkLabel || "Thinking…");
+  const think = ui.addThinkingBubble();
 
   try {
     const id = await ensureSessionId();
@@ -412,6 +524,7 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true, th
       return;
     }
     ui.removeCard(think);
+    ui.dismissToast();
 
     markSetup("memory");
     if (showAsUser) markSetup("hello");
@@ -420,33 +533,24 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true, th
     else remember("user", userText.length > 200 ? userText.slice(0, 200) : userText);
     remember("assistant", result.reply || "");
 
-    renderEvents(result.events || []);
+    renderEvents(userText, result.events || []);
 
     if (result.plan) {
       startAgentTask(userText, result.plan, agent ? agent._elementList : []);
       return;
     }
 
-    speakReply(result.reply);
+    renderAndSpeakReply(userText, result.reply, {
+      pageCtx: pageRestricted ? null : ctx,
+      question: showAsUser ? userText : "",
+    });
   } catch (err) {
     ui.removeCard(think);
     if (err && err.name === "AbortError") return;
-    const msg = err && err.message ? err.message : "I couldn't reach the server.";
-    if (!setupComplete()) {
-      // During first-time setup, guide from the checklist instead of an error card.
-      ui.setWelcomeStep("memory", {
-        done: false,
-        hint:
-          "That didn't reach your Sheet (" +
-          msg +
-          "). Open config.js, make sure PROXY_URL and API_KEY match your Apps Script deployment, then reload me and try again.",
-      });
-    } else {
-      ui.addErrorCard(
-        msg,
-        "Check your internet connection and try again. If it keeps happening, make sure PROXY_URL and API_KEY in config.js still match your Apps Script deployment."
-      );
-    }
+    reportProblem(
+      err && err.message ? err.message : "I couldn't reach the server.",
+      "Check your internet connection and try again. If it keeps happening, make sure PROXY_URL and API_KEY in config.js still match your Apps Script deployment."
+    );
   } finally {
     if (abortController === ac) {
       busy = false;
@@ -455,45 +559,146 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true, th
     // A just-started page task manages its own thinking state.
     if (!agentTask) thinking = false;
     updateStatus();
-    if (!agentTask && !pendingPlan) returnToListening();
   }
 }
 
-function speakReply(reply) {
+/* --------- rendering Sharon's side of the turn --------- */
+function isPageRecapIntent(text) {
+  return /\b(sum(mar)?\w*\s+(up\s+)?(this|the)\s+(page|article|tab)|what'?s\s+(this|the)\s+(page|article)\s+about|recap\s+(this|the)\s+(page|article)|read\s+me\s+this\s+page|tl;?dr)\b/i.test(
+    text || ""
+  );
+}
+
+function domainOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch (_) {
+    return "";
+  }
+}
+
+function domainsIn(text) {
+  const out = [];
+  const re = /\b([a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|gov|edu|co|dev|app|ai))\b/gi;
+  let m;
+  while ((m = re.exec(text || ""))) {
+    const d = m[1].toLowerCase().replace(/^www\./, "");
+    if (!out.includes(d)) out.push(d);
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
+function splitSentences(text) {
+  const out = (text || "")
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return out.length ? out : [(text || "").trim()].filter(Boolean);
+}
+
+// Displayed layer: pick the card the reply deserves. Spoken layer: the quiet
+// italic line under the card with what Sharon actually says aloud.
+function renderAndSpeakReply(userText, reply, { pageCtx, question } = {}) {
   const text = (reply || "").trim();
   if (!text) return;
-  const { lead, body } = ui.splitLead(text);
-  if (lead && body) {
-    ui.addGistCard(lead);
-    ui.addSharonReplyCard(body);
+
+  let card = null;
+  if (pageCtx && isPageRecapIntent(userText)) {
+    card = ui.addThisPageCard({
+      domain: domainOf(pageCtx.url),
+      question: question || "",
+      title: pageCtx.title || "",
+      bullets: splitSentences(text).slice(0, 5),
+    });
   } else {
-    ui.addSharonReplyCard(text);
+    const facts = ui.extractFacts(text);
+    if (facts) {
+      card = ui.addLookedUpCard({
+        question: question || "",
+        answer: facts.rest,
+        tiles: facts.tiles,
+        chips: domainsIn(text),
+      });
+    }
   }
-  speech.speak(text, { onDone: returnToListening });
+
+  if (card) {
+    // Two-layer rule: card = scannable; spoken line = what she says aloud.
+    if (settings.readAloud) ui.attachSpokenLine(card, text);
+  } else {
+    ui.addSharonBubble(text);
+  }
+  speech.speak(text, { onDone: updateStatus });
 }
 
-// Turn the backend's tool events into result cards.
-function renderEvents(events) {
+// Turn the backend's tool events into thread cards.
+function renderEvents(userText, events) {
   for (const e of events) {
     if (!e || !e.ok || !e.data) continue;
     const d = e.data;
     if (d.kind === "saved") {
-      ui.addSavedCard(d.content || "", d.entry_type || "note", d.title || "");
-      refreshNotesCount();
+      const isTask = d.entry_type === "task";
+      const cap = ui.addQuietCapture({
+        title: "Captured quietly — no reply needed",
+        sub: "Filed under " + (isTask ? "tasks" : "notes") + " in your Sheet",
+        onUndo: d.entry_id
+          ? async () => {
+              try {
+                await api.updateMemory({ entryId: d.entry_id, deleted: true });
+                cap.markRemoved();
+                refreshMemoryCount();
+              } catch (err) {
+                reportProblem(
+                  "I couldn't remove that from your Sheet.",
+                  "Check your connection, then delete it from Sharon's memory (the book icon)."
+                );
+              }
+            }
+          : null,
+      });
+      refreshMemoryCount();
     } else if (d.kind === "found" && Array.isArray(d.hits) && d.hits.length) {
-      ui.addFoundCard(d.hits);
+      const hits = d.hits;
+      if (hits.every((h) => h.entry_type === "task")) {
+        ui.addTasksCard({ hits, onToggle: toggleTaskFromCard });
+      } else {
+        ui.addNotesCard({
+          question: userText,
+          hits,
+          onRowTap: () => {
+            ui.openMemory();
+            loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
+          },
+        });
+      }
     } else if (d.kind === "updated") {
       const p = d.patch || {};
-      ui.addUpdatedCard(
-        p.deleted
-          ? "Deleted from your notes"
+      ui.addQuietCapture({
+        title: p.deleted
+          ? "Deleted from your Sheet"
           : p.status === "done"
           ? "Marked that task done"
-          : "Updated your notes"
-      );
-      refreshNotesCount();
+          : "Updated in your Sheet",
+        sub: "Synced with your Google Sheet",
+      });
+      refreshMemoryCount();
     }
     // "summarized" needs no card — the summary IS the spoken reply.
+  }
+}
+
+// Live checkboxes on the YOUR TASKS card — optimistic, then write back.
+async function toggleTaskFromCard(h, row, check) {
+  const wasDone = String(h.status) === "done";
+  ui.setTaskRowDone(row, check, !wasDone);
+  try {
+    await api.updateMemory({ entryId: h.entry_id, status: wasDone ? "open" : "done" });
+    h.status = wasDone ? "open" : "done";
+    refreshMemoryCount();
+  } catch (err) {
+    ui.setTaskRowDone(row, check, wasDone);
+    reportProblem("I couldn't update that task.", "Check your connection and tap the box again.");
   }
 }
 
@@ -514,14 +719,13 @@ function handlePlan(plan, elementList) {
   if (!agentTask) return;
 
   if (plan.say) {
-    ui.addSharonReplyCard(plan.say);
+    ui.addSharonBubble(plan.say);
   }
 
   if (!plan.actions || !plan.actions.length) {
     // Nothing to do — she's answering / finishing.
     if (plan.say) {
-      if (agentTask.acted) ui.addActionCard(plan.say);
-      speech.speak(plan.say, { onDone: returnToListening });
+      speech.speak(plan.say, { onDone: updateStatus });
     }
     cancelAgentTask();
     thinking = false;
@@ -531,11 +735,11 @@ function handlePlan(plan, elementList) {
 
   if (settings.confirmActions) {
     pendingPlan = { ...plan, _elements: elementList || [] };
-    const desc = page.describePlan(plan.actions, elementList || []);
     updateStatus();
+    const desc = page.describePlan(plan.actions, elementList || []);
     const ask =
       "I'm about to " + (desc || "act on the page") + '. Say "yes" to go ahead, or "no" to stop.';
-    ui.addSharonReplyCard(ask);
+    ui.addSharonBubble(ask);
     speech.speak(ask);
     return;
   }
@@ -547,7 +751,7 @@ async function executePlan(plan) {
   if (!agentTask) return;
   if (plan.say && !settings.confirmActions) speech.speak(plan.say);
   thinking = true;
-  ui.setStatus("thinking", "Working on the page…");
+  updateStatus();
 
   const res = await page.runActions(plan.actions);
   const results = (res && res.results) || [];
@@ -566,11 +770,11 @@ async function executePlan(plan) {
 
   if (plan.done) {
     const msg = plan.say || "Done.";
-    ui.addActionCard(msg);
+    ui.addSharonBubble(msg);
     cancelAgentTask();
     thinking = false;
     updateStatus();
-    speech.speak(msg, { onDone: returnToListening });
+    speech.speak(msg, { onDone: updateStatus });
     return;
   }
 
@@ -591,7 +795,7 @@ async function executePlan(plan) {
 
 async function agentStep() {
   if (!agentTask) return;
-  const think = ui.showThinkingCard("Looking at the page…");
+  const think = ui.addThinkingBubble();
   try {
     const id = await ensureSessionId();
     const ctx = await page.readPageContext({ fresh: true });
@@ -624,20 +828,19 @@ async function agentStep() {
     } else {
       // She answered in prose — treat it as the finish.
       const msg = result.reply || "Done.";
-      if (agentTask.acted) ui.addActionCard(msg);
-      else ui.addSharonReplyCard(msg);
+      ui.addSharonBubble(msg);
       remember("assistant", msg);
       cancelAgentTask();
       thinking = false;
       updateStatus();
-      speech.speak(msg, { onDone: returnToListening });
+      speech.speak(msg, { onDone: updateStatus });
     }
   } catch (err) {
     ui.removeCard(think);
     cancelAgentTask();
     thinking = false;
     updateStatus();
-    ui.addErrorCard(
+    reportProblem(
       (err && err.message) || "I couldn't reach the server.",
       "Check your internet connection, then ask me to try the task again."
     );
@@ -645,7 +848,7 @@ async function agentStep() {
 }
 
 /* ------------------------------------------------------------------ *
- * Auto-read — follow the user across tabs
+ * Auto-read — follow the user across tabs (opt-in via Preferences)
  * ------------------------------------------------------------------ */
 const READ_PAGE_TEXT = "Read me this page.";
 
@@ -654,9 +857,9 @@ async function evaluateActiveTab() {
   const tab = await page.getActiveTabReady();
   if (seq !== evalSeq) return;
 
-  if (!tab) ui.setTabContext(false, "");
-  else if (page.isRestricted(tab.url)) ui.setTabContext(false, tab.title || "A browser page");
-  else ui.setTabContext(true, tab.title || "This page");
+  if (!tab) ui.setTabTitle("no active tab");
+  else if (page.isRestricted(tab.url)) ui.setTabTitle(tab.title || "a browser page");
+  else ui.setTabTitle(tab.title || "this page");
 
   if (!tab || page.isRestricted(tab.url)) {
     restricted = true;
@@ -684,48 +887,51 @@ async function evaluateActiveTab() {
   lastReadKey = key;
 
   speech.stopSpeaking();
-  await sendTurn(READ_PAGE_TEXT, { showAsUser: false, thinkLabel: "Reading the page…" });
+  await sendTurn(READ_PAGE_TEXT, { showAsUser: false });
 }
 
 /* ------------------------------------------------------------------ *
- * Notes sheet — the database, browsable and editable
+ * Memory view — the Sheet, browsable and editable
  * ------------------------------------------------------------------ */
-let notesReqSeq = 0;
+let memReqSeq = 0;
 
-// Count badge on the Notes button — refreshed quietly in the background.
-// The backend caps results at 25, so 25 is shown as "25+".
-async function refreshNotesCount() {
+// Blue badge on the book icon = open-task count, refreshed quietly.
+async function refreshMemoryCount() {
   try {
     const hits = await api.searchMemory({ query: "", limit: 25, touch: false });
-    const n = Array.isArray(hits) ? hits.length : 0;
-    ui.setNotesBadge(n, n >= 25);
+    if (!Array.isArray(hits)) return;
     markSetup("memory");
+    const openTasks = hits.filter((h) => h.entry_type === "task" && String(h.status) !== "done").length;
+    ui.setMemBadge(openTasks);
   } catch (_) {
     /* leave the badge as it was */
   }
 }
 
-async function loadNotes(query) {
-  const seq = ++notesReqSeq;
-  ui.notesLoading();
+async function loadMemory(query) {
+  const seq = ++memReqSeq;
+  ui.memLoading();
   try {
     const hits = await api.searchMemory({ query: query || "", limit: 25, touch: false });
-    if (seq !== notesReqSeq) return;
+    if (seq !== memReqSeq) return;
     markSetup("memory");
+    const list = Array.isArray(hits) ? hits : [];
     if (!(query || "").trim()) {
-      const n = Array.isArray(hits) ? hits.length : 0;
-      ui.setNotesBadge(n, n >= 25);
+      ui.setMemorySubtitle(list.length, list.length >= 25);
+      const openTasks = list.filter((h) => h.entry_type === "task" && String(h.status) !== "done").length;
+      ui.setMemBadge(openTasks);
     }
-    ui.renderNotes(Array.isArray(hits) ? hits : [], {
+    ui.memorySyncedNow();
+    ui.renderMemory(list, {
       onToggleDone: async (h) => {
         try {
           await api.updateMemory({
             entryId: h.entry_id,
             status: String(h.status) === "done" ? "open" : "done",
           });
-          loadNotes(ui.els.noteSearchInput ? ui.els.noteSearchInput.value.trim() : "");
+          loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
         } catch (e) {
-          ui.notesError(
+          ui.memError(
             "Couldn't update that: " + ((e && e.message) || e) + " — check your connection and tap it again."
           );
         }
@@ -733,27 +939,27 @@ async function loadNotes(query) {
       onDelete: async (h) => {
         try {
           await api.updateMemory({ entryId: h.entry_id, deleted: true });
-          loadNotes(ui.els.noteSearchInput ? ui.els.noteSearchInput.value.trim() : "");
-          refreshNotesCount();
+          loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
+          refreshMemoryCount();
         } catch (e) {
-          ui.notesError(
+          ui.memError(
             "Couldn't delete that: " + ((e && e.message) || e) + " — check your connection and try again."
           );
         }
       },
     });
   } catch (e) {
-    if (seq !== notesReqSeq) return;
-    ui.notesError("I couldn't load your notes — check your connection, then try the search again.");
+    if (seq !== memReqSeq) return;
+    ui.memError("I couldn't load your Sheet — check your connection, then try the search again.");
   }
 }
 
 /* ------------------------------------------------------------------ *
- * Wiring: mic buttons, dock, settings, sheets, tabs, shortcut
+ * Wiring: mic, composer, live card, header, memory, settings, welcome
  * ------------------------------------------------------------------ */
 function toggleMic() {
   if (!speech.speechRecognitionAvailable()) {
-    ui.addErrorCard(
+    reportProblem(
       "Voice input isn't available in this browser.",
       "Type to me in the box below instead — everything works the same way, and I'll still read pages aloud."
     );
@@ -768,11 +974,35 @@ function toggleMic() {
   if (speech.isSpeaking()) {
     speech.stopSpeaking();
     updateStatus();
-    returnToListening();
     return;
   }
   speech.setMicMuted(!speech.isMicMuted());
   updateStatus();
+}
+
+function sendTyped(text) {
+  const e = ui.els;
+  const t = (text != null ? text : e.composerInput ? e.composerInput.value : "").trim();
+  if (!t) return;
+  if (text == null && e.composerInput) e.composerInput.value = "";
+  ui.setComposerHasText(false);
+  handleUserUtterance(t, null, { typed: true });
+}
+
+// The welcome "Connect" step and the Settings "Connect" pill both just try
+// the Sheet for real and report honestly.
+async function tryConnectMemory(onStatus) {
+  onStatus && onStatus("Linking “Speaking Assistant”…");
+  try {
+    await api.searchMemory({ query: "", limit: 1, touch: false });
+    markSetup("memory");
+    onStatus && onStatus("“Speaking Assistant” Sheet · connected");
+  } catch (err) {
+    onStatus &&
+      onStatus(
+        "Couldn't reach your Sheet — open config.js, check PROXY_URL and API_KEY match your Apps Script deployment, then reload me."
+      );
+  }
 }
 
 function applySettingsToUI() {
@@ -829,28 +1059,15 @@ async function refreshShortcut() {
   if (ui.els.shortcutValue) ui.els.shortcutValue.textContent = label;
 }
 
-// Send a typed (or suggestion-chip) message through the same path as speech.
-function sendTyped(text) {
-  const e = ui.els;
-  const t = (text != null ? text : e.composerInput ? e.composerInput.value : "").trim();
-  if (!t) return;
-  if (text == null && e.composerInput) e.composerInput.value = "";
-  ui.setComposerTyping(false);
-  handleUserUtterance(t, null, { typed: true });
-}
-
 function wireControls() {
   const e = ui.els;
 
-  // One round mic button: mutes/unmutes — or sends, when text is typed.
-  if (e.micBtn)
-    e.micBtn.addEventListener("click", () => {
-      if (e.composerInput && e.composerInput.value.trim()) sendTyped();
-      else toggleMic();
-    });
+  // Composer: pill input + blue send circle (only with text) + the one mic.
+  if (e.micBtn) e.micBtn.addEventListener("click", toggleMic);
+  if (e.sendBtn) e.sendBtn.addEventListener("click", () => sendTyped());
   if (e.composerInput) {
     e.composerInput.addEventListener("input", () => {
-      ui.setComposerTyping(!!e.composerInput.value.trim());
+      ui.setComposerHasText(!!e.composerInput.value.trim());
     });
     e.composerInput.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") {
@@ -860,39 +1077,74 @@ function wireControls() {
     });
   }
 
-  // Suggestion chips above the bottom bar — always visible, tap to send.
-  document.querySelectorAll(".sug-chip").forEach((chipBtn) =>
-    chipBtn.addEventListener("click", () => sendTyped(chipBtn.getAttribute("data-say") || ""))
-  );
+  // Live-presence card: mute pill, tap-to-edit strip, editor buttons.
+  if (e.lcMute) e.lcMute.addEventListener("click", toggleMic);
+  if (e.lcStrip) e.lcStrip.addEventListener("click", openEditor);
+  if (e.lcSend)
+    e.lcSend.addEventListener("click", () => {
+      const text = ui.liveEditorValue().trim();
+      const conf = pendingConf;
+      resetCapture();
+      if (!text) return;
+      ui.addUserTurn(text, { spoken: true });
+      sendTurn(text, { raw: text, conf });
+    });
+  if (e.lcDiscard) e.lcDiscard.addEventListener("click", () => resetCapture());
+  if (e.lcEditArea)
+    e.lcEditArea.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        e.lcSend.click();
+      }
+    });
 
-  if (e.soundBtn)
-    e.soundBtn.addEventListener("click", () => {
+  // Header: status line stops TTS while speaking; voice / memory / settings.
+  if (e.statusLine)
+    e.statusLine.addEventListener("click", () => {
+      if (speech.isSpeaking()) {
+        speech.stopSpeaking();
+        updateStatus();
+      }
+    });
+  if (e.voiceBtn)
+    e.voiceBtn.addEventListener("click", () => {
       settings.readAloud = !settings.readAloud;
       saveSettings();
       if (!settings.readAloud) speech.stopSpeaking();
       ui.setVoiceIndicator(settings.readAloud);
       updateStatus();
     });
-
+  if (e.memoryBtn)
+    e.memoryBtn.addEventListener("click", () => {
+      ui.openMemory();
+      loadMemory(e.memSearchInput ? e.memSearchInput.value.trim() : "");
+    });
+  if (e.memBack) e.memBack.addEventListener("click", ui.closeMemory);
   if (e.settingsBtn)
     e.settingsBtn.addEventListener("click", () => {
       applySettingsToUI();
+      refreshSetupRows();
       refreshShortcut();
-      ui.openSheet(e.settingsSheet);
+      ui.openSettings();
     });
-  if (e.notesBtn)
-    e.notesBtn.addEventListener("click", () => {
-      ui.openNotes();
-      loadNotes(e.noteSearchInput ? e.noteSearchInput.value.trim() : "");
-    });
-  if (e.notesClose) e.notesClose.addEventListener("click", ui.closeNotes);
-  document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", ui.closeSheets));
+  document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", ui.closeSettings));
+  if (e.scrim) e.scrim.addEventListener("click", ui.closeSettings);
   document.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape") return;
-    if (document.querySelector(".sheet.open")) ui.closeSheets();
-    else if (ui.notesOpen()) ui.closeNotes();
+    if (ui.settingsOpen()) ui.closeSettings();
+    else if (ui.memoryOpen()) ui.closeMemory();
   });
 
+  // Memory search (debounced, live filtering via the backend).
+  let memSearchTimer = null;
+  if (e.memSearchInput)
+    e.memSearchInput.addEventListener("input", () => {
+      const q = e.memSearchInput.value.trim();
+      if (memSearchTimer) clearTimeout(memSearchTimer);
+      memSearchTimer = setTimeout(() => loadMemory(q), 320);
+    });
+
+  // Preferences.
   if (e.autoReadToggle)
     e.autoReadToggle.addEventListener("change", () => {
       settings.autoRead = e.autoReadToggle.checked;
@@ -939,12 +1191,46 @@ function wireControls() {
       }
     });
 
-  let notesSearchTimer = null;
-  if (e.noteSearchInput)
-    e.noteSearchInput.addEventListener("input", () => {
-      const q = e.noteSearchInput.value.trim();
-      if (notesSearchTimer) clearTimeout(notesSearchTimer);
-      notesSearchTimer = setTimeout(() => loadNotes(q), 320);
+  // Setup rows in Settings + the welcome steps share the same real actions.
+  if (e.suMicBtn)
+    e.suMicBtn.addEventListener("click", () => {
+      speech.retryMic();
+      updateStatus();
+    });
+  if (e.suMemoryBtn)
+    e.suMemoryBtn.addEventListener("click", () =>
+      tryConnectMemory((s) => ui.setSetupRow("memory", setup.memory, s))
+    );
+  if (e.suHelloBtn)
+    e.suHelloBtn.addEventListener("click", () => {
+      ui.closeSettings();
+      sendTyped("Hello!");
+    });
+  if (e.replaySetup)
+    e.replaySetup.addEventListener("click", () => {
+      ui.closeSettings();
+      refreshWelcomeSteps();
+      ui.showWelcome();
+    });
+
+  // Welcome steps.
+  if (e.wAllowBtn)
+    e.wAllowBtn.addEventListener("click", () => {
+      ui.setWelcomeStep("mic", "doing", "Waiting for Chrome's permission prompt — choose Allow.");
+      speech.retryMic();
+      updateStatus();
+    });
+  if (e.wConnectBtn)
+    e.wConnectBtn.addEventListener("click", () => {
+      ui.setWelcomeStep("memory", "doing", "Linking “Speaking Assistant”…");
+      tryConnectMemory((s) => {
+        if (!setup.memory) ui.setWelcomeStep("memory", "active", s);
+      });
+    });
+  if (e.wHelloBtn)
+    e.wHelloBtn.addEventListener("click", () => {
+      ui.hideWelcome();
+      sendTyped("Hello!");
     });
 
   if (chrome.runtime && chrome.runtime.onMessage) {
@@ -973,34 +1259,30 @@ function wireControls() {
   await loadSettings();
   await loadSetup();
 
-  ui.initUI({
-    onCommit: (content, raw, conf) => {
-      sendTurn(content, { raw, conf });
-    },
-    onDiscard: () => updateStatus(),
-  });
+  ui.initUI();
 
   speech.initSpeech({
     getSettings: () => settings,
     onFinal: (text, conf) => {
       markSetup("mic");
-      ui.clearComposeInterim();
+      hearing = false;
+      if (hearingTimer) {
+        clearTimeout(hearingTimer);
+        hearingTimer = null;
+      }
       handleUserUtterance(text, conf);
     },
-    onInterim: (text) => {
-      markSetup("mic");
-      ui.showComposeInterim(text);
-    },
+    onInterim: onInterimHeard,
     onStateChange: () => updateStatus(),
     onMicBlocked: () => {
-      if (!setupComplete()) {
-        ui.setWelcomeStep("mic", {
-          done: false,
-          hint:
-            "I couldn't use the microphone. Click the lock icon by Chrome's address bar, allow the microphone, then tap the mic button below to try again.",
-        });
+      if (ui.welcomeVisible()) {
+        ui.setWelcomeStep(
+          "mic",
+          "active",
+          "I couldn't use the microphone. Click the lock icon by Chrome's address bar, allow the microphone, then tap Allow again."
+        );
       } else {
-        ui.addErrorCard(
+        reportProblem(
           "I couldn't access the microphone.",
           "Click the lock icon by Chrome's address bar, allow the microphone, then tap the mic button to try again. You can type to me in the meantime."
         );
@@ -1013,19 +1295,22 @@ function wireControls() {
   wireControls();
   ready = true;
   applySettingsToUI();
+  refreshSetupRows();
 
-  // First open: show the 3-step welcome checklist until setup is done.
-  if (!setupComplete()) ui.showWelcome(setup);
+  // First run only: the welcome walkthrough. After that, setup lives in
+  // Settings as three quiet status rows and never blocks the panel again.
+  if (!setupComplete()) {
+    refreshWelcomeSteps();
+    ui.showWelcome();
+  }
 
   updateStatus();
   // Listening from launch — the mic starts live the moment the panel opens.
   speech.startRecognition();
   watchMicPermission();
 
-  // Open straight into LISTENING: waiting transcript card, no greeting.
-  returnToListening();
   evaluateActiveTab();
-  refreshNotesCount();
+  refreshMemoryCount();
 
   // Restore the conversation thread from the Sheet so a reopened panel
   // remembers what you were talking about (best-effort, non-blocking).
@@ -1038,6 +1323,6 @@ function wireControls() {
       }
     }
   } catch (_) {
-    /* fine — she just starts fresh; the checklist explains what to check */
+    /* fine — she just starts fresh; setup shows what to check */
   }
 })();
