@@ -540,6 +540,62 @@ export function addLookedUpCard({ question, answer, tiles, chips }) {
   return appendToThread(card);
 }
 
+// FROM THE WEB — live search results. Displayed layer: the question echoed,
+// the bulleted answers exactly as verified, then clickable sources. The
+// spoken layer (Sharon's natural explanation) attaches underneath.
+export function addWebSearchCard({ question, bullets, sources }) {
+  const card = cardShell(I_GLOBE, "From the web", "live search");
+  questionEcho(card, question);
+
+  if (bullets && bullets.length) {
+    const ul = document.createElement("ul");
+    ul.className = "ac-bullets";
+    for (const s of bullets.slice(0, 6)) {
+      const li = document.createElement("li");
+      li.textContent = s;
+      ul.appendChild(li);
+    }
+    card.appendChild(ul);
+  }
+
+  if (sources && sources.length) {
+    const wrap = document.createElement("div");
+    wrap.className = "ac-srcs";
+    for (const s of sources.slice(0, 5)) {
+      if (!s || !s.url) continue;
+      const a = document.createElement("a");
+      a.className = "ac-src";
+      a.href = s.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.appendChild(svgOf(I_GLOBE));
+      const t = document.createElement("span");
+      t.className = "st";
+      t.textContent = s.title || s.url;
+      a.appendChild(t);
+      const d = document.createElement("span");
+      d.className = "sd";
+      const m = String(s.url).match(/^[a-z]+:\/\/(?:www\.)?([^\/]+)/i);
+      d.textContent = m ? m[1] : "";
+      a.appendChild(d);
+      wrap.appendChild(a);
+    }
+    card.appendChild(wrap);
+  }
+
+  const f = document.createElement("div");
+  f.className = "ac-foot";
+  f.appendChild(svgOf(I_GLOBE));
+  f.appendChild(
+    document.createTextNode(
+      "Searched the live web · " + ((sources && sources.length) || 0) + " source" +
+        ((sources && sources.length) === 1 ? "" : "s")
+    )
+  );
+  card.appendChild(f);
+  return appendToThread(card);
+}
+
 // Extract "Label: value" facts out of a reply for the LOOKED UP card.
 export function extractFacts(text) {
   const lines = (text || "").split("\n");

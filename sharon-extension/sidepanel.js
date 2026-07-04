@@ -550,7 +550,7 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true } =
     else remember("user", userText.length > 200 ? userText.slice(0, 200) : userText);
     remember("assistant", result.reply || "");
 
-    renderEvents(userText, result.events || []);
+    const webCard = renderEvents(userText, result.events || []);
 
     if (result.plan) {
       startAgentTask(userText, result.plan, agent ? agent._elementList : []);
@@ -560,6 +560,7 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true } =
     renderAndSpeakReply(userText, result.reply, {
       pageCtx: pageRestricted ? null : ctx,
       question: showAsUser ? userText : "",
+      webCard,
     });
   } catch (err) {
     ui.removeCard(think);
@@ -613,12 +614,16 @@ function splitSentences(text) {
 
 // Displayed layer: pick the card the reply deserves. Spoken layer: the quiet
 // italic line under the card with what Sharon actually says aloud.
-function renderAndSpeakReply(userText, reply, { pageCtx, question } = {}) {
+function renderAndSpeakReply(userText, reply, { pageCtx, question, webCard } = {}) {
   const text = (reply || "").trim();
   if (!text) return;
 
   let card = null;
-  if (pageCtx && isPageRecapIntent(userText)) {
+  if (webCard) {
+    // Web search already rendered the displayed layer (question → bullets →
+    // clickable sources); Sharon's natural explanation attaches beneath it.
+    card = webCard;
+  } else if (pageCtx && isPageRecapIntent(userText)) {
     card = ui.addThisPageCard({
       domain: domainOf(pageCtx.url),
       question: question || "",
@@ -646,12 +651,21 @@ function renderAndSpeakReply(userText, reply, { pageCtx, question } = {}) {
   speech.speak(text, { onDone: updateStatus });
 }
 
-// Turn the backend's tool events into thread cards.
+// Turn the backend's tool events into thread cards. Returns the web results
+// card when one was created, so the reply renderer can attach Sharon's
+// spoken line to it instead of building a second card.
 function renderEvents(userText, events) {
+  let webCard = null;
   for (const e of events) {
     if (!e || !e.ok || !e.data) continue;
     const d = e.data;
-    if (d.kind === "saved") {
+    if (d.kind === "web_search") {
+      webCard = ui.addWebSearchCard({
+        question: d.question || userText,
+        bullets: Array.isArray(d.bullets) ? d.bullets : [],
+        sources: Array.isArray(d.sources) ? d.sources : [],
+      });
+    } else if (d.kind === "saved") {
       const isTask = d.entry_type === "task";
       const cap = ui.addQuietCapture({
         title: "Captured quietly — no reply needed",
@@ -700,6 +714,7 @@ function renderEvents(userText, events) {
     }
     // "summarized" needs no card — the summary IS the spoken reply.
   }
+  return webCard;
 }
 
 // Live checkboxes on the YOUR TASKS card — optimistic, then write back.

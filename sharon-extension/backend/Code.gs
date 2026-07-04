@@ -174,7 +174,21 @@ var SYSTEM_CORE =
   "the answer, round numbers, keep comparisons concrete, group related " +
   "findings, and keep it short — a few sentences unless they asked for " +
   "depth. Mention sources naturally by name — like 'according to Reuters' " +
-  "— and never read URLs aloud.\n\n" +
+  "— and never read URLs aloud.\n" +
+  "8. Two-layer output — REQUIRED every time you used web search: your " +
+  "reply has a spoken layer and a display layer. The spoken layer is " +
+  "everything you write normally: natural conversational prose in your own " +
+  "voice, explaining the results so a listener understands them. Then, at " +
+  "the VERY END of your reply, append the display layer as one line in " +
+  "exactly this format:\n" +
+  '[[DISPLAY]]{"bullets":["first key finding","second key finding"]}[[/DISPLAY]]\n' +
+  "The bullets are what appears on screen: 3 to 6 short, self-contained, " +
+  "scannable answer points that are 100% faithful to what the search " +
+  "results actually said — exact names, numbers, and dates, no rounding " +
+  "and no personality in the bullets. The display block is stripped out " +
+  "before you're heard, so never mention it aloud and never put it " +
+  "anywhere except the very end. If you did NOT use web search, do not " +
+  "include a display block at all.\n\n" +
   "If the transcript may be misheard (a low confidence flag appears), " +
   "confirm before saving/updating anything, but answer questions normally.\n\n" +
   "Honesty over helpfulness: never claim you saved, found, or did something " +
@@ -422,17 +436,44 @@ function actionAssist_(p) {
   }
 
   var reply = replyParts.join(" ").trim();
+
+  // Two-layer split: pull the [[DISPLAY]]{...}[[/DISPLAY]] block (the
+  // on-screen bullets) out of the reply so the spoken layer stays natural.
+  var displayBullets = [];
+  var dm = reply.match(/\[\[DISPLAY\]\]([\s\S]*?)\[\[\/DISPLAY\]\]/);
+  if (dm) {
+    try {
+      var dj = JSON.parse(dm[1]);
+      if (dj && Array.isArray(dj.bullets)) {
+        displayBullets = dj.bullets
+          .map(function (b) { return String(b || "").trim(); })
+          .filter(function (b) { return b; })
+          .slice(0, 6);
+      }
+    } catch (_) {
+      // Malformed block: just strip it; the card falls back to sources only.
+    }
+    reply = reply.replace(dm[0], "").trim();
+  }
+
   if (!reply && plan) reply = plan.say;
+  if (!reply && displayBullets.length) reply = "Here's what I found — it's on your screen.";
   if (!reply) reply = "I'm not sure what to say to that — try me again?";
 
-  // Surface where the web answer came from. Today's side panel safely
-  // ignores this event kind and the sources field; a future UI update can
-  // render them as clickable source links under the answer.
-  if (sources.length) {
+  // The on-screen web results card: question, bulleted answers, clickable
+  // sources. The side panel renders this; the spoken reply above is what
+  // Sharon says out loud in her own voice.
+  if (sources.length || displayBullets.length) {
     events.push({
       tool: "web_search",
       ok: true,
-      data: { kind: "web_search", count: sources.length, sources: sources },
+      data: {
+        kind: "web_search",
+        question: userText,
+        bullets: displayBullets,
+        count: sources.length,
+        sources: sources,
+      },
     });
   }
 
