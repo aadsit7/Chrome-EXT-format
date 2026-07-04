@@ -196,18 +196,22 @@ async function getTimeContext(handlerInput) {
         },
       );
       if (res.ok) {
-        timeZone = await res.json(); // returns a bare JSON string like "America/Chicago"
-        attrs.timeZone = timeZone;
-        handlerInput.attributesManager.setSessionAttributes(attrs);
+        const tz = await res.json(); // should be a bare JSON string like "America/Chicago"
+        // Never trust the shape: a non-string here would make toLocaleString
+        // throw and kill the whole turn.
+        if (typeof tz === 'string' && tz.length > 0) {
+          timeZone = tz;
+          attrs.timeZone = timeZone;
+          handlerInput.attributesManager.setSessionAttributes(attrs);
+        }
       }
     } catch {
       // Fall through to UTC — better a slightly-off clock than a failed response.
     }
   }
-  timeZone = timeZone || 'UTC';
+  if (typeof timeZone !== 'string' || timeZone.length === 0) timeZone = 'UTC';
 
-  const now = new Date().toLocaleString('en-US', {
-    timeZone,
+  const format = {
     weekday: 'long',
     year: 'numeric',
     month: 'long',
@@ -215,7 +219,15 @@ async function getTimeContext(handlerInput) {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
-  });
+  };
+  let now;
+  try {
+    now = new Date().toLocaleString('en-US', { timeZone, ...format });
+  } catch {
+    // Unknown/invalid IANA id (bad cached value, API drift) — fall back hard.
+    timeZone = 'UTC';
+    now = new Date().toLocaleString('en-US', { timeZone, ...format });
+  }
   return `Current local datetime: ${now}. Device timezone: ${timeZone}.`;
 }
 
