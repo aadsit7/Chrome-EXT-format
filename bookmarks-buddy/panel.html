@@ -110,6 +110,16 @@
        columns as the panel gets wider, instead of stretching 4 columns apart
        and leaving white space. Overrides the inline 4-column grid. */
     .bb-root .bb-page { grid-template-columns:repeat(auto-fill, minmax(76px, 1fr)) !important; }
+    /* Every tile title stays readable on every row: pages scroll vertically when
+       the panel is too short for all rows (overflow-y on the inline style), and
+       on shorter panels the rows pack tighter so the last row — titles included —
+       fits on screen without cutting anything off. */
+    @media (max-height: 760px) {
+      .bb-root .bb-page { row-gap:12px !important; padding-top:8px !important; }
+    }
+    @media (max-height: 660px) {
+      .bb-root .bb-page { row-gap:9px !important; padding-top:6px !important; }
+    }
     @keyframes bbJiggle { 0%{transform:rotate(-1.4deg)} 50%{transform:rotate(1.4deg)} 100%{transform:rotate(-1.4deg)} }
     @keyframes bbRing { 0%{transform:scale(1);opacity:.5} 100%{transform:scale(1.7);opacity:0} }
     @keyframes bbMicPulse { 0%,100%{ box-shadow:0 8px 22px rgba(3,114,255,.45); } 50%{ box-shadow:0 8px 34px rgba(3,114,255,.85); } }
@@ -172,7 +182,7 @@
     <div class="bb-viewport" style="flex:1; min-height:0; overflow:hidden; touch-action:pan-y; position:relative;">
       <div class="bb-track" style="display:flex; height:100%; transition:transform .34s cubic-bezier(.16,1,.3,1); will-change:transform;">
         <sc-for list="{{ pages }}" as="pg" hint-placeholder-count="2">
-          <div class="bb-page" style="flex:0 0 100%; height:100%; display:grid; grid-template-columns:repeat(4,1fr); align-content:start; justify-items:center; gap:18px 6px; padding:14px 18px 8px; box-sizing:border-box; overflow:hidden;">
+          <div class="bb-page" style="flex:0 0 100%; height:100%; display:grid; grid-template-columns:repeat(4,1fr); align-content:start; justify-items:center; gap:18px 6px; padding:14px 18px 24px; box-sizing:border-box; overflow-x:hidden; overflow-y:auto;">
             <div style="grid-column:1/-1; width:100%; text-align:center; font-size:13px; font-weight:700; letter-spacing:-.01em; color:var(--bb-fg-soft); padding:0 0 4px;">{{ pg.name }}</div>
             <sc-for list="{{ pg.cells }}" as="cell" hint-placeholder-count="12">
               <div class="bb-cell" data-id="{{ cell.id }}" data-kind="{{ cell.kind }}" data-idx="{{ cell.idx }}" style="position:relative; display:flex; flex-direction:column; align-items:center; gap:6px; width:100%; user-select:none; -webkit-user-select:none;">
