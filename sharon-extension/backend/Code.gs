@@ -22,11 +22,14 @@
  *
  * Actions:
  *   assist            — the brain. One round trip: Claude decides whether to
- *                       just answer, or to call tools that read/write the
+ *                       just answer, search the live web (web_search — run by
+ *                       Anthropic's servers, billed to your Anthropic key,
+ *                       ~1¢ per search), or call tools that read/write the
  *                       Sheet (save_memory, update_memory, search_memory,
  *                       summarize_memory) or act on the page (act_on_page —
  *                       returned to the extension, never executed here).
- *                       Logs both turns and returns { reply, plan?, events }.
+ *                       Logs both turns and returns
+ *                       { reply, plan?, events, sources? }.
  *   ask               — legacy conversational call (no tools). Kept for
  *                       compatibility; logs both turns.
  *   append_turn       — log one row to conversation_turns.
@@ -46,8 +49,9 @@ var DEFAULT_MODEL = "claude-opus-4-8";
 var ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 var ANTHROPIC_VERSION = "2023-06-01";
 var MAX_TOOL_ROUNDS = 4;
-var REPLY_MAX_TOKENS = 1200;
+var REPLY_MAX_TOKENS = 1500; // a little extra room for web-search answers with sources
 var HISTORY_FALLBACK_TURNS = 12;
+var WEB_SEARCH_MAX_USES = 3; // max live web searches per question (cost guard, ~1¢ each)
 
 var SHEETS = {
   turns: "conversation_turns",
@@ -134,6 +138,17 @@ var SYSTEM_CORE =
   "Use tools decisively whenever the request maps to one; don't ask " +
   "permission for a simple save or search. After a tool result, always give " +
   "a short spoken confirmation or answer.\n\n" +
+  "Live web search: you can search the internet with the web_search tool. " +
+  "Use it whenever the answer likely depends on current or recent " +
+  "information — news, prices, scores, weather, releases, 'latest', " +
+  "anything that may have changed recently, or anything you're not sure is " +
+  "still true. Do NOT search for timeless facts, math, or questions about " +
+  "the user's page or saved notes. Accuracy is the absolute priority when " +
+  "relaying search results: report only what the results actually say, " +
+  "never guess or fill gaps, and say plainly if the results don't answer " +
+  "the question. Since the user is listening, mention where the information " +
+  "came from naturally by name — like 'according to Reuters' — and never " +
+  "read URLs aloud.\n\n" +
   "If the transcript may be misheard (a low confidence flag appears), " +
   "confirm before saving/updating anything, but answer questions normally.\n\n" +
   "Honesty over helpfulness: never claim you saved, found, or did something " +
@@ -218,6 +233,18 @@ function memoryTools_() {
   ];
 }
 
+// Anthropic's built-in web search: the SEARCHES RUN ON ANTHROPIC'S SERVERS
+// during the model call. Nothing in this script executes them — they never
+// appear in the tool-round loop below. Billed to your Anthropic key (~1¢
+// per search); WEB_SEARCH_MAX_USES caps how many can run per question.
+function webSearchTool_() {
+  return {
+    type: "web_search_20250305",
+    name: "web_search",
+    max_uses: WEB_SEARCH_MAX_USES,
+  };
+}
+
 function actOnPageTool_() {
   return {
     name: "act_on_page",
@@ -279,12 +306,15 @@ function actionAssist_(p) {
   var messages = history.concat([{ role: "user", content: userBlock }]);
 
   var tools = memoryTools_();
+  tools.push(webSearchTool_());
   if (agentMode) tools.push(actOnPageTool_());
 
   var events = [];
   var plan = null;
   var replyParts = [];
   var response = null;
+  var sources = []; // [{title, url}] gathered from web search citations
+  var seenUrls = {};
 
   for (var round = 0; round <= MAX_TOOL_ROUNDS; round++) {
     response = callClaude_({ system: system, messages: messages, tools: tools });
@@ -292,8 +322,31 @@ function actionAssist_(p) {
     var toolUses = [];
     for (var i = 0; i < response.content.length; i++) {
       var block = response.content[i];
-      if (block.type === "text" && block.text) replyParts.push(block.text);
-      else if (block.type === "tool_use") toolUses.push(block);
+      if (block.type === "text" && block.text) {
+        replyParts.push(block.text);
+        // Web-search answers arrive with citations attached to text blocks.
+        // Harvest each cited page once (by URL) so we can show sources.
+        if (Array.isArray(block.citations)) {
+          for (var c = 0; c < block.citations.length; c++) {
+            var cite = block.citations[c];
+            if (cite && cite.url && !seenUrls[cite.url]) {
+              seenUrls[cite.url] = true;
+              sources.push({ title: String(cite.title || cite.url), url: String(cite.url) });
+            }
+          }
+        }
+      } else if (block.type === "tool_use") {
+        toolUses.push(block);
+      }
+      // server_tool_use / web_search_tool_result blocks are Anthropic's own
+      // bookkeeping for searches it already ran — nothing for us to execute.
+    }
+
+    // Long web-search turns can pause mid-answer; hand the partial turn back
+    // and let the model finish. Reply text collected so far is kept.
+    if (response.stop_reason === "pause_turn") {
+      messages.push({ role: "assistant", content: response.content });
+      continue;
     }
 
     if (response.stop_reason !== "tool_use" || !toolUses.length) break;
@@ -346,11 +399,22 @@ function actionAssist_(p) {
   if (!reply && plan) reply = plan.say;
   if (!reply) reply = "I'm not sure what to say to that — try me again?";
 
+  // Surface where the web answer came from. Today's side panel safely
+  // ignores this event kind and the sources field; a future UI update can
+  // render them as clickable source links under the answer.
+  if (sources.length) {
+    events.push({
+      tool: "web_search",
+      ok: true,
+      data: { kind: "web_search", count: sources.length, sources: sources },
+    });
+  }
+
   // Log both turns in one batched write. Agent continuation steps set
   // log:false so synthetic "(continue)" turns don't pollute the transcript.
   if (p.log !== false) logTurns_(p, userText, reply, page);
 
-  return { reply: reply, plan: plan, events: events, model: model_() };
+  return { reply: reply, plan: plan, events: events, sources: sources, model: model_() };
 }
 
 function buildUserBlock_(userText, page, p, agentMode) {
