@@ -231,8 +231,12 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
       throw err;
     }
 
+    // Never trust the response shape blindly — a malformed body must degrade
+    // to a spoken fallback, not throw mid-loop.
+    const contentBlocks = Array.isArray(response.content) ? response.content : [];
+
     if (response.stop_reason !== 'tool_use') {
-      const text = response.content
+      const text = contentBlocks
         .filter((b) => b.type === 'text')
         .map((b) => b.text)
         .join(' ');
@@ -241,9 +245,9 @@ export async function runKyle(history, { alexaContext = null, timeContext = '', 
 
     // Claude wants tools: echo the assistant turn, execute each custom tool,
     // and return all results in a single user message.
-    messages.push({ role: 'assistant', content: response.content });
+    messages.push({ role: 'assistant', content: contentBlocks });
 
-    const toolUses = response.content.filter((b) => b.type === 'tool_use');
+    const toolUses = contentBlocks.filter((b) => b.type === 'tool_use');
     const toolResults = [];
     for (const toolUse of toolUses) {
       toolsUsed.push(toolUse.name);

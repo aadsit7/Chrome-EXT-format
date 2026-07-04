@@ -133,7 +133,11 @@ globalThis.fetch = async (input, init = {}) => {
   if (url.includes('api.amazonalexa.com') || url.includes('/v1/alerts/') || url.includes('/v2/devices/')) {
     alexaApiCalls.push({ url, method: init.method ?? 'GET' });
     const method = init.method ?? 'GET';
-    if (url.includes('System.timeZone')) return jsonResponse('America/Chicago');
+    if (url.includes('System.timeZone')) {
+      // Malformed-body fixture: return an object where a string is expected.
+      if (globalThis.__testBadTimezone) return jsonResponse({ unexpected: 'object' });
+      return jsonResponse('America/Chicago');
+    }
     if (url.includes('/v1/alerts/reminders')) {
       if (method === 'GET') {
         return jsonResponse({
@@ -573,6 +577,20 @@ await test('Structured log line per request: fields present, no user content', a
 await test('EventBridge warming ping returns instantly without touching the skill', async () => {
   const res = await handler({ warm: true }, {});
   assert(res.statusCode === 200, `expected 200 from warm ping, got ${JSON.stringify(res)}`);
+});
+
+await test('Malformed timezone from the Settings API cannot kill the turn (falls back to UTC)', async () => {
+  // Simulate Alexa returning a 200 with a non-string body for System.timeZone.
+  globalThis.__testBadTimezone = true;
+  try {
+    const res = await handler(alexaEnvelope(chatIntent('say hello')), {});
+    const speech = speechOf(res);
+    assert(!/went sideways|hiccuped/i.test(speech), `expected a normal reply despite bad timezone; got ${speech}`);
+    assert(speech.length > 0 && res.response.shouldEndSession === false, 'expected a healthy open-session reply');
+  } finally {
+    delete globalThis.__testBadTimezone;
+    memStore.clear();
+  }
 });
 
 await test('EVERY non-Stop/Cancel response keeps the session open with a reprompt (incl. APL branch)', async () => {
