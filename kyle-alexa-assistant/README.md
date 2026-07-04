@@ -116,7 +116,7 @@ ask deploy
 
 The **Lambda ARN** is already set in `skill-package/skill.json` at `apis.custom.endpoint.uri` (`arn:aws:lambda:us-east-1:611491981154:function:kyle-alexa-assistant`) — update it there if you redeploy the function under a different name or region. `ask deploy` creates the skill and prints the Skill ID — use it for the Lambda trigger in step 2.3.
 
-> **Invocation name note:** the invocation is **`"hey kyle"`** (say *"Alexa, open hey kyle"*). It was originally the one-word `"kyle"`, but real devices frequently missed or misheard it — the two-word form recognizes far more reliably and is also the certifiable shape. The interaction model also carries ~40 carrier/question-word sample patterns ("what is…", "who is…", "how do I…", "is…", "can…") so natural speech routes to ChatIntent instead of FallbackIntent.
+> **Invocation name note:** the invocation is **`"my assistant"`** (say *"Alexa, open my assistant"*). It was originally the one-word `"kyle"`, which real devices frequently missed or misheard; multi-word invocations recognize far more reliably and are the certifiable shape. The interaction model also carries 40+ carrier/question-word sample patterns ("what is…", "what's…", "who is…", "how do I…", "is…", "can…") so natural speech routes to ChatIntent instead of FallbackIntent.
 
 For subsequent deploys, just run:
 
@@ -138,9 +138,9 @@ Reminders require an explicit user grant. **Without this, reminder creation retu
 1. **Local:** `cd lambda && npm run test:local`
    - Needs `ANTHROPIC_API_KEY` in `lambda/.env` (or exported). The Alexa API is always mocked — no real reminders are created locally.
    - Fully offline run (Claude mocked too): `MOCK_CLAUDE=1 npm run test:local`
-2. **Alexa Developer Console simulator** (Test tab): type "open kyle", then chat.
+2. **Alexa Developer Console simulator** (Test tab): type "open my assistant", then chat.
    ⚠️ Reminders and timers do **not** fire in the simulator — test those on a real Echo.
-3. **Real Echo device** (same Amazon account): *"Alexa, open kyle"* → *"remind me to stretch at five"*.
+3. **Real Echo device** (same Amazon account): *"Alexa, open my assistant"* → *"remind me to stretch at five"*.
 
 ## 6. Web chat page
 
@@ -176,7 +176,7 @@ The only third-party connection is the Anthropic API: HTTPS-only, authenticated 
 **Certification checklist before going public:**
 - [ ] Set a real `privacyPolicyUrl` and `termsOfUseUrl` in `skill.json` — **mandatory** for skills that request permissions (reminders/timers)
 - [ ] Disclose Anthropic as a data processor in that privacy policy
-- [ ] Replace the one-word invocation name (`kyle` → e.g. `hey kyle`)
+- [x] Certifiable invocation name in place (`my assistant`)
 - [ ] Provide real 108px/512px skill icons
 - [ ] Secure the web Function URL (auth) or exclude the web surface from the public offering
 - [ ] Re-review the certification requirements linked above — they change over time

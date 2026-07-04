@@ -8,7 +8,7 @@
           "summary": "Kyle - a conversational assistant powered by Claude",
           "description": "Kyle is a natural-conversation voice assistant powered by the Claude API. He can chat about anything, search the web for current information, create reminders, and set timers. Development-mode skill; not intended for public certification with the one-word invocation name.",
           "examplePhrases": [
-            "Alexa, open hey kyle",
+            "Alexa, open my assistant",
             "what's the weather looking like in Chicago",
             "remind me to call mom at five"
           ],

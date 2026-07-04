@@ -1,7 +1,7 @@
 {
   "interactionModel": {
     "languageModel": {
-      "invocationName": "hey kyle",
+      "invocationName": "my assistant",
       "intents": [
         {
           "name": "ChatIntent",
@@ -31,6 +31,7 @@
             "what is {query}",
             "what {query}",
             "whats {query}",
+            "what's {query}",
             "who is {query}",
             "who {query}",
             "how do i {query}",
