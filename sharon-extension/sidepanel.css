@@ -393,6 +393,21 @@ html[data-view="memory"] .thread{display:none}
 }
 .ac-chip:before{content:"";width:6px;height:6px;border-radius:50%;background:var(--blue)}
 
+/* FROM THE WEB — clickable source rows under the bulleted answers */
+.ac-srcs{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.ac-src{
+  display:flex;align-items:center;gap:8px;
+  padding:7px 10px;border:1px solid var(--hairline);border-radius:10px;
+  background:#fff;text-decoration:none;min-width:0;
+}
+.ac-src:hover{background:var(--hover);border-color:var(--hairline-strong)}
+.ac-src svg{width:13px;height:13px;flex:none;color:var(--blue);stroke:var(--blue)}
+.ac-src .st{
+  flex:1;min-width:0;font-size:12.5px;color:var(--blue-deep);line-height:1.35;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.ac-src .sd{flex:none;font-size:11px;color:var(--placeholder)}
+
 /* spoken-aloud layer */
 .spoken-line{
   display:flex;align-items:flex-start;gap:7px;
