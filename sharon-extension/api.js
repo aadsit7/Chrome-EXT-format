@@ -121,9 +121,11 @@ export function getRecentTurns(sessionId, limit = 12) {
 
 /**
  * Upload a finished voice recording. The backend saves the audio to Drive,
- * appends a row to the recordings tab, distills the transcript into memory
- * notes (each linking the audio), and returns
- * { recording_id, drive_file_url, notes }.
+ * appends a row to the recordings tab (transcript + timestamped segments),
+ * distills the transcript into memory notes (each linking the audio), and
+ * returns { recording_id, drive_file_url, notes }.
+ * segments is [{ t: seconds, text }] — one entry per finalized recognition
+ * segment, so search can later queue playback to the matching moment.
  * Deliberately no abort signal: a 30-minute file is roughly 7–15 MB and the
  * upload must never be killed mid-flight by a timeout.
  */
@@ -133,6 +135,7 @@ export function saveRecording({
   mimeType,
   durationSeconds,
   transcript,
+  segments,
   timestamp,
 }) {
   return call("save_recording", {
@@ -143,6 +146,21 @@ export function saveRecording({
     mime_type: mimeType,
     duration_seconds: durationSeconds,
     transcript: transcript,
+    segments: Array.isArray(segments) ? segments : [],
     timestamp: timestamp,
   });
+}
+
+/**
+ * Fetch a saved recording's audio so it can play right inside the panel.
+ * The Drive file's sharing settings are never touched — the bytes flow
+ * through the backend, so recordings stay private.
+ * Returns { audio_base64, mime_type, duration_seconds, drive_file_url },
+ * or { too_large: true, drive_file_url } when the file is past the
+ * backend's size cap (the panel then falls back to opening Drive).
+ * Deliberately no abort signal: a long file takes a moment to come down
+ * and must never be killed mid-flight by a timeout.
+ */
+export function getRecordingAudio(recordingId) {
+  return call("get_recording_audio", { recording_id: recordingId });
 }

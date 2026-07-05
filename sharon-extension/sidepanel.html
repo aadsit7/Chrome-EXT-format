@@ -118,6 +118,29 @@
         </div>
       </div>
 
+      <!-- ================= In-panel audio player ================= -->
+      <div class="player hidden" id="playerBar" data-state="loading" data-playing="false">
+        <button class="pl-toggle" id="plToggle" type="button" aria-label="Play">
+          <svg class="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4v16"/><path d="M15 4v16"/></svg>
+        </button>
+        <div class="pl-mid">
+          <div class="pl-label" id="plLabel">Recording</div>
+          <div class="pl-loading" id="plLoading">Fetching the audio — a long recording takes a moment…</div>
+          <div class="pl-row">
+            <span class="pl-time" id="plCur">0:00</span>
+            <input class="pl-seek" id="plSeek" type="range" min="0" max="100" step="1" value="0" aria-label="Seek through the recording" />
+            <span class="pl-time" id="plTotal">0:00</span>
+          </div>
+        </div>
+        <a class="pl-drive" id="plDrive" target="_blank" rel="noopener noreferrer" aria-label="Open the recording in Drive" title="Open in Drive">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        </a>
+        <button class="pl-close" id="plClose" type="button" aria-label="Close the player">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+
       <!-- ================= Composer ================= -->
       <div class="composer" id="composer">
         <input type="text" id="composerInput" placeholder="Type instead — or just talk" aria-label="Type a message to Sharon" />

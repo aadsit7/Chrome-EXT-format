@@ -200,6 +200,10 @@ function updateStatus() {
   else if (hearing && micLive) ui.setPhase("hearing");
   else if (!micLive) ui.setPhase("muted");
   else ui.setPhase("listening");
+
+  // Sharon's voice and a playing recording never overlap — every state
+  // change re-checks the pair (see syncPlaybackWithSpeech).
+  syncPlaybackWithSpeech();
 }
 
 // Speak + show a short local note from Sharon (no server round trip).
@@ -732,6 +736,7 @@ function renderEvents(userText, events) {
             ui.openMemory();
             loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
           },
+          onListen: (h) => playRecordingFromHit(h),
         });
       }
     } else if (d.kind === "updated") {
@@ -1011,6 +1016,7 @@ async function loadMemory(query) {
           );
         }
       },
+      onListen: (h) => playRecordingFromHit(h),
     });
   } catch (e) {
     if (seq !== memReqSeq) return;
@@ -1028,6 +1034,9 @@ async function loadMemory(query) {
  * ------------------------------------------------------------------ */
 const RECORD_MAX_MS = 30 * 60 * 1000; // hard cap — auto-stops at exactly 30:00
 const REC_TIMER_TICK_MS = 250;
+// Compact voice bitrate — speech is fine at 32 kbps, and a full 30-minute
+// recording stays well under the backend's play-in-panel size cap.
+const RECORD_AUDIO_BPS = 32000;
 
 let recState = "idle"; // idle | recording | uploading
 let mediaRecorder = null;
@@ -1037,6 +1046,7 @@ let recTimerInt = null;
 let recStageTimer = null;
 let recFinalText = ""; // confirmed words
 let recInterimText = ""; // in-flight words (shown lighter)
+let recSegments = []; // [{ t: seconds, text }] — one per finalized segment
 
 function recActive() {
   return recState !== "idle";
@@ -1091,11 +1101,23 @@ async function startRecording() {
     return;
   }
 
+  // Playback is sound in the room — it must never land in the recording.
+  // Pause it cleanly (no auto-resume; the user can tap play afterwards).
+  pausePlaybackForUser();
+
   resetCapture(); // drop any half-captured utterance cleanly
   recFinalText = "";
   recInterimText = "";
+  recSegments = [];
+  recStartAt = Date.now(); // set before recorder mode so segment stamps are right
   speech.enterRecorderMode({
     onFinal: (text) => {
+      // Stamp each finalized segment with its elapsed recording time so
+      // search can later queue playback to the matching moment.
+      recSegments.push({
+        t: Math.max(0, Math.round((Date.now() - recStartAt) / 1000)),
+        text,
+      });
       recFinalText = recFinalText ? recFinalText + " " + text : text;
       recInterimText = "";
       ui.recTranscript(recFinalText, "");
@@ -1108,7 +1130,10 @@ async function startRecording() {
 
   recChunks = [];
   try {
-    mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+    mediaRecorder = new MediaRecorder(stream, {
+      mimeType: mime,
+      audioBitsPerSecond: RECORD_AUDIO_BPS,
+    });
   } catch (_) {
     speech.exitRecorderMode();
     reportProblem("I couldn't start the recorder.", "Give it a second and tap record again.");
@@ -1121,7 +1146,6 @@ async function startRecording() {
   mediaRecorder.start(1000); // 1s chunks — a crash loses at most a second
 
   recState = "recording";
-  recStartAt = Date.now();
   ui.recTranscript("", "");
   ui.setRecorderStage("recording");
   ui.setRecTimer("00:00 / " + fmtClock(RECORD_MAX_MS));
@@ -1146,9 +1170,14 @@ function stopRecording() {
     Math.round(RECORD_MAX_MS / 1000)
   );
 
-  // Fold any in-flight interim into the transcript, then bounce recognition
-  // so those same words can't resurface in the assist flow afterward.
+  // Fold any in-flight interim into the transcript (and its own timestamped
+  // segment), then bounce recognition so those same words can't resurface
+  // in the assist flow afterward.
   if (recInterimText.trim()) {
+    recSegments.push({
+      t: Math.max(0, Math.round((Date.now() - recStartAt) / 1000)),
+      text: recInterimText.trim(),
+    });
     recFinalText = (recFinalText + " " + recInterimText).trim();
     recInterimText = "";
   }
@@ -1156,6 +1185,8 @@ function stopRecording() {
   speech.exitRecorderMode(); // normal listening/barge-in/TTS resume from here
 
   const transcript = recFinalText.trim();
+  const segments = recSegments.slice();
+  recSegments = [];
   ui.recTranscript(transcript, "");
   ui.setRecorderStage("uploading");
   updateStatus();
@@ -1163,7 +1194,7 @@ function stopRecording() {
   const rec = mediaRecorder;
   mediaRecorder = null;
   const finish = () =>
-    finishRecording((rec && rec.mimeType) || "audio/webm", durationSeconds, transcript);
+    finishRecording((rec && rec.mimeType) || "audio/webm", durationSeconds, transcript, segments);
   if (rec && rec.state !== "inactive") {
     rec.addEventListener("stop", finish, { once: true });
     try {
@@ -1176,7 +1207,7 @@ function stopRecording() {
   }
 }
 
-async function finishRecording(mimeType, durationSeconds, transcript) {
+async function finishRecording(mimeType, durationSeconds, transcript, segments) {
   const blob = new Blob(recChunks, { type: mimeType || "audio/webm" });
   recChunks = [];
   if (!blob.size) {
@@ -1205,14 +1236,23 @@ async function finishRecording(mimeType, durationSeconds, transcript) {
       mimeType: blob.type || "audio/webm",
       durationSeconds,
       transcript,
+      segments: Array.isArray(segments) ? segments : [],
       timestamp: new Date().toISOString(),
     });
     ui.hideRecorder();
     const minutes = Math.max(1, Math.round(durationSeconds / 60));
     ui.addRecordingCard({
       driveUrl: result.drive_file_url,
+      recordingId: result.recording_id,
       durationLabel: minutes + " min",
       notes: Array.isArray(result.notes) ? result.notes : [],
+      onListen: ({ recordingId, driveUrl }) =>
+        playRecording({
+          recordingId,
+          driveUrl,
+          startSeconds: 0,
+          label: "Recording — just now (" + minutes + " min)",
+        }),
     });
     refreshMemoryCount();
   } catch (err) {
@@ -1229,6 +1269,303 @@ async function finishRecording(mimeType, durationSeconds, transcript) {
     recState = "idle";
     updateStatus();
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * In-panel audio player — plays a saved recording right here, queued to
+ * the moment that matched the user's question. The audio arrives base64
+ * through the backend (the Drive file stays private; no sharing changes),
+ * becomes a Blob URL, and drives one <audio> element. One player at a
+ * time: starting another recording replaces (and revokes) the last one.
+ * Coordination with the ears/voice:
+ *   • while playing, speech.js's playback mode (rule 7) keeps the sound
+ *     from becoming commands — confident user speech pauses it instead;
+ *   • Sharon speaking pauses playback and it resumes when she's done;
+ *   • starting a recording pauses playback for good (no auto-resume);
+ *   • any failure or a too_large file falls back to the Drive link.
+ * ------------------------------------------------------------------ */
+let plAudio = null; // the one <audio>
+let plBlobUrl = null; // revoked whenever replaced
+let plRecordingId = null; // what's loaded
+let plLoadingId = null; // what's being fetched
+let plDriveUrl = ""; // the always-available fallback
+let plDuration = 0; // seconds (sheet value until the element knows better)
+let plPausedForSpeech = false; // paused by Sharon's own voice → auto-resume
+let plLoadSeq = 0; // stale-fetch guard
+
+function playerPlaying() {
+  return !!(plAudio && !plAudio.paused && !plAudio.ended);
+}
+
+// A deliberate pause (user barge-in, recorder start): never auto-resumes.
+function pausePlaybackForUser() {
+  if (!plAudio) return;
+  plPausedForSpeech = false;
+  try {
+    plAudio.pause();
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+// Sharon's voice and the player never talk at once: her reply (or a live
+// recording) pauses playback; a speech-pause resumes once the panel is
+// genuinely idle again — not while the user is mid-sentence or a turn is
+// in flight.
+function syncPlaybackWithSpeech() {
+  if (!plAudio) return;
+  if (speech.isSpeaking() || recActive()) {
+    if (playerPlaying()) {
+      if (speech.isSpeaking()) plPausedForSpeech = true; // resume after her reply
+      try {
+        plAudio.pause();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    return;
+  }
+  if (plPausedForSpeech && !thinking && !busy && !hearing && !pendingText) {
+    plPausedForSpeech = false;
+    plAudio.play().catch(() => {});
+  }
+}
+
+function base64ToBlob(b64, mime) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime || "audio/webm" });
+}
+
+// Release the current audio + Blob URL (the "one player at a time" rule).
+function stopPlayback() {
+  const a = plAudio;
+  plAudio = null;
+  plRecordingId = null;
+  plPausedForSpeech = false;
+  plDuration = 0;
+  if (a) {
+    try {
+      a.pause();
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      a.removeAttribute("src");
+      a.load();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  if (plBlobUrl) {
+    try {
+      URL.revokeObjectURL(plBlobUrl);
+    } catch (_) {
+      /* ignore */
+    }
+    plBlobUrl = null;
+  }
+  speech.setPlaybackActive(false);
+  ui.playerSetPlaying(false);
+}
+
+function closePlayer() {
+  plLoadSeq++; // discard any fetch still in flight
+  plLoadingId = null;
+  stopPlayback();
+  ui.playerHide();
+}
+
+// Never a dead click: any failure (or a too_large file) becomes the exact
+// old behavior — the recording opens in Drive — plus a plain message.
+function playbackFallback(url, msg) {
+  stopPlayback();
+  ui.playerHide();
+  ui.addSharonBubble(
+    msg +
+      (url ? "" : " I couldn't find its Drive link either — it's in your “Sharon Recordings” folder.")
+  );
+  if (url) {
+    try {
+      chrome.tabs.create({ url });
+    } catch (_) {
+      try {
+        window.open(url, "_blank", "noopener");
+      } catch (_) {
+        /* the message above still tells them where it lives */
+      }
+    }
+  }
+}
+
+// A recording hit (search card or memory row) → play at its matched moment.
+// Old recordings without segments simply have no start_seconds → 0:00.
+function playRecordingFromHit(h) {
+  const recordingId =
+    String(h.recording_id || "").trim() || String(h.entry_id || "").replace(/^rec:/, "").trim();
+  playRecording({
+    recordingId,
+    driveUrl: h.page_url || "",
+    startSeconds: Math.max(0, Math.round(Number(h.start_seconds) || 0)),
+    label: h.title || "Recording",
+  });
+}
+
+async function playRecording({ recordingId, driveUrl, startSeconds = 0, label = "Recording" }) {
+  recordingId = String(recordingId || "").trim();
+  if (!recordingId) {
+    playbackFallback(
+      driveUrl,
+      "I couldn't work out which recording that was, so I've opened it in your Drive instead."
+    );
+    return;
+  }
+
+  // Same recording already loaded — just jump to the moment and play.
+  if (plAudio && plRecordingId === recordingId) {
+    if (speech.isSpeaking()) speech.stopSpeaking();
+    plPausedForSpeech = false;
+    const at = plDuration
+      ? Math.min(Math.max(0, startSeconds), Math.max(0, plDuration - 1))
+      : Math.max(0, startSeconds);
+    try {
+      plAudio.currentTime = at;
+    } catch (_) {
+      /* ignore */
+    }
+    ui.playerSetTime(at, plDuration);
+    plAudio.play().catch(() => {});
+    return;
+  }
+  if (plLoadingId && plLoadingId === recordingId) return; // already fetching it
+
+  const seq = ++plLoadSeq;
+  stopPlayback();
+  plLoadingId = recordingId;
+  plDriveUrl = driveUrl || "";
+  ui.playerShow({ label, driveUrl: plDriveUrl });
+
+  let result;
+  try {
+    // No abort timeout on purpose — a long file legitimately takes a while;
+    // the bar shows a loading state the whole time.
+    result = await api.getRecordingAudio(recordingId);
+  } catch (err) {
+    if (seq !== plLoadSeq) return;
+    plLoadingId = null;
+    playbackFallback(
+      plDriveUrl,
+      "I couldn't fetch that recording's audio just now, so I've opened it in your Drive instead."
+    );
+    return;
+  }
+  if (seq !== plLoadSeq) return; // replaced or closed while fetching
+  plLoadingId = null;
+
+  if (result && result.too_large) {
+    playbackFallback(
+      result.drive_file_url || plDriveUrl,
+      "That recording's file is too big for me to play here, so I've opened it in your Drive instead."
+    );
+    return;
+  }
+  if (!result || !result.audio_base64) {
+    playbackFallback(
+      plDriveUrl,
+      "I couldn't load that recording's audio, so I've opened it in your Drive instead."
+    );
+    return;
+  }
+
+  let blob;
+  try {
+    blob = base64ToBlob(result.audio_base64, result.mime_type);
+  } catch (_) {
+    playbackFallback(
+      result.drive_file_url || plDriveUrl,
+      "That recording's audio wouldn't decode here, so I've opened it in your Drive instead."
+    );
+    return;
+  }
+
+  plRecordingId = recordingId;
+  plDriveUrl = result.drive_file_url || plDriveUrl;
+  plDuration = Math.max(0, Number(result.duration_seconds) || 0);
+  plBlobUrl = URL.createObjectURL(blob);
+  const audio = new Audio();
+  plAudio = audio;
+  const start = Math.max(0, Math.round(Number(startSeconds) || 0));
+
+  const beginAt = () => {
+    if (plAudio !== audio) return;
+    if (isFinite(audio.duration) && audio.duration > 0) plDuration = audio.duration;
+    ui.playerReady(plDuration);
+    const at = plDuration ? Math.min(start, Math.max(0, plDuration - 1)) : start;
+    try {
+      audio.currentTime = at;
+    } catch (_) {
+      /* plays from wherever it can */
+    }
+    ui.playerSetTime(at, plDuration);
+    if (speech.isSpeaking()) speech.stopSpeaking(); // never both at once
+    plPausedForSpeech = false;
+    audio.play().catch(() => {
+      // Autoplay refused (shouldn't happen after a click) — the bar is
+      // ready; the user just taps play.
+    });
+  };
+
+  audio.addEventListener("loadedmetadata", () => {
+    if (plAudio !== audio) return;
+    if (isFinite(audio.duration) && audio.duration > 0) {
+      beginAt();
+      return;
+    }
+    // MediaRecorder webm quirk: the blob reports Infinity until the engine
+    // is pushed past the end once; then the real duration appears and
+    // seeking works. The sheet's duration_seconds covers the display.
+    const onDur = () => {
+      if (plAudio !== audio) return;
+      if (!isFinite(audio.duration) || audio.duration <= 0) return;
+      audio.removeEventListener("durationchange", onDur);
+      beginAt();
+    };
+    audio.addEventListener("durationchange", onDur);
+    try {
+      audio.currentTime = 1e7;
+    } catch (_) {
+      beginAt();
+    }
+  });
+  audio.addEventListener("error", () => {
+    if (plAudio !== audio) return;
+    playbackFallback(
+      plDriveUrl,
+      "I couldn't play that recording here, so I've opened it in your Drive instead."
+    );
+  });
+  audio.addEventListener("play", () => {
+    if (plAudio !== audio) return;
+    speech.setPlaybackActive(true); // rule 7: the room is not quiet now
+    ui.playerSetPlaying(true);
+  });
+  audio.addEventListener("pause", () => {
+    if (plAudio !== audio) return;
+    speech.setPlaybackActive(false);
+    ui.playerSetPlaying(false);
+  });
+  audio.addEventListener("ended", () => {
+    if (plAudio !== audio) return;
+    plPausedForSpeech = false;
+    speech.setPlaybackActive(false);
+    ui.playerSetPlaying(false);
+  });
+  audio.addEventListener("timeupdate", () => {
+    if (plAudio !== audio) return;
+    ui.playerSetTime(audio.currentTime, plDuration);
+  });
+  audio.src = plBlobUrl;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1373,6 +1710,31 @@ function wireControls() {
       }
     }
   });
+
+  // In-panel player: play/pause, seek, close. (The Drive link is a plain <a>.)
+  if (e.plToggle)
+    e.plToggle.addEventListener("click", () => {
+      if (!plAudio) return;
+      if (playerPlaying()) {
+        pausePlaybackForUser();
+      } else {
+        if (speech.isSpeaking()) speech.stopSpeaking(); // never both at once
+        plPausedForSpeech = false;
+        plAudio.play().catch(() => {});
+      }
+    });
+  if (e.plSeek)
+    e.plSeek.addEventListener("input", () => {
+      if (!plAudio) return;
+      const v = Math.max(0, Number(e.plSeek.value) || 0);
+      try {
+        plAudio.currentTime = v;
+      } catch (_) {
+        /* ignore */
+      }
+      ui.playerSetTime(v, plDuration);
+    });
+  if (e.plClose) e.plClose.addEventListener("click", closePlayer);
 
   // Live-presence card: mute pill, tap-to-edit strip, editor buttons.
   if (e.lcMute) e.lcMute.addEventListener("click", toggleMic);
@@ -1593,6 +1955,13 @@ function wireControls() {
       );
     },
     onVoicesChanged: () => populateVoiceSelect(),
+    // The user spoke over a playing recording — pause it, exactly like
+    // barging in on Sharon. Their words are dropped by speech.js (they may
+    // BE the playback), so they can speak again into clean silence.
+    onPlaybackBargeIn: () => {
+      pausePlaybackForUser();
+      updateStatus();
+    },
   });
 
   wireControls();
