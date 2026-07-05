@@ -152,8 +152,9 @@ var SYSTEM_CORE =
   "Your database: you have a persistent memory store (the user's notes, " +
   "tasks, decisions, and preferences) that you read and write through tools:\n" +
   "- save_memory: when the user asks you to remember, note, or track " +
-  "something, save it with a clean short title and the content in your own " +
-  "clear words. Choose entry_type task for to-dos/reminders, note otherwise.\n" +
+  "something, save it with a clean short title and content that faithfully " +
+  "reflects the user's own words (see the HARD SAVE RULES below). Choose " +
+  "entry_type task for to-dos/reminders, note otherwise.\n" +
   "- search_memory: when they ask what they saved, or a question your memory " +
   "might answer, search first, then answer from the results. It also searches " +
   "the transcripts of their saved voice recordings — those come back as " +
@@ -173,6 +174,27 @@ var SYSTEM_CORE =
   "Use tools decisively whenever the request maps to one; don't ask " +
   "permission for a simple save or search. After a tool result, always give " +
   "a short spoken confirmation or answer.\n\n" +
+  "HARD SAVE RULES — these outrank everything else about saving:\n" +
+  "1. Grounding: anything you pass to save_memory must come ONLY from what " +
+  "the user actually said in this conversation, or from what they " +
+  "explicitly asked you to save. NEVER compose note content from the PAGE " +
+  "CONTEXT block, from your own replies, or from your general knowledge. " +
+  "The single exception is an explicit request to save something from the " +
+  "page ('save this page's address', 'note down what this article says " +
+  "about pricing') — only then may page content go into a note. If you " +
+  "cannot point to the user's own words behind a save, do NOT save — ask " +
+  "what they'd like saved instead.\n" +
+  "2. A bare affirmation or negation ('yes', 'yes I do', 'sure', 'okay', " +
+  "'please', 'no thanks') is NEVER a save request by itself and is NEVER " +
+  "note content. Treat it strictly as the user answering your immediately " +
+  "previous reply: do the thing you just offered or asked about — if you " +
+  "offered to play a recording back, surface or play that recording — and " +
+  "never start a new, unrelated action from it.\n" +
+  "3. Safety net: if what you are about to save does not closely reflect " +
+  "the user's own words from this conversation, don't save silently — " +
+  "confirm aloud first, like 'Want me to save that as a note?'. Silently " +
+  "saving the wrong thing is the worst outcome; a one-line check is " +
+  "cheap.\n\n" +
   "Live web search: you can search the internet with the web_search tool. " +
   "Use it whenever the answer likely depends on current or recent " +
   "information — news, prices, scores, weather, releases, 'latest', " +
@@ -449,6 +471,7 @@ function actionAssist_(p) {
           assistant_id: assistantId,
           session_id: sessionId,
           page_url: page.url || "",
+          bare_ack: isBareAcknowledgement_(userText),
         });
         events.push({ tool: call.name, ok: true, data: result.event || null });
         results.push({
@@ -559,11 +582,23 @@ function sanitizeHistory_(history) {
     var h = history[i] || {};
     var role = h.role === "assistant" ? "assistant" : h.role === "user" ? "user" : null;
     var content = String(h.content || "").trim();
-    if (role && content) out.push({ role: role, content: content.slice(0, 4000) });
+    if (role && content) pushMergedTurn_(out, role, content);
   }
   // API requires the first message to be from the user.
   while (out.length && out[0].role !== "user") out.shift();
   return out.slice(-2 * HISTORY_FALLBACK_TURNS);
+}
+
+// Consecutive same-role turns (local notices, agent-step speech) collapse
+// into one message, so "Sharon's immediately previous reply" — what a bare
+// "yes" answers — is always a single unambiguous message in the prompt.
+function pushMergedTurn_(out, role, content) {
+  var c = content.slice(0, 4000);
+  if (out.length && out[out.length - 1].role === role) {
+    out[out.length - 1].content = (out[out.length - 1].content + "\n" + c).slice(0, 4000);
+  } else {
+    out.push({ role: role, content: c });
+  }
 }
 
 function historyFromSheet_(sessionId, limit) {
@@ -573,13 +608,42 @@ function historyFromSheet_(sessionId, limit) {
     for (var i = 0; i < rows.length; i++) {
       var role = rows[i].role === "assistant" ? "assistant" : "user";
       var content = String(rows[i].content || "").trim();
-      if (content) out.push({ role: role, content: content.slice(0, 4000) });
+      if (content) pushMergedTurn_(out, role, content);
     }
     while (out.length && out[0].role !== "user") out.shift();
     return out;
   } catch (_) {
     return [];
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Bare affirmations — "yes", "yes I do", "sure", "no thanks"…
+ * These answer Sharon's previous reply; they are never a save request.
+ * ------------------------------------------------------------------ */
+var ACK_OPENERS_ = {
+  yes: 1, yeah: 1, yep: 1, yup: 1, sure: 1, ok: 1, okay: 1, alright: 1,
+  absolutely: 1, definitely: 1, certainly: 1, please: 1, of: 1,
+  no: 1, nope: 1, nah: 1,
+};
+var ACK_FILLERS_ = {
+  i: 1, do: 1, did: 1, would: 1, will: 1, am: 1, please: 1, thanks: 1,
+  thank: 1, you: 1, it: 1, that: 1, now: 1, go: 1, ahead: 1, sounds: 1,
+  good: 1, course: 1, not: 1, dont: 1, sharon: 1,
+};
+function isBareAcknowledgement_(text) {
+  var words = String(text || "")
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z ]+/g, " ")
+    .split(/\s+/)
+    .filter(function (w) { return w; });
+  if (!words.length || words.length > 4) return false;
+  if (!ACK_OPENERS_[words[0]]) return false;
+  for (var i = 1; i < words.length; i++) {
+    if (!ACK_FILLERS_[words[i]]) return false;
+  }
+  return true;
 }
 
 /* ------------------------------------------------------------------ *
@@ -643,6 +707,23 @@ function callClaude_(opts) {
  * ------------------------------------------------------------------ */
 function runMemoryTool_(name, input, ctx) {
   if (name === "save_memory") {
+    // Deterministic backstop for the HARD SAVE RULES: a short "yes"/"no"
+    // answers Sharon's previous reply and can never justify writing to the
+    // Sheet, no matter what content the model composed.
+    if (ctx.bare_ack) {
+      return {
+        forModel: {
+          saved: false,
+          refused: true,
+          reason:
+            "Save refused: the user's message is only a short affirmation or " +
+            "negation answering your previous reply. Do the thing you last " +
+            "offered or asked about instead. Only save when the user provides " +
+            "the content themselves or explicitly asks you to save something.",
+        },
+        event: null,
+      };
+    }
     var saved = actionDistill_({
       entry_type: input.entry_type || "note",
       title: input.title || "",

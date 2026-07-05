@@ -207,8 +207,12 @@ function updateStatus() {
 }
 
 // Speak + show a short local note from Sharon (no server round trip).
+// Remembered like any reply: if the user answers "yes" to something Sharon
+// said locally, the model must see what it was — a missing last turn is
+// exactly what makes it grasp at page context.
 function sharonSay(text) {
   ui.addSharonBubble(text);
+  remember("assistant", text);
   speech.speak(text, { onDone: updateStatus });
 }
 
@@ -236,7 +240,9 @@ function reportProblem(msg, nextStep) {
     ui.setWelcomeStep("memory", "active", msg + " " + (nextStep || ""));
     return;
   }
-  ui.addSharonBubble("I hit a snag: " + msg + (nextStep ? "\nWhat to do next: " + nextStep : ""));
+  const text = "I hit a snag: " + msg + (nextStep ? "\nWhat to do next: " + nextStep : "");
+  ui.addSharonBubble(text);
+  remember("assistant", text);
 }
 
 /* ------------------------------------------------------------------ *
@@ -788,6 +794,7 @@ function handlePlan(plan, elementList) {
 
   if (plan.say) {
     ui.addSharonBubble(plan.say);
+    remember("assistant", plan.say);
   }
 
   if (!plan.actions || !plan.actions.length) {
@@ -808,6 +815,7 @@ function handlePlan(plan, elementList) {
     const ask =
       "I'm about to " + (desc || "act on the page") + '. Say "yes" to go ahead, or "no" to stop.';
     ui.addSharonBubble(ask);
+    remember("assistant", ask);
     speech.speak(ask);
     return;
   }
@@ -839,6 +847,7 @@ async function executePlan(plan) {
   if (plan.done) {
     const msg = plan.say || "Done.";
     ui.addSharonBubble(msg);
+    if (!plan.say) remember("assistant", msg); // plan.say was remembered in handlePlan
     cancelAgentTask();
     thinking = false;
     updateStatus();
@@ -1254,6 +1263,18 @@ async function finishRecording(mimeType, durationSeconds, transcript, segments) 
           label: "Recording — just now (" + minutes + " min)",
         }),
     });
+    // The recording card is Sharon's side of this turn — put it in history
+    // too, so a follow-up like "yes I do" binds to the recording that was
+    // just saved instead of leaving the model to guess from page context.
+    const noteCount = Array.isArray(result.notes) ? result.notes.length : 0;
+    remember(
+      "assistant",
+      "I saved your " + minutes + "-minute voice recording" +
+        (noteCount
+          ? " and distilled " + noteCount + (noteCount === 1 ? " note" : " notes") + " from it"
+          : "") +
+        ". The audio is linked on its card if you want to listen back to it."
+    );
     refreshMemoryCount();
   } catch (err) {
     ui.hideRecorder();
