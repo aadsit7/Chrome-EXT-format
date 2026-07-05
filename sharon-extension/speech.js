@@ -1,24 +1,61 @@
 // speech.js — Sharon's ears and voice, with real turn-taking.
 //
 // The rules of the conversation:
-//   1. Sharon NEVER talks over you. If you start speaking while she's
-//      reading, she immediately holds (pauses) her voice. If it turns out to
-//      be a real utterance she stops entirely and listens; if it was just a
-//      cough / her own echo, she resumes on her own.
-//   2. She never STARTS speaking while you're mid-sentence — a reply that
+//   1. Sharon NEVER cuts you off. Recognition results accumulate upstream
+//      (sidepanel.js) and only send after a genuine, adaptive silence — a
+//      breath mid-thought never ends your turn.
+//   2. You can cut HER off (barge-in): the mic stays live while she speaks,
+//      and confident user speech cancels the rest of her reply instantly.
+//      "Sharon…" or "stop" always cuts through, however short.
+//   3. She never reacts to her own voice. Six layers of echo protection:
+//      (a) the mic stream requests echoCancellation / noiseSuppression /
+//          autoGainControl,
+//      (b) a rolling ~10s buffer of her own spoken words — recognition
+//          results that substantially overlap it are ignored,
+//      (c) a Web Audio energy gate — word-based interrupts need sustained
+//          input clearly above the calibrated ambient baseline (speaker echo
+//          after echo cancellation is far weaker than a person at the mic),
+//      (d) at least MIN_INTERRUPT_WORDS novel (non-echo) words before she
+//          stops talking, so a cough or fragment never silences her,
+//      (e) EXCEPT the instant-interrupt words ("Sharon…", "stop",
+//          "stop stop"), which bypass (c) and (d),
+//      (f) a short post-speech cooldown keeps the echo filter active after
+//          her audio ends (echo tails outlive the sound) without ever
+//          suppressing non-matching user speech.
+//   4. She never STARTS speaking while you're mid-sentence — a reply that
 //      arrives while you're still talking waits for you to finish.
-//   3. While she is speaking, her own voice picked up by the mic (the echo)
-//      is filtered out so only YOUR interruptions count.
+//   5. If the recognition engine stops itself (it does, periodically) it is
+//      restarted instantly, and any words caught mid-flight are stitched in
+//      so nothing you said is lost.
 //
 // This module is UI-free: the orchestrator registers callbacks.
 
 const synth = window.speechSynthesis;
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+/* ------------------------------------------------------------------ *
+ * Tunables
+ * ------------------------------------------------------------------ */
+const RECOGNITION_LANG = "en-US"; // the one place to change Sharon's listening language
+const MAX_ALTERNATIVES = 3; // per final result, the best-confidence one wins
+
 const MAX_CHUNK_CHARS = 220; // dodge Chrome's ~15s single-utterance cutoff
-const HOLD_RESUME_MS = 1400; // resume if an interruption never becomes final
 const QUIET_GAP_MS = 700; // how long after your last word Sharon may speak
 const WAIT_TO_SPEAK_MAX_MS = 6000;
+
+// Barge-in / echo protection
+const SELF_SPEECH_WINDOW_MS = 10000; // (b) rolling buffer of her own words
+const SELF_ECHO_OVERLAP = 0.6; // (b) ≥60% token overlap = her own echo
+const MIN_INTERRUPT_WORDS = 3; // (d) novel words required to cut her off
+const POST_SPEECH_COOLDOWN_MS = 400; // (f) echo filter outlives her audio
+const ENERGY_SUSTAIN_MS = 300; // (c) energy must run hot at least this long
+const ENERGY_RECENT_MS = 1200; // (c) a sustained burst opens the gate this long
+const ENERGY_RATIO = 2.2; // (c) "hot" = this many times the ambient baseline
+const CALIBRATION_MS = 2000; // (c) ambient sampled over the first idle seconds
+
+// ASR self-recovery
+const RESTART_DELAY_MS = 50; // instant restart after a routine engine stop
+const ERROR_SURFACE_AFTER = 6; // consecutive hard errors before telling the user
 
 let cb = {
   getSettings: () => ({ readAloud: true, voiceName: "", voiceRate: 0.95 }),
@@ -26,6 +63,7 @@ let cb = {
   onInterim: () => {},
   onStateChange: () => {},
   onMicBlocked: () => {},
+  onRecognitionTrouble: () => {},
   onVoicesChanged: () => {},
 };
 
@@ -146,14 +184,12 @@ function clampRate(r) {
 }
 
 /* ------------------------------------------------------------------ *
- * Speaking (TTS) — sentence-chunked queue with hold/resume turn-taking
+ * Speaking (TTS) — sentence-chunked queue, cancel-on-barge-in
  * ------------------------------------------------------------------ */
 let speakSeq = 0;
 let speaking = false;
 let paused = false; // user said "pause" (explicit)
-let holding = false; // auto-held because the user started talking
-let holdTimer = null;
-let currentSpokenText = "";
+let speechEndedAt = 0; // when her audio last stopped (for the echo cooldown)
 let onDoneSpeaking = null; // one-shot callback when the current reply ends
 
 function splitSentences(text) {
@@ -193,14 +229,6 @@ export function isPaused() {
   return paused;
 }
 
-function clearHold() {
-  holding = false;
-  if (holdTimer) {
-    clearTimeout(holdTimer);
-    holdTimer = null;
-  }
-}
-
 export function speak(text, { onDone } = {}) {
   const full = (text || "").trim();
   onDoneSpeaking = onDone || null;
@@ -214,10 +242,8 @@ export function speak(text, { onDone } = {}) {
 
   const mySeq = ++speakSeq;
   synth.cancel();
-  clearHold();
 
   const chunks = chunkForSpeech(full);
-  currentSpokenText = full;
   speaking = true;
   paused = false;
   cb.onStateChange();
@@ -226,8 +252,7 @@ export function speak(text, { onDone } = {}) {
     if (mySeq !== speakSeq) return;
     speaking = false;
     paused = false;
-    clearHold();
-    currentSpokenText = "";
+    speechEndedAt = Date.now();
     cb.onStateChange();
     const done = onDoneSpeaking;
     onDoneSpeaking = null;
@@ -245,7 +270,8 @@ export function speak(text, { onDone } = {}) {
         finishAll();
         return;
       }
-      const utt = new SpeechSynthesisUtterance(chunks[i++]);
+      const chunkText = chunks[i++];
+      const utt = new SpeechSynthesisUtterance(chunkText);
       if (voice) {
         utt.voice = voice;
         utt.lang = voice.lang;
@@ -255,6 +281,9 @@ export function speak(text, { onDone } = {}) {
       utt.rate = rate;
       utt.pitch = 1;
       utt.volume = 1;
+      // (b) Only words that actually reach the speakers enter the
+      // self-speech buffer — a barge-in cancels the unspoken rest.
+      utt.onstart = () => noteSelfSpeech(chunkText);
       utt.onend = () => {
         if (mySeq !== speakSeq) return;
         speakNext();
@@ -268,7 +297,7 @@ export function speak(text, { onDone } = {}) {
     speakNext();
   };
 
-  // Turn-taking rule 2: never START talking while the user is mid-sentence.
+  // Turn-taking rule 4: never START talking while the user is mid-sentence.
   const begin = () => {
     if (mySeq !== speakSeq) return;
     const waitedSince = Date.now();
@@ -288,13 +317,14 @@ export function speak(text, { onDone } = {}) {
   else whenVoicesReady(begin);
 }
 
+// Cancels the current reply for good — a bumped speakSeq means the queue and
+// its onDone can never run, so an interrupted reply is never re-spoken.
 export function stopSpeaking() {
   speakSeq++;
   if (synth) synth.cancel();
+  if (speaking) speechEndedAt = Date.now();
   speaking = false;
   paused = false;
-  clearHold();
-  currentSpokenText = "";
   onDoneSpeaking = null;
 }
 
@@ -310,41 +340,7 @@ export function resumeSpeaking() {
   if (synth && synth.paused) {
     synth.resume();
     paused = false;
-    holding = false;
     cb.onStateChange();
-  }
-}
-
-// Turn-taking rule 1: the user started talking while Sharon speaks — hold her
-// voice instantly. If no real (final) utterance follows, resume quietly.
-function holdForUser() {
-  if (!speaking || paused || holding) {
-    if (holding && holdTimer) {
-      // keep extending the hold while interim results keep arriving
-      clearTimeout(holdTimer);
-      holdTimer = setTimeout(resumeFromHold, HOLD_RESUME_MS);
-    }
-    return;
-  }
-  holding = true;
-  try {
-    synth.pause();
-  } catch (_) {
-    /* ignore */
-  }
-  holdTimer = setTimeout(resumeFromHold, HOLD_RESUME_MS);
-}
-
-function resumeFromHold() {
-  holdTimer = null;
-  if (!holding) return;
-  holding = false;
-  if (speaking && !paused && synth && synth.paused) {
-    try {
-      synth.resume();
-    } catch (_) {
-      /* ignore */
-    }
   }
 }
 
@@ -362,13 +358,13 @@ export function previewVoice() {
       utt.lang = "en-US";
     }
     utt.rate = clampRate(cb.getSettings().voiceRate);
-    currentSpokenText = sample;
     speaking = true;
     cb.onStateChange();
+    utt.onstart = () => noteSelfSpeech(sample);
     const done = () => {
       speaking = false;
       paused = false;
-      currentSpokenText = "";
+      speechEndedAt = Date.now();
       cb.onStateChange();
     };
     utt.onend = done;
@@ -380,8 +376,12 @@ export function previewVoice() {
 }
 
 /* ------------------------------------------------------------------ *
- * Echo filter — ignore the mic transcribing Sharon's own voice
+ * (b) Rolling self-speech buffer — the last ~10s of Sharon's own words.
+ * Echo and recognition lag behind her audio, so filtering against only the
+ * current sentence isn't enough; entries expire on their own.
  * ------------------------------------------------------------------ */
+let selfSpeech = []; // [{ text: normalized, at: ms }]
+
 function normalize(s) {
   return (s || "")
     .toLowerCase()
@@ -390,26 +390,171 @@ function normalize(s) {
     .trim();
 }
 
-function isEchoOfSpeech(phrase) {
-  if (!currentSpokenText) return false;
+function noteSelfSpeech(text) {
+  const t = normalize(text);
+  if (t) selfSpeech.push({ text: t, at: Date.now() });
+}
+
+function selfSpeechTokens() {
+  const cutoff = Date.now() - SELF_SPEECH_WINDOW_MS;
+  selfSpeech = selfSpeech.filter((e) => e.at >= cutoff); // natural expiry
+  const set = new Set();
+  for (const e of selfSpeech) for (const w of e.text.split(" ")) set.add(w);
+  return set;
+}
+
+// Fuzzy, case-insensitive, token-overlap echo test against everything she
+// has said in the last SELF_SPEECH_WINDOW_MS.
+function isSelfEcho(phrase) {
   const p = normalize(phrase);
   if (!p) return true;
-  const full = normalize(currentSpokenText);
-  if (!full) return false;
-  if (full.includes(p)) return true;
+  const tokens = selfSpeechTokens();
+  if (!tokens.size) return false;
   const words = p.split(" ");
-  const matched = words.filter((w) => full.includes(w)).length;
-  return matched / words.length >= 0.6;
+  let matched = 0;
+  for (const w of words) if (tokens.has(w)) matched++;
+  return matched / words.length >= SELF_ECHO_OVERLAP;
+}
+
+function countNovelWords(norm) {
+  const tokens = selfSpeechTokens();
+  let n = 0;
+  for (const w of norm.split(" ")) if (w && !tokens.has(w)) n++;
+  return n;
+}
+
+// (f) The filter stays on while she speaks and for a short cooldown after —
+// echo tails outlive the audio. Non-matching speech always passes.
+function echoFilterActive() {
+  return speaking || Date.now() - speechEndedAt < POST_SPEECH_COOLDOWN_MS;
 }
 
 /* ------------------------------------------------------------------ *
- * Listening (ASR) — continuous while the mic is live
+ * (a)+(c) Mic analyser + voice-energy gate.
+ * The mic stream is opened with echoCancellation/noiseSuppression/autoGain;
+ * an analyser calibrates ambient level during the first idle seconds, then a
+ * word-based interrupt is only allowed if input energy ran clearly above
+ * that baseline for at least ENERGY_SUSTAIN_MS. If the analyser can't run,
+ * the gate stays neutral — layers (b), (d), (e), (f) still protect.
+ * ------------------------------------------------------------------ */
+let analyserAttempted = false;
+let audioCtx = null;
+let analyser = null;
+let energyData = null;
+let energyBaseline = null;
+let calibrationSamples = [];
+let calibrationStartedAt = 0;
+let hotStreakStart = 0;
+let lastSustainedAt = 0;
+
+async function ensureMicAnalyser() {
+  if (analyserAttempted) return;
+  analyserAttempted = true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new Ctx();
+    try {
+      await audioCtx.resume();
+    } catch (_) {
+      /* may need a user gesture; retried below */
+    }
+    document.addEventListener(
+      "click",
+      () => {
+        try {
+          if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+        } catch (_) {
+          /* ignore */
+        }
+      },
+      { once: true }
+    );
+    const src = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    src.connect(analyser);
+    energyData = new Uint8Array(analyser.fftSize);
+    calibrationStartedAt = Date.now();
+    calibrationSamples = [];
+    setInterval(sampleEnergy, 50);
+  } catch (_) {
+    analyser = null;
+  }
+}
+
+function sampleEnergy() {
+  if (!analyser || !audioCtx || audioCtx.state !== "running") return;
+  analyser.getByteTimeDomainData(energyData);
+  let sum = 0;
+  for (let i = 0; i < energyData.length; i++) {
+    const d = energyData[i] - 128;
+    sum += d * d;
+  }
+  const rms = Math.sqrt(sum / energyData.length);
+  const now = Date.now();
+
+  if (energyBaseline == null) {
+    if (!speaking) {
+      calibrationSamples.push(rms);
+      if (now - calibrationStartedAt >= CALIBRATION_MS && calibrationSamples.length) {
+        energyBaseline =
+          calibrationSamples.reduce((a, b) => a + b, 0) / calibrationSamples.length;
+      }
+    } else {
+      calibrationStartedAt = now; // never calibrate on her own voice
+      calibrationSamples = [];
+    }
+    return;
+  }
+
+  const threshold = Math.max(energyBaseline * ENERGY_RATIO, energyBaseline + 4, 3);
+  if (rms >= threshold) {
+    if (!hotStreakStart) hotStreakStart = now;
+    if (now - hotStreakStart >= ENERGY_SUSTAIN_MS) lastSustainedAt = now;
+  } else {
+    hotStreakStart = 0;
+    // slow ambient re-tracking while everything is quiet
+    if (!speaking) energyBaseline = energyBaseline * 0.995 + rms * 0.005;
+  }
+}
+
+function energyGateOpen() {
+  // Unmeasurable (no permission / suspended context / still calibrating):
+  // stay neutral rather than dead — the other layers still apply.
+  if (!analyser || !audioCtx || audioCtx.state !== "running" || energyBaseline == null) return true;
+  return Date.now() - lastSustainedAt < ENERGY_RECENT_MS;
+}
+
+/* ------------------------------------------------------------------ *
+ * Barge-in decision — all layers together
+ * ------------------------------------------------------------------ */
+// (e) These cut through instantly, whatever their length.
+function isInstantInterrupt(norm) {
+  return norm === "stop" || norm === "stop stop" || /^sharon\b/.test(norm);
+}
+
+function shouldBargeIn(text) {
+  const norm = normalize(text);
+  if (!norm) return false;
+  if (isInstantInterrupt(norm)) return true; // (e)
+  if (countNovelWords(norm) < MIN_INTERRUPT_WORDS) return false; // (d)
+  return energyGateOpen(); // (c) — uncertain means do NOT interrupt
+}
+
+/* ------------------------------------------------------------------ *
+ * Listening (ASR) — continuous, self-healing, nothing dropped
  * ------------------------------------------------------------------ */
 let recognition = null;
 let recognizing = false;
 let micMuted = false;
 let micBlocked = false;
 let lastHeardAt = 0; // last time we heard the USER (non-echo)
+let lastInterimText = ""; // stitched in as final if the engine stops mid-word
+let consecutiveAsrErrors = 0;
+let troubleSurfaced = false;
 
 export function speechRecognitionAvailable() {
   return !!SpeechRecognition;
@@ -421,65 +566,120 @@ export function isMicBlocked() {
   return micBlocked;
 }
 
+function handleHeard(finalText, interimText, conf) {
+  consecutiveAsrErrors = 0;
+  troubleSurfaced = false;
+
+  const filtering = echoFilterActive();
+  const finalOk = !!finalText && !(filtering && isSelfEcho(finalText));
+  const interimOk = !!interimText && !(filtering && isSelfEcho(interimText));
+
+  // Barge-in check first, so an interrupting final lands after her voice has
+  // already been cancelled and the UI has flipped to "hearing".
+  if (speaking) {
+    const candidate = ((finalOk ? finalText : "") + " " + (interimOk ? interimText : "")).trim();
+    if (candidate && shouldBargeIn(candidate)) {
+      stopSpeaking();
+      cb.onStateChange();
+    }
+  }
+
+  if (interimOk) {
+    lastHeardAt = Date.now();
+    cb.onInterim(interimText);
+  }
+  if (finalOk) {
+    lastHeardAt = Date.now();
+    cb.onFinal(finalText, conf);
+  }
+}
+
 function ensureRecognition() {
   if (recognition) return recognition;
   if (!SpeechRecognition) return null;
   const rec = new SpeechRecognition();
-  rec.lang = "en-US";
+  rec.lang = RECOGNITION_LANG;
   rec.interimResults = true;
   rec.continuous = true;
-  rec.maxAlternatives = 1;
+  rec.maxAlternatives = MAX_ALTERNATIVES;
 
   rec.onstart = () => {
     recognizing = true;
+    ensureMicAnalyser();
   };
 
   rec.onresult = (event) => {
-    let interim = "";
-    let final = "";
-    let finalConf = null;
+    // New finals: keep the highest-confidence alternative of each.
+    let finalText = "";
+    let minConf = null;
     for (let i = event.resultIndex; i < event.results.length; i++) {
-      const alt = event.results[i][0];
-      if (event.results[i].isFinal) {
-        final += alt.transcript;
-        if (alt.confidence != null) finalConf = alt.confidence;
-      } else {
-        interim += alt.transcript;
+      const res = event.results[i];
+      if (!res.isFinal) continue;
+      let best = res[0];
+      for (let j = 1; j < res.length; j++) {
+        const alt = res[j];
+        if (
+          alt &&
+          alt.transcript &&
+          alt.confidence != null &&
+          (best.confidence == null || alt.confidence > best.confidence)
+        )
+          best = alt;
       }
+      finalText += best.transcript;
+      if (best.confidence != null)
+        minConf = minConf == null ? best.confidence : Math.min(minConf, best.confidence);
     }
+    // The full in-flight interim (everything not yet finalized), so a sudden
+    // engine stop can stitch it in rather than lose it.
+    let interim = "";
+    for (let i = 0; i < event.results.length; i++) {
+      if (!event.results[i].isFinal) interim += event.results[i][0].transcript;
+    }
+    lastInterimText = interim;
 
-    const show = interim.trim();
-    if (show && !(speaking && isEchoOfSpeech(show))) {
-      lastHeardAt = Date.now();
-      if (speaking) holdForUser(); // yield the floor immediately
-      cb.onInterim(show);
-    }
-
-    if (final.trim()) {
-      const text = final.trim();
-      if (speaking && isEchoOfSpeech(text)) return; // her own voice — ignore
-      lastHeardAt = Date.now();
-      clearHold();
-      cb.onFinal(text, finalConf);
-    }
+    handleHeard(finalText.trim(), interim.trim(), minConf);
   };
 
   rec.onerror = (event) => {
     recognizing = false;
-    if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+    const kind = event.error;
+    if (kind === "not-allowed" || kind === "service-not-allowed") {
       micBlocked = true;
       micMuted = true;
       cb.onMicBlocked();
       cb.onStateChange();
+      return;
+    }
+    // "no-speech" and "aborted" are routine — recover silently at full speed.
+    // "network"/"audio-capture" also self-recover (with backoff), and only
+    // reach the user after repeated consecutive failures.
+    if (kind === "network" || kind === "audio-capture") {
+      consecutiveAsrErrors++;
+      if (consecutiveAsrErrors >= ERROR_SURFACE_AFTER && !troubleSurfaced) {
+        troubleSurfaced = true;
+        cb.onRecognitionTrouble();
+      }
     }
   };
 
   rec.onend = () => {
     recognizing = false;
+    // Stitch: words caught mid-flight when the engine stopped must not drop.
+    const orphan = lastInterimText.trim();
+    lastInterimText = "";
+    if (orphan && !micMuted && !micBlocked && !(echoFilterActive() && isSelfEcho(orphan))) {
+      lastHeardAt = Date.now();
+      cb.onFinal(orphan, null);
+    }
     if (!micMuted && !micBlocked) {
+      const wait =
+        consecutiveAsrErrors > 0
+          ? Math.min(4000, 250 * Math.pow(2, consecutiveAsrErrors - 1))
+          : RESTART_DELAY_MS;
       setTimeout(() => {
         if (!micMuted && !micBlocked) startRecognition();
-      }, 250);
+      }, wait);
     }
   };
 
@@ -501,6 +701,7 @@ export function startRecognition() {
 
 export function stopRecognition() {
   if (!recognition) return;
+  lastInterimText = ""; // a deliberate stop drops in-flight words
   try {
     recognition.stop();
   } catch (_) {
@@ -518,5 +719,6 @@ export function setMicMuted(muted) {
 export function retryMic() {
   micBlocked = false;
   micMuted = false;
+  if (!analyser) analyserAttempted = false; // permission may exist now
   startRecognition();
 }
