@@ -47,6 +47,15 @@ export const els = {
   recTranscriptEl: document.getElementById("recTranscript"),
   recText: document.getElementById("recText"),
   recHint: document.getElementById("recHint"),
+  playerBar: document.getElementById("playerBar"),
+  plToggle: document.getElementById("plToggle"),
+  plLabel: document.getElementById("plLabel"),
+  plLoading: document.getElementById("plLoading"),
+  plCur: document.getElementById("plCur"),
+  plTotal: document.getElementById("plTotal"),
+  plSeek: document.getElementById("plSeek"),
+  plDrive: document.getElementById("plDrive"),
+  plClose: document.getElementById("plClose"),
   undoToast: document.getElementById("undoToast"),
   toastLabel: document.getElementById("toastLabel"),
   toastUndo: document.getElementById("toastUndo"),
@@ -502,12 +511,14 @@ export function addThisPageCard({ domain, question, title, bullets }) {
   return appendToThread(card);
 }
 
-// FROM YOUR NOTES — recall card; rows open the memory view.
-export function addNotesCard({ question, hits, onRowTap }) {
+// FROM YOUR NOTES — recall card; rows open the memory view. Recording hits
+// play right in the panel instead, queued to the moment that matched.
+export function addNotesCard({ question, hits, onRowTap, onListen }) {
   const n = hits.length;
   const card = cardShell(I_BOOK, "From your notes", n + (n === 1 ? " match" : " matches"));
   questionEcho(card, question);
   for (const h of hits) {
+    const isRecording = h.entry_type === "recording";
     const row = document.createElement("button");
     row.type = "button";
     row.className = "ac-note";
@@ -516,13 +527,19 @@ export function addNotesCard({ question, hits, onRowTap }) {
     t.textContent = h.title || h.content || "(untitled note)";
     row.appendChild(t);
     const when = metaTime(h.created_at);
-    if (when) {
+    const meta =
+      (when ? "Saved · " + when : "") +
+      (isRecording && h.start_label ? (when ? " · " : "") + "the part at " + h.start_label : "");
+    if (meta) {
       const m = document.createElement("div");
       m.className = "n-m";
-      m.textContent = "Saved · " + when;
+      m.textContent = meta;
       row.appendChild(m);
     }
-    row.addEventListener("click", () => onRowTap && onRowTap(h));
+    row.addEventListener("click", () => {
+      if (isRecording && onListen) onListen(h);
+      else onRowTap && onRowTap(h);
+    });
     card.appendChild(row);
   }
   cardFoot(card, "Synced with your Google Sheet", { synced: true });
@@ -663,9 +680,9 @@ export function addWebSearchCard({ question, bullets, sources }) {
 }
 
 // RECORDING SAVED — the distilled notes from a voice recording. Each note
-// is already in memory with the audio linked; the footer link plays the
-// source recording from Drive.
-export function addRecordingCard({ driveUrl, durationLabel, notes }) {
+// is already in memory with the audio linked; the footer plays the source
+// recording right in the panel (with the Drive link as the fallback).
+export function addRecordingCard({ driveUrl, recordingId, durationLabel, notes, onListen }) {
   const card = cardShell(I_MIC, "Recording saved", durationLabel || "");
   const list = Array.isArray(notes) ? notes : [];
   if (list.length) {
@@ -704,7 +721,15 @@ export function addRecordingCard({ driveUrl, durationLabel, notes }) {
       "Saved. I didn't find notes worth keeping this time — the full transcript is in your Sheet.";
     card.appendChild(p);
   }
-  if (driveUrl) {
+  if (recordingId && onListen) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ac-foot ac-listen";
+    btn.appendChild(svgOf(I_VOLUME));
+    btn.appendChild(document.createTextNode("Listen to the recording · plays right here"));
+    btn.addEventListener("click", () => onListen({ recordingId, driveUrl }));
+    card.appendChild(btn);
+  } else if (driveUrl) {
     const a = document.createElement("a");
     a.className = "ac-foot ac-listen";
     a.href = driveUrl;
@@ -746,6 +771,61 @@ export function attachSpokenLine(afterEl, text) {
   else els.thread.appendChild(line);
   scrollThread();
   return line;
+}
+
+/* ------------------------------------------------------------------ *
+ * In-panel audio player bar — pure DOM; the orchestrator owns the actual
+ * Audio element and drives these. One bar, one recording at a time.
+ * ------------------------------------------------------------------ */
+function fmtSecs(s) {
+  s = Math.max(0, Math.round(Number(s) || 0));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+// Show the bar in its loading state (seek row hidden, toggle disabled).
+export function playerShow({ label, driveUrl } = {}) {
+  if (!els.playerBar) return;
+  els.playerBar.classList.remove("hidden");
+  els.playerBar.setAttribute("data-state", "loading");
+  els.playerBar.setAttribute("data-playing", "false");
+  if (els.plLabel) els.plLabel.textContent = label || "Recording";
+  if (els.plCur) els.plCur.textContent = "0:00";
+  if (els.plTotal) els.plTotal.textContent = "0:00";
+  if (els.plSeek) els.plSeek.value = "0";
+  if (els.plDrive) {
+    if (driveUrl) {
+      els.plDrive.href = driveUrl;
+      els.plDrive.classList.remove("hidden");
+    } else {
+      els.plDrive.classList.add("hidden");
+    }
+  }
+}
+
+export function playerReady(durationSeconds) {
+  if (!els.playerBar) return;
+  els.playerBar.setAttribute("data-state", "ready");
+  if (els.plSeek) els.plSeek.max = String(Math.max(1, Math.round(durationSeconds || 0)));
+  if (els.plTotal) els.plTotal.textContent = fmtSecs(durationSeconds);
+}
+
+export function playerSetPlaying(playing) {
+  if (!els.playerBar) return;
+  els.playerBar.setAttribute("data-playing", playing ? "true" : "false");
+  if (els.plToggle) els.plToggle.setAttribute("aria-label", playing ? "Pause" : "Play");
+}
+
+export function playerSetTime(current, duration) {
+  if (els.plCur) els.plCur.textContent = fmtSecs(current);
+  if (duration && els.plTotal) els.plTotal.textContent = fmtSecs(duration);
+  // Don't fight the user's thumb mid-drag.
+  if (els.plSeek && !els.plSeek.matches(":active")) {
+    els.plSeek.value = String(Math.round(Number(current) || 0));
+  }
+}
+
+export function playerHide() {
+  if (els.playerBar) els.playerBar.classList.add("hidden");
 }
 
 /* --------- undo toast --------- */
@@ -923,7 +1003,7 @@ function renderMemList() {
     return;
   }
 
-  const { onToggleDone, onDelete } = memCache.cb;
+  const { onToggleDone, onDelete, onListen } = memCache.cb;
   let lastGroup = null;
   let groupCard = null;
   for (const h of shown) {
@@ -973,11 +1053,18 @@ function renderMemList() {
     item.appendChild(row);
 
     // expanded action row — recordings are read-only: no edit/delete, just
-    // a link to play the audio from Drive.
+    // Listen, which plays right in the panel (Drive stays the fallback).
     const actions = document.createElement("div");
     actions.className = "mi-actions";
     if (h.entry_type === "recording") {
-      if (h.page_url) {
+      if (onListen) {
+        const listen = document.createElement("button");
+        listen.type = "button";
+        listen.className = "pill-btn primary";
+        listen.textContent = "Listen" + (h.start_label ? " from " + h.start_label : "");
+        listen.addEventListener("click", () => onListen(h));
+        actions.appendChild(listen);
+      } else if (h.page_url) {
         const listen = document.createElement("a");
         listen.className = "pill-btn primary";
         listen.href = h.page_url;

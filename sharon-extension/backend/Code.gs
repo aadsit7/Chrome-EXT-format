@@ -39,9 +39,16 @@
  *                       entry_id "rec:<recording_id>").
  *   update_memory     — patch a memory_log row (status/done/deleted/edits).
  *   save_recording    — save a voice recording: audio to the Drive folder
- *                       "Sharon Recordings", one row to the recordings tab,
- *                       then distill the transcript into memory_log notes
- *                       that each link back to the audio.
+ *                       "Sharon Recordings", one row to the recordings tab
+ *                       (transcript + timestamped "segments" JSON), then
+ *                       distill the transcript into memory_log notes that
+ *                       each link back to the audio.
+ *   get_recording_audio — return one recording's audio as base64 so the
+ *                       panel can play it in place. The Drive file's
+ *                       sharing settings are never touched — the bytes
+ *                       flow through here, so recordings stay private.
+ *                       Files past AUDIO_MAX_BYTES return
+ *                       { too_large: true, drive_file_url } instead.
  *   summarize_memory  — fetch matching memory rows and have the model
  *                       compose a short spoken summary.
  *   get_recent_turns  — recent conversation_turns for a session (lets the
@@ -70,10 +77,11 @@ var SHEETS = {
 var RECORDINGS_FOLDER = "Sharon Recordings"; // Drive folder (created if missing)
 var RECORDING_HEADERS = [
   "recording_id", "created_at", "duration_seconds", "drive_file_url",
-  "transcript", "session_id", "notes_saved",
+  "transcript", "session_id", "notes_saved", "segments",
 ];
 var TRANSCRIPT_CELL_MAX = 45000; // Sheets caps a cell at 50,000 chars — stay clear
 var DISTILL_MAX_TOKENS = 4000; // room for a long recording's worth of notes
+var AUDIO_MAX_BYTES = 25 * 1024 * 1024; // bigger files play from Drive instead
 
 function props_() {
   return PropertiesService.getScriptProperties();
@@ -111,6 +119,7 @@ function doPost(e) {
         case "search_memory":     out = { ok: true, result: searchMemory_(payload) }; break;
         case "update_memory":     out = { ok: true, result: updateMemory_(payload) }; break;
         case "save_recording":    out = { ok: true, result: actionSaveRecording_(payload) }; break;
+        case "get_recording_audio": out = { ok: true, result: actionGetRecordingAudio_(payload) }; break;
         case "summarize_memory":  out = { ok: true, result: actionSummarize_(payload) }; break;
         case "get_recent_turns":  out = { ok: true, result: recentTurns_(payload) }; break;
         default: out = { ok: false, error: "unknown action: " + body.action };
@@ -149,9 +158,13 @@ var SYSTEM_CORE =
   "might answer, search first, then answer from the results. It also searches " +
   "the transcripts of their saved voice recordings — those come back as " +
   "read-only 'recording' entries with the audio linked, and notes tagged " +
-  "'recording' were distilled from one. When you answer from either, mention " +
-  "the recording's date naturally and that the audio is linked if they want " +
-  "to listen back.\n" +
+  "'recording' were distilled from one. A recording result may include the " +
+  "start time of the moment that matched (like 12:40). When you answer from " +
+  "either, mention the recording's date naturally; the panel queues the " +
+  "audio right there, ready to play, so you can offer it in passing — " +
+  "something like 'I've got that recording ready — it's from the part " +
+  "around twelve forty'. Say any time in natural words and never read URLs " +
+  "aloud.\n" +
   "- update_memory: when they say a task is done, or want a note changed or " +
   "deleted, find it (search first if you don't have its id) and update it.\n" +
   "- summarize_memory: when they want an overview — 'summarize my notes', " +
@@ -973,7 +986,8 @@ function searchRecordings_(terms) {
     }
     if (!score) continue;
     var createdAt = isoOf_(r[idx.created_at]);
-    var min = Math.max(1, Math.round((Number(r[idx.duration_seconds]) || 0) / 60));
+    var durationSec = Number(r[idx.duration_seconds]) || 0;
+    var min = Math.max(1, Math.round(durationSec / 60));
     var title = "Recording (" + min + " min)";
     try {
       title =
@@ -983,22 +997,83 @@ function searchRecordings_(terms) {
     } catch (_) {
       // date unparsable: the duration-only title still reads fine
     }
-    out.push({
-      score: score,
-      obj: {
-        entry_id: "rec:" + r[idx.recording_id],
-        entry_type: "recording",
-        title: title,
-        content: transcriptExcerpt_(transcript, terms),
-        tags: "",
-        status: "",
-        importance: "",
-        created_at: createdAt,
-        page_url: String(r[idx.drive_file_url] || ""),
-      },
-    });
+    var obj = {
+      entry_id: "rec:" + r[idx.recording_id],
+      recording_id: String(r[idx.recording_id] || ""),
+      entry_type: "recording",
+      title: title,
+      content: transcriptExcerpt_(transcript, terms),
+      tags: "",
+      status: "",
+      importance: "",
+      created_at: createdAt,
+      page_url: String(r[idx.drive_file_url] || ""),
+      duration_seconds: durationSec,
+    };
+    // The moment that matched (new recordings only): the same keyword
+    // scoring, applied per timestamped segment. Old rows without a
+    // segments column — or with an empty cell — simply omit it, and the
+    // panel plays those from 0:00.
+    if (idx.segments != null) {
+      var best = bestSegment_(segmentsFromCell_(r[idx.segments]), terms);
+      if (best) {
+        obj.start_seconds = best.t;
+        obj.start_label = clockLabel_(best.t);
+      }
+    }
+    out.push({ score: score, obj: obj });
   }
   return out;
+}
+
+// Pick the segment whose text best matches the query — the exact scoring
+// searchMemory_ uses (+2 per matched term), earliest segment wins a tie.
+function bestSegment_(segments, terms) {
+  var best = null;
+  var bestScore = 0;
+  for (var i = 0; i < segments.length; i++) {
+    var seg = segments[i] || {};
+    var hay = String(seg.text || "").toLowerCase();
+    var score = 0;
+    for (var t = 0; t < terms.length; t++) {
+      if (hay.indexOf(terms[t]) >= 0) score += 2;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = seg;
+    }
+  }
+  return best ? { t: Math.max(0, Math.round(Number(best.t) || 0)) } : null;
+}
+
+// A segments cell holds either the JSON array itself or (when it was too
+// long for a cell) the link to the companion .json file in Drive.
+function segmentsFromCell_(v) {
+  var s = String(v || "").trim();
+  if (!s) return [];
+  if (s.charAt(0) === "[") {
+    try {
+      var arr = JSON.parse(s);
+      return Array.isArray(arr) ? arr : [];
+    } catch (_) {
+      return [];
+    }
+  }
+  var id = driveFileIdFromUrl_(s);
+  if (!id) return [];
+  try {
+    var arr2 = JSON.parse(DriveApp.getFileById(id).getBlob().getDataAsString());
+    return Array.isArray(arr2) ? arr2 : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+// "12:40"-style label for a start time in seconds.
+function clockLabel_(secs) {
+  var s = Math.max(0, Math.round(Number(secs) || 0));
+  var r = s % 60;
+  return Math.floor(s / 60) + ":" + (r < 10 ? "0" : "") + r;
 }
 
 function updateMemory_(p) {
@@ -1083,13 +1158,39 @@ function actionSaveRecording_(p) {
       "\n\n[Full transcript: " + txtFile.getUrl() + "]";
   }
 
-  // 3) One row in the recordings tab.
+  // 2b) Timestamped segments ([{t, text}], new recordings only) — the same
+  // cell guard: over-long segments JSON becomes a companion .json file in
+  // the folder, and the cell holds just its link.
+  var segments = sanitizeSegments_(p.segments);
+  var segCell = "";
+  if (segments.length) {
+    segCell = JSON.stringify(segments);
+    if (segCell.length > TRANSCRIPT_CELL_MAX) {
+      var segFile = folder.createFile(
+        Utilities.newBlob(segCell, "application/json", name.replace(/\.webm$/, "") + " segments.json")
+      );
+      segCell = segFile.getUrl();
+    }
+  }
+
+  // 3) One row in the recordings tab. Columns are looked up by header name,
+  // so the sheet's own column order — old tab or new — is always respected.
   var sh = recordingsSheet_();
+  var headers = headers_(sh);
   var recordingId = uuid_();
   var rowNum = sh.getLastRow() + 1;
-  sh.getRange(rowNum, 1, 1, RECORDING_HEADERS.length).setValues([[
-    recordingId, nowIso_(), duration, fileUrl, cellText, String(p.session_id || ""), 0,
-  ]]);
+  sh.getRange(rowNum, 1, 1, headers.length).setValues([
+    rowFromObject_(headers, {
+      recording_id: recordingId,
+      created_at: nowIso_(),
+      duration_seconds: duration,
+      drive_file_url: fileUrl,
+      transcript: cellText,
+      session_id: String(p.session_id || ""),
+      notes_saved: 0,
+      segments: segCell,
+    }),
+  ]);
 
   // 4) Distill the transcript into memory notes — best effort, and the
   // page_url on every note is the Drive audio link ("listen to the source").
@@ -1101,7 +1202,8 @@ function actionSaveRecording_(p) {
       session_id: String(p.session_id || ""),
       page_url: fileUrl,
     });
-    if (notes.length) sh.getRange(rowNum, RECORDING_HEADERS.indexOf("notes_saved") + 1).setValue(notes.length);
+    if (notes.length && headers.indexOf("notes_saved") >= 0)
+      sh.getRange(rowNum, headers.indexOf("notes_saved") + 1).setValue(notes.length);
   } catch (_) {
     // The recording is saved either way; the panel just shows zero notes.
   }
@@ -1114,15 +1216,82 @@ function recordingsFolder_() {
   return it.hasNext() ? it.next() : DriveApp.createFolder(RECORDINGS_FOLDER);
 }
 
-// Unlike sheet_(), this creates the tab (with headers) if it's missing.
+// Unlike sheet_(), this creates the tab (with headers) if it's missing,
+// and appends any header a newer version added (e.g. "segments") at the
+// END of the header row — existing columns and rows are never disturbed.
 function recordingsSheet_() {
   var ss = ss_();
   var sh = ss.getSheetByName(SHEETS.recordings);
   if (!sh) {
     sh = ss.insertSheet(SHEETS.recordings);
     sh.appendRow(RECORDING_HEADERS);
+    return sh;
+  }
+  var have = headers_(sh);
+  for (var i = 0; i < RECORDING_HEADERS.length; i++) {
+    if (have.indexOf(RECORDING_HEADERS[i]) < 0) {
+      sh.getRange(1, have.length + 1).setValue(RECORDING_HEADERS[i]);
+      have.push(RECORDING_HEADERS[i]);
+    }
   }
   return sh;
+}
+
+// [{t, text}] in, [{t, text}] out — anything malformed is dropped, so a
+// bad client payload can never poison the sheet or fail the save.
+function sanitizeSegments_(raw) {
+  if (!Array.isArray(raw)) return [];
+  var out = [];
+  for (var i = 0; i < raw.length; i++) {
+    var s = raw[i] || {};
+    var text = String(s.text || "").trim();
+    if (!text) continue;
+    out.push({ t: Math.max(0, Math.round(Number(s.t) || 0)), text: text });
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * get_recording_audio — the audio flows back through here (base64) so
+ * the panel can play it in place. The Drive file's sharing settings are
+ * NEVER changed: recordings stay private to the account running this
+ * script. Oversized files come back as { too_large } and the panel falls
+ * back to its Drive link.
+ * ------------------------------------------------------------------ */
+function actionGetRecordingAudio_(p) {
+  var recId = String(p.recording_id || "").replace(/^rec:/, "").trim();
+  if (!recId) throw new Error("recording_id is required");
+  var sh = ss_().getSheetByName(SHEETS.recordings);
+  if (!sh || sh.getLastRow() < 2) throw new Error("recording not found: " + recId);
+  var headers = headers_(sh);
+  var idx = indexMap_(headers);
+  var rows = sh.getRange(2, 1, sh.getLastRow() - 1, headers.length).getValues();
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i][idx.recording_id]) !== recId) continue;
+    var url = String(rows[i][idx.drive_file_url] || "");
+    var fileId = driveFileIdFromUrl_(url);
+    if (!fileId) throw new Error("that recording has no Drive audio file linked");
+    var file = DriveApp.getFileById(fileId);
+    var duration = Number(rows[i][idx.duration_seconds]) || 0;
+    if (file.getSize() > AUDIO_MAX_BYTES) {
+      return { too_large: true, drive_file_url: url, duration_seconds: duration };
+    }
+    var blob = file.getBlob();
+    return {
+      audio_base64: Utilities.base64Encode(blob.getBytes()),
+      mime_type: blob.getContentType() || "audio/webm",
+      duration_seconds: duration,
+      drive_file_url: url,
+    };
+  }
+  throw new Error("recording not found: " + recId);
+}
+
+// The file id out of any Drive URL shape (/d/<id>/, ?id=<id>, or bare).
+function driveFileIdFromUrl_(url) {
+  var s = String(url || "");
+  var m = s.match(/\/d\/([-\w]{20,})/) || s.match(/[?&]id=([-\w]{20,})/) || s.match(/([-\w]{25,})/);
+  return m ? m[1] : "";
 }
 
 var DISTILL_SYSTEM =

@@ -444,6 +444,12 @@ html[data-view="memory"] .thread{display:none}
 .ac-listen{text-decoration:none;cursor:pointer;color:var(--teal)!important}
 .ac-listen svg{color:var(--teal)}
 .ac-listen:hover{text-decoration:underline}
+/* the same footer as a <button> when it plays in-panel instead of linking out */
+button.ac-listen{
+  width:100%;background:transparent;border:none;border-top:1px solid var(--hairline);
+  font-family:inherit;font-size:11.5px;font-weight:400;text-align:left;
+  padding:9px 0 0;margin-top:10px;
+}
 
 /* spoken-aloud layer */
 .spoken-line{
@@ -453,6 +459,45 @@ html[data-view="memory"] .thread{display:none}
 .spoken-line svg{width:14px;height:14px;flex:none;color:var(--teal);margin-top:2px}
 .spoken-line span{font-size:13px;font-style:italic;line-height:1.45;color:#545d70;word-break:break-word}
 html[data-voice="off"] .spoken-line{display:none}
+
+/* ================= In-panel audio player ================= */
+.player{
+  flex:none;margin:0 14px 10px;padding:9px 11px;
+  background:#fff;border:1px solid var(--hairline);border-radius:var(--r-card);
+  display:flex;align-items:center;gap:10px;
+  animation:riseIn .2s var(--ease) both;
+}
+.pl-toggle{
+  width:34px;height:34px;border-radius:50%;flex:none;
+  border:none;background:var(--teal);color:#fff;cursor:pointer;
+  display:grid;place-items:center;
+  transition:background .15s var(--ease),transform .1s var(--ease),opacity .15s var(--ease);
+}
+.pl-toggle:hover{background:#087a6f}
+.pl-toggle:active{transform:scale(.92)}
+.pl-toggle:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
+.pl-toggle svg{width:15px;height:15px}
+.pl-toggle .i-pause{display:none}
+.player[data-playing="true"] .i-play{display:none}
+.player[data-playing="true"] .i-pause{display:block}
+.player[data-state="loading"] .pl-toggle{opacity:.45;pointer-events:none}
+.pl-mid{flex:1;min-width:0}
+.pl-label{font-size:12.5px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pl-loading{display:none;font-size:11.5px;color:var(--tertiary);margin-top:3px;animation:blink 1.4s infinite}
+.player[data-state="loading"] .pl-loading{display:block}
+.player[data-state="loading"] .pl-row{display:none}
+.pl-row{display:flex;align-items:center;gap:8px;margin-top:3px}
+.pl-time{flex:none;font-family:var(--f-mono);font-size:11px;font-weight:600;color:var(--tertiary)}
+.pl-seek{flex:1;min-width:0;height:14px;margin:0;accent-color:var(--teal);cursor:pointer;background:transparent}
+.pl-drive,.pl-close{
+  width:30px;height:30px;border-radius:9px;flex:none;
+  border:none;background:transparent;color:var(--tertiary);cursor:pointer;
+  display:grid;place-items:center;
+  transition:background .15s var(--ease),color .15s var(--ease);
+}
+.pl-drive:hover,.pl-close:hover{background:var(--hover);color:var(--ink)}
+.pl-drive:focus-visible,.pl-close:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
+.pl-drive svg,.pl-close svg{width:15px;height:15px}
 
 /* ================= Composer ================= */
 .composer{

@@ -32,6 +32,11 @@
 //      recognition result (interim, final, and restart-stitched orphans)
 //      is rerouted into the recorder's transcript instead of the assist
 //      flow. Exiting restores rules 1-5 untouched.
+//   7. Playback mode: while a saved recording plays in the panel, that audio
+//      is real speech in the room — often the user's own voice — so nothing
+//      heard while it plays (or in its short echo tail) may become a command
+//      or an interim. Confident user speech PAUSES the playback instead,
+//      under the same barge-in rules as when Sharon herself is talking.
 //
 // This module is UI-free: the orchestrator registers callbacks.
 
@@ -53,6 +58,7 @@ const SELF_SPEECH_WINDOW_MS = 10000; // (b) rolling buffer of her own words
 const SELF_ECHO_OVERLAP = 0.6; // (b) ≥60% token overlap = her own echo
 const MIN_INTERRUPT_WORDS = 3; // (d) novel words required to cut her off
 const POST_SPEECH_COOLDOWN_MS = 400; // (f) echo filter outlives her audio
+const PLAYBACK_COOLDOWN_MS = 800; // rule 7: playback echo tails outlive the sound too
 const ENERGY_SUSTAIN_MS = 300; // (c) energy must run hot at least this long
 const ENERGY_RECENT_MS = 1200; // (c) a sustained burst opens the gate this long
 const ENERGY_RATIO = 2.2; // (c) "hot" = this many times the ambient baseline
@@ -70,6 +76,7 @@ let cb = {
   onMicBlocked: () => {},
   onRecognitionTrouble: () => {},
   onVoicesChanged: () => {},
+  onPlaybackBargeIn: () => {},
 };
 
 export function initSpeech(callbacks) {
@@ -600,6 +607,29 @@ export function exitRecorderMode() {
 }
 
 /* ------------------------------------------------------------------ *
+ * Playback mode (rule 7) — the orchestrator flips this while a saved
+ * recording plays in the panel. The playback audio is real speech that the
+ * mic will hear and the recognizer will happily transcribe (it isn't in the
+ * self-speech buffer — it's not Sharon's voice), so while it's active every
+ * recognition result is swallowed before it can become a command; the only
+ * thing heard speech can do is barge in and pause the playback, exactly as
+ * it would cut Sharon off. A short cooldown after playback stops catches
+ * the recognition lag and echo tail.
+ * ------------------------------------------------------------------ */
+let playbackActive = false;
+let playbackEndedAt = 0;
+
+export function setPlaybackActive(on) {
+  on = !!on;
+  if (playbackActive && !on) playbackEndedAt = Date.now();
+  playbackActive = on;
+}
+
+function playbackGuardActive() {
+  return playbackActive || Date.now() - playbackEndedAt < PLAYBACK_COOLDOWN_MS;
+}
+
+/* ------------------------------------------------------------------ *
  * Listening (ASR) — continuous, self-healing, nothing dropped
  * ------------------------------------------------------------------ */
 let recognition = null;
@@ -632,6 +662,18 @@ function handleHeard(finalText, interimText, conf) {
     if (finalText) {
       lastHeardAt = Date.now();
       recorderCb.onFinal(finalText, conf);
+    }
+    return;
+  }
+
+  // Playback mode (rule 7): nothing heard while a recording plays — or in
+  // its short echo tail — ever reaches the assist flow. Confident speech
+  // pauses the playback instead (same barge-in contract as when she talks);
+  // the triggering words are dropped too, since they may BE the playback.
+  if (playbackGuardActive()) {
+    if (playbackActive) {
+      const candidate = ((finalText || "") + " " + (interimText || "")).trim();
+      if (candidate && shouldBargeIn(candidate)) cb.onPlaybackBargeIn();
     }
     return;
   }
@@ -735,9 +777,14 @@ function ensureRecognition() {
     const orphan = lastInterimText.trim();
     lastInterimText = "";
     if (orphan && !micMuted && !micBlocked && !(echoFilterActive() && isSelfEcho(orphan))) {
-      lastHeardAt = Date.now();
-      if (recorderMode) recorderCb.onFinal(orphan, null);
-      else cb.onFinal(orphan, null);
+      if (recorderMode) {
+        lastHeardAt = Date.now();
+        recorderCb.onFinal(orphan, null);
+      } else if (!playbackGuardActive()) {
+        // Rule 7: an orphan caught mid-playback may be the playback itself.
+        lastHeardAt = Date.now();
+        cb.onFinal(orphan, null);
+      }
     }
     if (!micMuted && !micBlocked) {
       const wait =
