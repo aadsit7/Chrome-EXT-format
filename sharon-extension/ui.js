@@ -16,7 +16,6 @@ export const els = {
   tabPill: document.getElementById("tabPill"),
   tabSeeing: document.getElementById("tabSeeing"),
   tabTitle: document.getElementById("tabTitle"),
-  useTabChip: document.getElementById("useTabChip"),
   liveCard: document.getElementById("liveCard"),
   lcLabel: document.getElementById("lcLabel"),
   lcMute: document.getElementById("lcMute"),
@@ -51,6 +50,8 @@ export const els = {
   sendBtn: document.getElementById("sendBtn"),
   micBtn: document.getElementById("micBtn"),
   recordBtn: document.getElementById("recordBtn"),
+  screenBtn: document.getElementById("screenBtn"),
+  searchIcon: document.getElementById("searchIcon"),
   recCard: document.getElementById("recCard"),
   recLabel: document.getElementById("recLabel"),
   recTimer: document.getElementById("recTimer"),
@@ -142,6 +143,8 @@ const STATUS_TEXT = {
   speaking: "Speaking — tap to stop",
   muted: "Muted",
   recording: "Recording — I'll stay quiet",
+  screen: "Looking at your screen…",
+  searching: "Searching the web…",
 };
 
 export function setPhase(phase) {
@@ -186,17 +189,27 @@ export function setTabAwareness(seeing) {
   if (els.tabSeeing) els.tabSeeing.textContent = seeing ? "Seeing this tab" : "Not reading this tab";
 }
 
-// The composer's "Use this tab" opt-in chip — pressed state only; the
-// orchestrator owns the actual flag (session-only, never persisted).
-export function setUseTabChip(on) {
-  if (!els.useTabChip) return;
-  els.useTabChip.setAttribute("aria-pressed", on ? "true" : "false");
-  els.useTabChip.setAttribute(
-    "title",
-    on
-      ? "Sharon is including this tab with what you send — tap to stop"
-      : "Include this tab's content with what you send"
-  );
+// The mode bar reflects the manager's word: exactly one icon is lit, in the
+// mode's color (the CSS keys off data-mode). aria-pressed follows on the
+// tappable icons; the aria-live status line announces the mode change.
+export function setMode(m) {
+  els.html.setAttribute("data-mode", m);
+  const pressed = { listening: els.micBtn, recording: els.recordBtn, screen: els.screenBtn };
+  for (const [name, btn] of Object.entries(pressed)) {
+    if (btn) btn.setAttribute("aria-pressed", m === name ? "true" : "false");
+  }
+  if (els.screenBtn)
+    els.screenBtn.setAttribute(
+      "aria-label",
+      m === "screen"
+        ? "Looking at this tab — tap to stop"
+        : "Look at this tab — I'll answer one question about it"
+    );
+  if (els.searchIcon)
+    els.searchIcon.setAttribute(
+      "aria-label",
+      m === "searching" ? "Searching the web" : "Web search indicator — lights up while I search"
+    );
 }
 
 // Blue badge on the memory (book) button = open-task count.
