@@ -571,6 +571,12 @@ html[data-view="memory"] .memory{display:flex}
 .m-pill.on{background:var(--blue);border-color:var(--blue);color:#fff}
 
 .mem-list{flex:1;min-height:0;overflow-y:auto;padding:6px 0 10px;display:flex;flex-direction:column;gap:6px}
+/* Group cards use overflow:hidden, which zeroes a flex item's automatic
+   minimum height — without this, a full list SQUASHES the cards to fit
+   (rows clip mid-item and there's nothing to scroll) instead of
+   overflowing. flex:none keeps every card its natural height so the
+   list actually scrolls. */
+.mem-list>*{flex:none}
 .mem-list::-webkit-scrollbar{width:0}
 .mg-head{
   font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
