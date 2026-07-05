@@ -34,8 +34,14 @@
  *                       compatibility; logs both turns.
  *   append_turn       — log one row to conversation_turns.
  *   distill_to_memory — write one row to memory_log.
- *   search_memory     — keyword search over memory_log.
+ *   search_memory     — keyword search over memory_log AND the transcripts
+ *                       in the recordings tab (recording hits are read-only,
+ *                       entry_id "rec:<recording_id>").
  *   update_memory     — patch a memory_log row (status/done/deleted/edits).
+ *   save_recording    — save a voice recording: audio to the Drive folder
+ *                       "Sharon Recordings", one row to the recordings tab,
+ *                       then distill the transcript into memory_log notes
+ *                       that each link back to the audio.
  *   summarize_memory  — fetch matching memory rows and have the model
  *                       compose a short spoken summary.
  *   get_recent_turns  — recent conversation_turns for a session (lets the
@@ -57,7 +63,17 @@ var SHEETS = {
   turns: "conversation_turns",
   memory: "memory_log",
   sessions: "sessions",
+  recordings: "recordings",
 };
+
+// Voice recordings
+var RECORDINGS_FOLDER = "Sharon Recordings"; // Drive folder (created if missing)
+var RECORDING_HEADERS = [
+  "recording_id", "created_at", "duration_seconds", "drive_file_url",
+  "transcript", "session_id", "notes_saved",
+];
+var TRANSCRIPT_CELL_MAX = 45000; // Sheets caps a cell at 50,000 chars — stay clear
+var DISTILL_MAX_TOKENS = 4000; // room for a long recording's worth of notes
 
 function props_() {
   return PropertiesService.getScriptProperties();
@@ -94,6 +110,7 @@ function doPost(e) {
         case "distill_to_memory": out = { ok: true, result: actionDistill_(payload) }; break;
         case "search_memory":     out = { ok: true, result: searchMemory_(payload) }; break;
         case "update_memory":     out = { ok: true, result: updateMemory_(payload) }; break;
+        case "save_recording":    out = { ok: true, result: actionSaveRecording_(payload) }; break;
         case "summarize_memory":  out = { ok: true, result: actionSummarize_(payload) }; break;
         case "get_recent_turns":  out = { ok: true, result: recentTurns_(payload) }; break;
         default: out = { ok: false, error: "unknown action: " + body.action };
@@ -129,7 +146,12 @@ var SYSTEM_CORE =
   "something, save it with a clean short title and the content in your own " +
   "clear words. Choose entry_type task for to-dos/reminders, note otherwise.\n" +
   "- search_memory: when they ask what they saved, or a question your memory " +
-  "might answer, search first, then answer from the results.\n" +
+  "might answer, search first, then answer from the results. It also searches " +
+  "the transcripts of their saved voice recordings — those come back as " +
+  "read-only 'recording' entries with the audio linked, and notes tagged " +
+  "'recording' were distilled from one. When you answer from either, mention " +
+  "the recording's date naturally and that the audio is linked if they want " +
+  "to listen back.\n" +
   "- update_memory: when they say a task is done, or want a note changed or " +
   "deleted, find it (search first if you don't have its id) and update it.\n" +
   "- summarize_memory: when they want an overview — 'summarize my notes', " +
@@ -574,7 +596,7 @@ function callClaude_(opts) {
 
   var body = {
     model: model_(),
-    max_tokens: REPLY_MAX_TOKENS,
+    max_tokens: opts.maxTokens || REPLY_MAX_TOKENS,
     system: opts.system,
     messages: opts.messages,
   };
@@ -906,6 +928,17 @@ function searchMemory_(p) {
     if (terms.length && score === 0) continue;
     scored.push({ score: score, rowIndex: i + 2, obj: memoryRowToObj_(r, idx) });
   }
+
+  // Keyword searches also scan the recordings tab transcripts. Hits come
+  // back in the SAME shape the panel already renders — read-only, with
+  // entry_id "rec:<recording_id>" and the Drive audio link as page_url.
+  if (terms.length && !wantType) {
+    var recHits = searchRecordings_(terms);
+    for (var rh = 0; rh < recHits.length; rh++) {
+      scored.push({ score: recHits[rh].score, recording: true, obj: recHits[rh].obj });
+    }
+  }
+
   scored.sort(function (a, b) {
     if (b.score !== a.score) return b.score - a.score;
     return String(b.obj.created_at).localeCompare(String(a.obj.created_at));
@@ -915,6 +948,7 @@ function searchMemory_(p) {
   if (p.touch && hits.length && idx.access_count != null) {
     var sh = sheet_(SHEETS.memory);
     for (var h = 0; h < hits.length; h++) {
+      if (hits[h].recording) continue; // recordings have no access_count
       var cell = sh.getRange(hits[h].rowIndex, idx.access_count + 1);
       cell.setValue((Number(cell.getValue()) || 0) + 1);
     }
@@ -922,9 +956,59 @@ function searchMemory_(p) {
   return hits.map(function (h) { return h.obj; });
 }
 
+function searchRecordings_(terms) {
+  var sh = ss_().getSheetByName(SHEETS.recordings);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
+  var idx = indexMap_(headers);
+  var rows = sh.getRange(2, 1, sh.getLastRow() - 1, headers.length).getValues();
+  var out = [];
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var transcript = String(r[idx.transcript] || "");
+    var hay = transcript.toLowerCase();
+    var score = 0;
+    for (var t = 0; t < terms.length; t++) {
+      if (hay.indexOf(terms[t]) >= 0) score += 2;
+    }
+    if (!score) continue;
+    var createdAt = isoOf_(r[idx.created_at]);
+    var min = Math.max(1, Math.round((Number(r[idx.duration_seconds]) || 0) / 60));
+    var title = "Recording (" + min + " min)";
+    try {
+      title =
+        "Recording — " +
+        Utilities.formatDate(new Date(createdAt), Session.getScriptTimeZone(), "MMM d") +
+        " (" + min + " min)";
+    } catch (_) {
+      // date unparsable: the duration-only title still reads fine
+    }
+    out.push({
+      score: score,
+      obj: {
+        entry_id: "rec:" + r[idx.recording_id],
+        entry_type: "recording",
+        title: title,
+        content: transcriptExcerpt_(transcript, terms),
+        tags: "",
+        status: "",
+        importance: "",
+        created_at: createdAt,
+        page_url: String(r[idx.drive_file_url] || ""),
+      },
+    });
+  }
+  return out;
+}
+
 function updateMemory_(p) {
   var entryId = String(p.entry_id || "");
   if (!entryId) throw new Error("entry_id is required");
+  // Recordings are read-only — decline politely instead of erroring, so a
+  // stray edit/delete attempt from any flow never breaks the panel.
+  if (entryId.indexOf("rec:") === 0) {
+    return { updated: false, readonly: true, entry_id: entryId };
+  }
   var data = readAll_(SHEETS.memory);
   var idx = indexMap_(data.headers);
   for (var i = 0; i < data.rows.length; i++) {
@@ -961,6 +1045,188 @@ function memoryForScope_(p) {
     if (cutoff && new Date(h.created_at).getTime() < cutoff) return false;
     return true;
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * save_recording — audio to Drive, transcript to the Sheet, and the
+ * important bits distilled into memory_log (each note linking the audio).
+ * The Drive file and the recordings row are the non-negotiables; the
+ * distillation is best-effort — a model hiccup never fails the save.
+ * ------------------------------------------------------------------ */
+function actionSaveRecording_(p) {
+  var b64 = String(p.audio_base64 || "");
+  if (!b64) throw new Error("audio_base64 is required");
+  var mime = String(p.mime_type || "audio/webm");
+  var duration = Math.max(0, Math.round(Number(p.duration_seconds) || 0));
+  var transcript = String(p.transcript || "");
+  var when = p.timestamp ? new Date(p.timestamp) : new Date();
+  if (isNaN(when.getTime())) when = new Date();
+
+  // 1) The audio lands in Drive first — everything else can degrade.
+  var folder = recordingsFolder_();
+  var minutes = Math.max(1, Math.round(duration / 60));
+  var stamp = Utilities.formatDate(when, Session.getScriptTimeZone(), "yyyy-MM-dd HH.mm");
+  var name = "Sharon " + stamp + " (" + minutes + " min).webm";
+  var file = folder.createFile(Utilities.newBlob(Utilities.base64Decode(b64), mime, name));
+  var fileUrl = file.getUrl();
+
+  // 2) Cell guard: a Sheets cell holds at most 50,000 chars. An over-long
+  // transcript goes to a companion .txt in the same folder; the cell keeps
+  // the first chunk plus the link, so the save NEVER fails on length.
+  var cellText = transcript;
+  if (transcript.length > TRANSCRIPT_CELL_MAX) {
+    var txtFile = folder.createFile(
+      Utilities.newBlob(transcript, "text/plain", name.replace(/\.webm$/, "") + " transcript.txt")
+    );
+    cellText =
+      transcript.slice(0, TRANSCRIPT_CELL_MAX) +
+      "\n\n[Full transcript: " + txtFile.getUrl() + "]";
+  }
+
+  // 3) One row in the recordings tab.
+  var sh = recordingsSheet_();
+  var recordingId = uuid_();
+  var rowNum = sh.getLastRow() + 1;
+  sh.getRange(rowNum, 1, 1, RECORDING_HEADERS.length).setValues([[
+    recordingId, nowIso_(), duration, fileUrl, cellText, String(p.session_id || ""), 0,
+  ]]);
+
+  // 4) Distill the transcript into memory notes — best effort, and the
+  // page_url on every note is the Drive audio link ("listen to the source").
+  var notes = [];
+  try {
+    notes = distillRecording_(transcript, {
+      user_id: String(p.user_id || ""),
+      assistant_id: String(p.assistant_id || ""),
+      session_id: String(p.session_id || ""),
+      page_url: fileUrl,
+    });
+    if (notes.length) sh.getRange(rowNum, RECORDING_HEADERS.indexOf("notes_saved") + 1).setValue(notes.length);
+  } catch (_) {
+    // The recording is saved either way; the panel just shows zero notes.
+  }
+
+  return { recording_id: recordingId, drive_file_url: fileUrl, notes: notes };
+}
+
+function recordingsFolder_() {
+  var it = DriveApp.getFoldersByName(RECORDINGS_FOLDER);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(RECORDINGS_FOLDER);
+}
+
+// Unlike sheet_(), this creates the tab (with headers) if it's missing.
+function recordingsSheet_() {
+  var ss = ss_();
+  var sh = ss.getSheetByName(SHEETS.recordings);
+  if (!sh) {
+    sh = ss.insertSheet(SHEETS.recordings);
+    sh.appendRow(RECORDING_HEADERS);
+  }
+  return sh;
+}
+
+var DISTILL_SYSTEM =
+  "You organize a recorded conversation's transcript into the important notes " +
+  "worth remembering. Reply with STRICT JSON only — a bare array, no prose, no " +
+  'code fences: [{"entry_type":"note"|"task"|"decision","title":"short clean ' +
+  'title","content":"the thing to remember, clearly worded","importance":1-5}]. ' +
+  "Capture EVERYTHING important: decisions made, action items and who owns " +
+  "them, key facts and numbers, commitments, and open questions. Skip filler " +
+  "and small talk. If nothing is worth remembering, reply [].";
+
+function distillRecording_(transcript, ctx) {
+  var trimmed = String(transcript || "").trim();
+  if (!trimmed) return [];
+  var ask = "TRANSCRIPT OF THE RECORDING:\n" + trimmed.slice(0, 120000);
+
+  // Parse robustly: strip fences, find the array; one retry, then give up
+  // gracefully — the audio and transcript are already saved regardless.
+  var entries = null;
+  for (var attempt = 0; attempt < 2 && !entries; attempt++) {
+    var response = callClaude_({
+      system: [{ type: "text", text: DISTILL_SYSTEM }],
+      messages: [{
+        role: "user",
+        content: attempt === 0
+          ? ask
+          : ask + "\n\nReply with ONLY the JSON array — no prose, no code fences.",
+      }],
+      tools: null,
+      maxTokens: DISTILL_MAX_TOKENS,
+    });
+    var text = "";
+    for (var i = 0; i < response.content.length; i++) {
+      if (response.content[i].type === "text") text += response.content[i].text;
+    }
+    entries = parseDistillJson_(text);
+  }
+  if (!entries) return [];
+
+  // Each entry lands in memory_log through the exact same path as Sharon's
+  // normal notes — tagged "recording", audio link in page_url.
+  var saved = [];
+  for (var e = 0; e < entries.length && e < 30; e++) {
+    var entry = entries[e] || {};
+    var type = entry.entry_type === "task" || entry.entry_type === "decision" ? entry.entry_type : "note";
+    var title = String(entry.title || "").trim();
+    var content = String(entry.content || "").trim();
+    if (!title && !content) continue;
+    if (!title) title = content.slice(0, 80);
+    if (!content) content = title;
+    var importance = Math.max(1, Math.min(5, Math.round(Number(entry.importance) || 3)));
+    var row = actionDistill_({
+      entry_type: type,
+      title: title,
+      content: content,
+      tags: ["recording"],
+      importance: importance,
+      user_id: ctx.user_id,
+      assistant_id: ctx.assistant_id,
+      session_id: ctx.session_id,
+      page_url: ctx.page_url,
+      source_turn_ids: [],
+    });
+    saved.push({
+      entry_id: row.entry_id,
+      entry_type: type,
+      title: title,
+      content: content,
+      importance: importance,
+    });
+  }
+  return saved;
+}
+
+function parseDistillJson_(text) {
+  var t = String(text || "").trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  var start = t.indexOf("[");
+  var end = t.lastIndexOf("]");
+  if (start < 0 || end <= start) return null;
+  try {
+    var arr = JSON.parse(t.slice(start, end + 1));
+    return Array.isArray(arr) ? arr : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// The most relevant slice of a transcript for a search hit — a window
+// around the first matched term, never the whole thing.
+function transcriptExcerpt_(transcript, terms) {
+  var lower = transcript.toLowerCase();
+  var at = -1;
+  for (var i = 0; i < terms.length; i++) {
+    var j = lower.indexOf(terms[i]);
+    if (j >= 0 && (at < 0 || j < at)) at = j;
+  }
+  if (at < 0) at = 0;
+  var start = Math.max(0, at - 80);
+  var end = Math.min(transcript.length, at + 220);
+  return (
+    (start > 0 ? "…" : "") + transcript.slice(start, end).trim() + (end < transcript.length ? "…" : "")
+  );
 }
 
 /* ------------------------------------------------------------------ *

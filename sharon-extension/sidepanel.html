@@ -71,6 +71,20 @@
         </div>
       </div>
 
+      <!-- ================= Recorder card ================= -->
+      <div class="rec-card hidden" id="recCard" data-stage="recording">
+        <div class="rc-row">
+          <span class="rc-dot" aria-hidden="true"></span>
+          <span class="rc-label" id="recLabel">Recording</span>
+          <span class="rc-timer" id="recTimer">00:00 / 30:00</span>
+          <button class="pill-btn danger" id="recStop" type="button">Stop</button>
+        </div>
+        <div class="rc-transcript hidden" id="recTranscript" aria-live="polite">
+          <span id="recText"></span>
+        </div>
+        <div class="rc-hint" id="recHint">Closing the panel ends the recording.</div>
+      </div>
+
       <!-- ================= Thread ================= -->
       <div class="thread" id="thread">
         <div class="empty-state" id="emptyState">Nothing here yet — I'm listening. Ask about this page, save a thought, or find an old note.</div>
@@ -109,6 +123,9 @@
         <input type="text" id="composerInput" placeholder="Type instead — or just talk" aria-label="Type a message to Sharon" />
         <button class="send-btn hidden" id="sendBtn" type="button" aria-label="Send your message">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-11 11"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+        </button>
+        <button class="rec-btn" id="recordBtn" type="button" aria-label="Record a voice memo — up to 30 minutes">
+          <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
         </button>
         <button class="mic-btn" id="micBtn" type="button" aria-label="Microphone is on — tap to mute">
           <span class="pulse" aria-hidden="true"></span>
