@@ -25,6 +25,7 @@ import * as api from "./api.js";
 import * as page from "./page.js";
 import * as speech from "./speech.js";
 import * as ui from "./ui.js";
+import { MODES, initModes, enterMode, inMode } from "./mode.js";
 
 /* ------------------------------------------------------------------ *
  * Settings
@@ -159,11 +160,19 @@ let agentTask = null; // { goal, log: [], steps }
 let pendingPlan = null; // a plan awaiting the user's spoken "yes"
 
 // Screen access is OPT-IN. The page excerpt rides along with a turn only
-// when the user explicitly asked about the page, pressed the "Use this tab"
-// chip, or agent mode (an explicit settings toggle) needs the page to act.
-// useTabContext is deliberately NOT persisted — it resets OFF each session.
-let useTabContext = false;
+// when the user explicitly asked about the page, entered SCREEN mode (the
+// screen icon in the mode bar), or agent mode (an explicit settings toggle)
+// needs the page to act. Nothing about it is persisted across sessions.
 let turnUsingPage = false; // true while a page-carrying turn is in flight
+
+/* ------------------------------------------------------------------ *
+ * Mode-owned state — the manager (mode.js) is the single source of truth
+ * for WHICH mode Sharon is in; these hold what each mode carries with it.
+ * ------------------------------------------------------------------ */
+let screenCtx = null; // SCREEN: the one tab snapshot captured at entry
+let stagedScreenCtx = null; // handoff from toggleScreenMode into the enter routine
+let searchAc = null; // SEARCHING: the in-flight call the mode may cancel
+let preparedRec = null; // RECORDING: MediaRecorder staged for the enter routine
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -201,8 +210,12 @@ function updateStatus() {
   ui.setMicIndicator(micLive);
   ui.setVoiceIndicator(!!settings.readAloud);
 
-  if (recState === "recording") ui.setPhase("recording");
+  // The header follows the mode manager first — the status text and the
+  // mode bar must never disagree about what Sharon is doing.
+  if (recActive()) ui.setPhase("recording");
+  else if (inMode(MODES.SEARCHING)) ui.setPhase("searching");
   else if (thinking || busy) ui.setPhase("thinking");
+  else if (inMode(MODES.SCREEN)) ui.setPhase("screen");
   else if (speech.isSpeaking()) ui.setPhase("speaking");
   else if (hearing && micLive) ui.setPhase("hearing");
   else if (!micLive) ui.setPhase("muted");
@@ -217,11 +230,14 @@ function updateStatus() {
 
 // The tab pill only ever tells the truth: "Seeing this tab" when page
 // context is riding along right now (a page-carrying turn in flight) or
-// will ride along with the next message (chip on / agent mode on, page
-// readable, recorder idle); "Not reading this tab" otherwise.
+// will ride along with the next message (SCREEN mode holding its snapshot,
+// or agent mode on with a readable page, recorder idle); "Not reading this
+// tab" otherwise.
 function updateTabPill() {
   ui.setTabAwareness(
-    turnUsingPage || (!recActive() && !restricted && (useTabContext || settings.allowActions))
+    turnUsingPage ||
+      (inMode(MODES.SCREEN) && !!screenCtx) ||
+      (!recActive() && !restricted && settings.allowActions)
   );
 }
 
@@ -468,6 +484,15 @@ function tryImmediateCommand(text, cmd) {
   if (cmd === "stop" || cmd === "stop reading" || cmd === "be quiet" || cmd === "quiet") {
     cancelAgentTask();
     speech.stopSpeaking();
+    // Interrupting a live web search cancels the in-flight call — the
+    // turn's finally block then lands the mode back in LISTENING.
+    if (inMode(MODES.SEARCHING) && abortController) {
+      try {
+        abortController.abort();
+      } catch (_) {
+        /* ignore */
+      }
+    }
     thinking = false;
     updateStatus();
     return true;
@@ -578,6 +603,20 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true, wi
   }
   const ac = new AbortController();
   abortController = ac;
+
+  // The mode manager settles this turn's mode up front. A SCREEN turn grabs
+  // the snapshot captured when the mode began, then SCREEN ends — one look,
+  // one answered question. Search-intent phrasing lights SEARCHING until
+  // the reply arrives. A typed message during RECORDING never touches the
+  // mode: the recorder keeps the ears until its whole flow is done.
+  const screenSnap = inMode(MODES.SCREEN) ? screenCtx : null;
+  const screenTurn = !!(screenSnap && !screenSnap.restricted);
+  const searchIntent = isSearchIntent(userText);
+  if (!recActive()) {
+    enterMode(searchIntent ? MODES.SEARCHING : MODES.LISTENING);
+    if (searchIntent) searchAc = ac;
+  }
+
   busy = true;
   thinking = true;
   updateStatus();
@@ -589,17 +628,18 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true, wi
 
     // Screen access is opt-in: the page rides along ONLY when this turn is
     // an explicit page request (withPage — auto-read/scroll follow-ups — or
-    // the words ask about the page), the "Use this tab" chip is on, or
-    // agent mode (an explicit settings toggle) needs the page to act. Never
-    // while the recorder is anything but idle, whatever the toggles say.
+    // the words ask about the page), SCREEN mode is answering its one
+    // question with the snapshot it captured, or agent mode (an explicit
+    // settings toggle) needs the page to act. Never while the recorder is
+    // anything but idle, whatever the toggles say.
     const includePage =
       !recActive() &&
-      (withPage === true || useTabContext || settings.allowActions || isPageIntent(userText));
+      (withPage === true || screenTurn || settings.allowActions || isPageIntent(userText));
 
     let ctx = { restricted: true };
     let pageRestricted = true;
     if (includePage) {
-      ctx = await page.readPageContext();
+      ctx = screenTurn ? screenSnap : await page.readPageContext();
       pageRestricted = !!ctx.restricted;
       restricted = pageRestricted;
     }
@@ -668,6 +708,10 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true, wi
       busy = false;
       abortController = null;
       turnUsingPage = false; // the pill goes back to telling the steady truth
+      // The search settled (reply, error, or abort) — null searchAc FIRST so
+      // SEARCHING's exit routine doesn't try to cancel a finished call.
+      if (searchAc === ac) searchAc = null;
+      if (inMode(MODES.SEARCHING)) enterMode(MODES.LISTENING);
     }
     // A just-started page task manages its own thinking state.
     if (!agentTask) thinking = false;
@@ -695,6 +739,23 @@ function isPageIntent(text) {
     /\bread\s+(this|it|that|me\s+this)\b/.test(t) ||
     /\bwhat\s+am\s+i\s+(looking\s+at|reading|seeing)\b/.test(t) ||
     /\b(look|looking)\s+at\s+(this|my\s+screen|the\s+screen)\b/.test(t)
+  );
+}
+
+// SEARCHING is automatic, never tapped: this heuristic lights the globe the
+// moment a search-shaped request goes out, and the backend's web_search
+// event (the "From the web" card with sources) is the ground truth that a
+// search really ran. Kept conservative — "search my notes" is memory work,
+// not the web.
+function isSearchIntent(text) {
+  const t = (text || "").toLowerCase();
+  if (/\b(my|your)\s+(notes?|memory|memories|tasks?|sheet|recordings?)\b/.test(t)) return false;
+  return (
+    /\b(search|google|look\s+(it\s+)?up)\b/.test(t) ||
+    /\b(what'?s|find|get|check)\s+the\s+latest\b/.test(t) ||
+    /\blatest\s+(on|news|about)\b/.test(t) ||
+    /\b(news|headlines)\s+(about|on|of|for)\b/.test(t) ||
+    /\bon\s+the\s+(web|internet)\b/.test(t)
   );
 }
 
@@ -1004,6 +1065,16 @@ async function evaluateActiveTab() {
   const tab = await page.getActiveTabReady();
   if (seq !== evalSeq) return;
 
+  // SCREEN is one look at one page: navigating away or losing the tab ends
+  // the mode through the manager, so the banner never claims a page Sharon
+  // no longer has in front of her.
+  if (
+    inMode(MODES.SCREEN) &&
+    (!tab || !screenCtx || (tab.url && screenCtx.url && tab.url !== screenCtx.url))
+  ) {
+    enterMode(MODES.LISTENING);
+  }
+
   if (!tab) ui.setTabTitle("no active tab");
   else if (page.isRestricted(tab.url)) ui.setTabTitle(tab.title || "a browser page");
   else ui.setTabTitle(tab.title || "this page");
@@ -1279,7 +1350,7 @@ const REC_TIMER_TICK_MS = 250;
 // recording stays well under the backend's play-in-panel size cap.
 const RECORD_AUDIO_BPS = 32000;
 
-let recState = "idle"; // idle | recording | uploading | organizing — mirrored into speech.js's seal
+let recState = "idle"; // the stage WITHIN the RECORDING mode: idle | recording | uploading | organizing
 let mediaRecorder = null;
 let recChunks = [];
 let recStartAt = 0;
@@ -1289,8 +1360,11 @@ let recFinalText = ""; // confirmed words
 let recInterimText = ""; // in-flight words (shown lighter)
 let recSegments = []; // [{ t: seconds, text }] — one per finalized segment
 
+// The one test for "the recorder flow is live": the mode manager's word.
+// recState is the recorder's internal stage label; the MODE says whether
+// the flow (recording → uploading → organizing) is active at all.
 function recActive() {
-  return recState !== "idle";
+  return inMode(MODES.RECORDING);
 }
 
 function fmtClock(ms) {
@@ -1342,11 +1416,47 @@ async function startRecording() {
     return;
   }
 
+  // Build the MediaRecorder BEFORE any mode change, so a failure here
+  // leaves Sharon exactly where she was.
+  try {
+    preparedRec = new MediaRecorder(stream, {
+      mimeType: mime,
+      audioBitsPerSecond: RECORD_AUDIO_BPS,
+    });
+  } catch (_) {
+    preparedRec = null;
+    reportProblem("I couldn't start the recorder.", "Give it a second and tap record again.");
+    return;
+  }
+
+  // The manager exits whatever came before (SCREEN clears its snapshot,
+  // SEARCHING aborts its call), then runs enterRecordingMode below.
+  enterMode(MODES.RECORDING);
+}
+
+// RECORDING's enter routine — runs inside the manager AFTER the previous
+// mode's exit. From here until finishRecording hands back to LISTENING,
+// the recorder owns the ears (speech.js's seal) and Sharon stays silent.
+function enterRecordingMode() {
+  const recorder = preparedRec;
+  preparedRec = null;
+  if (!recorder) throw new Error("record entered with nothing prepared");
+
   // Playback is sound in the room — it must never land in the recording.
   // Pause it cleanly (no auto-resume; the user can tap play afterwards).
   pausePlaybackForUser();
-
+  // "Record mid-anything": abandon the in-flight assist (and any page task
+  // mid-step or awaiting a spoken yes) cleanly — its finally tidies the UI.
+  cancelAgentTask();
+  if (abortController) {
+    try {
+      abortController.abort();
+    } catch (_) {
+      /* ignore */
+    }
+  }
   resetCapture(); // drop any half-captured utterance cleanly
+
   recFinalText = "";
   recInterimText = "";
   recSegments = [];
@@ -1370,23 +1480,13 @@ async function startRecording() {
   });
 
   recChunks = [];
-  try {
-    mediaRecorder = new MediaRecorder(stream, {
-      mimeType: mime,
-      audioBitsPerSecond: RECORD_AUDIO_BPS,
-    });
-  } catch (_) {
-    speech.setRecorderState("idle"); // nothing was captured — reopen normally
-    reportProblem("I couldn't start the recorder.", "Give it a second and tap record again.");
-    updateStatus();
-    return;
-  }
+  mediaRecorder = recorder;
   mediaRecorder.addEventListener("dataavailable", (ev) => {
     if (ev.data && ev.data.size) recChunks.push(ev.data);
   });
+  recState = "recording"; // set before start() so a throw is cleaned up fully
   mediaRecorder.start(1000); // 1s chunks — a crash loses at most a second
 
-  recState = "recording";
   ui.recTranscript("", "");
   ui.setRecorderStage("recording");
   ui.setRecTimer("00:00 / " + fmtClock(RECORD_MAX_MS));
@@ -1397,6 +1497,35 @@ async function startRecording() {
     if (elapsed >= RECORD_MAX_MS) stopRecording(); // auto-stop at 30:00
   }, REC_TIMER_TICK_MS);
   updateStatus();
+}
+
+// RECORDING's exit routine — idempotent. The normal path (finishRecording)
+// has already wound everything down, so this is a no-op there; on any other
+// path out it force-stops the hardware, timers, and the speech.js seal so
+// a failed transition can never leave a half-live recorder behind.
+function forceRecorderIdle() {
+  if (recTimerInt) {
+    clearInterval(recTimerInt);
+    recTimerInt = null;
+  }
+  if (recStageTimer) {
+    clearTimeout(recStageTimer);
+    recStageTimer = null;
+  }
+  if (mediaRecorder) {
+    try {
+      if (mediaRecorder.state !== "inactive") mediaRecorder.stop();
+    } catch (_) {
+      /* ignore */
+    }
+    mediaRecorder = null;
+    recChunks = [];
+  }
+  if (recState !== "idle") {
+    recState = "idle";
+    ui.hideRecorder();
+  }
+  speech.setRecorderState("idle"); // no-op when the seal is already open
 }
 
 function stopRecording() {
@@ -1456,6 +1585,7 @@ async function finishRecording(mimeType, durationSeconds, transcript, segments) 
     recState = "idle";
     speech.setRecorderState("idle");
     ui.hideRecorder();
+    enterMode(MODES.LISTENING); // the flow is over — hand the mode back
     reportProblem(
       "the recording came out empty, so there was nothing to save.",
       "Tap record and try again."
@@ -1527,7 +1657,79 @@ async function finishRecording(mimeType, durationSeconds, transcript, segments) 
     }
     recState = "idle";
     speech.setRecorderState("idle"); // the seal lifts after its grace period
+    enterMode(MODES.LISTENING); // upload + organizing done — RECORDING ends here
     updateStatus();
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * The mode lifecycle — the remaining enter/exit routines the manager
+ * (mode.js) runs. RECORDING's live above with the recorder it drives.
+ * ------------------------------------------------------------------ */
+// LISTENING is the safe landing: every mode returns here, including any
+// failed transition the manager rescues. Everything here is idempotent —
+// on a normal transition the leaving mode's exit already did this work.
+function enterListeningMode() {
+  forceRecorderIdle();
+  screenCtx = null;
+  stagedScreenCtx = null;
+  updateStatus();
+}
+
+// The screen icon: one tap = one look. Entering captures the tab ONCE and
+// Sharon asks her one question; the next message is answered with that
+// snapshot attached (sendTurn), then the mode ends itself. Tapping the icon
+// again while in SCREEN exits immediately without sending anything.
+async function toggleScreenMode() {
+  if (recActive()) return; // the recorder owns everything until it's done
+  if (inMode(MODES.SCREEN)) {
+    speech.stopSpeaking(); // she may still be mid-question
+    enterMode(MODES.LISTENING);
+    return;
+  }
+  let ctx;
+  try {
+    ctx = await page.readPageContext({ fresh: true });
+  } catch (_) {
+    ctx = { restricted: true };
+  }
+  if (recActive() || inMode(MODES.SCREEN)) return; // the world moved on while we read
+  if (!ctx || ctx.restricted) {
+    sharonSay(
+      "I can't see this page — Chrome doesn't let me read it. Open a regular website and tap the screen button again."
+    );
+    return;
+  }
+  stagedScreenCtx = ctx;
+  enterMode(MODES.SCREEN);
+}
+
+function enterScreenMode() {
+  screenCtx = stagedScreenCtx;
+  stagedScreenCtx = null;
+  if (!screenCtx) throw new Error("screen mode entered without a snapshot");
+  updateTabPill(); // the banner turns on — truthfully; the snapshot is real
+  sharonSay("I'm looking at your screen — what do you want to know?");
+}
+
+function exitScreenMode() {
+  screenCtx = null;
+  updateTabPill(); // the banner clears the moment the mode ends
+}
+
+// SEARCHING's exit routine: leaving the mode for ANY reason other than the
+// reply itself (barge-in, a record tap, a new message) cancels the
+// in-flight call. Normal completion nulls searchAc first (sendTurn's
+// finally), so a finished call is never aborted.
+function exitSearchingMode() {
+  const pending = searchAc;
+  searchAc = null;
+  if (pending) {
+    try {
+      pending.abort();
+    } catch (_) {
+      /* ignore */
+    }
   }
 }
 
@@ -1832,6 +2034,7 @@ async function playRecording({ recordingId, driveUrl, startSeconds = 0, label = 
  * Wiring: mic, composer, live card, header, memory, settings, welcome
  * ------------------------------------------------------------------ */
 function toggleMic() {
+  if (recActive()) return; // the recorder owns the ears — muting would cut the transcript
   if (!speech.speechRecognitionAvailable()) {
     reportProblem(
       "Voice input isn't available in this browser.",
@@ -1936,8 +2139,7 @@ async function refreshShortcut() {
 function wireControls() {
   const e = ui.els;
 
-  // Composer: pill input + blue send circle (only with text) + the one mic.
-  if (e.micBtn) e.micBtn.addEventListener("click", toggleMic);
+  // Composer: pill input + blue send circle (only with text).
   if (e.sendBtn) e.sendBtn.addEventListener("click", () => sendTyped());
   if (e.composerInput) {
     e.composerInput.addEventListener("input", () => {
@@ -1951,21 +2153,18 @@ function wireControls() {
     });
   }
 
-  // "Use this tab" chip — the explicit opt-in for screen access. Session
-  // only (never saved), so it always starts OFF the next time the panel
-  // opens; the tab pill re-tells the truth on every flip.
-  if (e.useTabChip)
-    e.useTabChip.addEventListener("click", () => {
-      useTabContext = !useTabContext;
-      ui.setUseTabChip(useTabContext);
-      updateTabPill();
-    });
-
-  // Recorder: the composer's record button toggles; the card's Stop stops.
+  // Mode bar — the three tappable icons. Mic toggles mute (mute stays
+  // independent of the mode); record starts/stops the recorder; screen
+  // enters/exits the one-look SCREEN mode. The globe is an indicator only.
+  if (e.micBtn) e.micBtn.addEventListener("click", toggleMic);
   if (e.recordBtn)
     e.recordBtn.addEventListener("click", () => {
       if (recState === "recording") stopRecording();
       else if (!recActive()) startRecording(); // ignored while uploading
+    });
+  if (e.screenBtn)
+    e.screenBtn.addEventListener("click", () => {
+      toggleScreenMode();
     });
   if (e.recStop) e.recStop.addEventListener("click", () => stopRecording());
   // Closing the panel ends the recording (the card warns about this). All
@@ -2197,6 +2396,23 @@ function wireControls() {
   await loadSetup();
 
   ui.initUI();
+
+  // The mode manager — Sharon is in exactly one mode; every feature routes
+  // its entries and exits through here. Opens in LISTENING (the default),
+  // so a reopened panel never resumes a stuck mode: recorder and screen
+  // state are in-memory only, and this registration starts them clean.
+  initModes({
+    routines: {
+      [MODES.LISTENING]: { enter: enterListeningMode },
+      [MODES.RECORDING]: { enter: enterRecordingMode, exit: forceRecorderIdle },
+      [MODES.SCREEN]: { enter: enterScreenMode, exit: exitScreenMode },
+      [MODES.SEARCHING]: { enter: updateStatus, exit: exitSearchingMode },
+    },
+    onChange: (m) => {
+      ui.setMode(m);
+      updateStatus();
+    },
+  });
 
   speech.initSpeech({
     getSettings: () => settings,
