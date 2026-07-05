@@ -39,6 +39,14 @@ export const els = {
   composerInput: document.getElementById("composerInput"),
   sendBtn: document.getElementById("sendBtn"),
   micBtn: document.getElementById("micBtn"),
+  recordBtn: document.getElementById("recordBtn"),
+  recCard: document.getElementById("recCard"),
+  recLabel: document.getElementById("recLabel"),
+  recTimer: document.getElementById("recTimer"),
+  recStop: document.getElementById("recStop"),
+  recTranscriptEl: document.getElementById("recTranscript"),
+  recText: document.getElementById("recText"),
+  recHint: document.getElementById("recHint"),
   undoToast: document.getElementById("undoToast"),
   toastLabel: document.getElementById("toastLabel"),
   toastUndo: document.getElementById("toastUndo"),
@@ -112,6 +120,7 @@ const STATUS_TEXT = {
   thinking: "Thinking…",
   speaking: "Speaking — tap to stop",
   muted: "Muted",
+  recording: "Recording — I'll stay quiet",
 };
 
 export function setPhase(phase) {
@@ -254,6 +263,63 @@ export function liveClear() {
   liveCloseEditor();
   if (els.lcTranscript) els.lcTranscript.classList.add("hidden");
   if (els.lcText) els.lcText.textContent = "";
+}
+
+/* ------------------------------------------------------------------ *
+ * Recorder card — timer, live transcript, staged status
+ * ------------------------------------------------------------------ */
+const REC_LABEL = {
+  recording: "Recording",
+  uploading: "Uploading your recording…",
+  organizing: "Organizing the notes…",
+};
+const REC_HINT = {
+  recording: "Closing the panel ends the recording.",
+  uploading: "A long recording can take a little while to upload.",
+  organizing: "Distilling what mattered into your memory…",
+};
+
+export function showRecorder() {
+  els.html.setAttribute("data-record", "on");
+  if (els.recCard) els.recCard.classList.remove("hidden");
+  if (els.recordBtn) els.recordBtn.setAttribute("aria-label", "Stop recording");
+}
+export function hideRecorder() {
+  els.html.removeAttribute("data-record");
+  if (els.recCard) els.recCard.classList.add("hidden");
+  if (els.recordBtn)
+    els.recordBtn.setAttribute("aria-label", "Record a voice memo — up to 30 minutes");
+}
+
+// stage: recording | uploading | organizing
+export function setRecorderStage(stage) {
+  if (!els.recCard) return;
+  els.recCard.setAttribute("data-stage", stage);
+  if (els.recLabel) els.recLabel.textContent = REC_LABEL[stage] || stage;
+  if (els.recHint) els.recHint.textContent = REC_HINT[stage] || "";
+  if (els.recStop) els.recStop.classList.toggle("hidden", stage !== "recording");
+}
+
+export function setRecTimer(text) {
+  if (els.recTimer) els.recTimer.textContent = text;
+}
+
+// Same two-tone pattern as the listening flow: confirmed text normal,
+// interim text lighter — kept scrolled to the newest words.
+export function recTranscript(committed, interim) {
+  if (!els.recTranscriptEl) return;
+  const has = (committed || "").trim() || (interim || "").trim();
+  els.recTranscriptEl.classList.toggle("hidden", !has);
+  if (els.recText) els.recText.innerHTML = "";
+  if (!has) return;
+  if (committed) els.recText.appendChild(document.createTextNode(committed + (interim ? " " : "")));
+  if (interim) {
+    const ghost = document.createElement("span");
+    ghost.className = "interim";
+    ghost.textContent = interim;
+    els.recText.appendChild(ghost);
+  }
+  els.recTranscriptEl.scrollTop = els.recTranscriptEl.scrollHeight;
 }
 
 /* ------------------------------------------------------------------ *
@@ -596,6 +662,63 @@ export function addWebSearchCard({ question, bullets, sources }) {
   return appendToThread(card);
 }
 
+// RECORDING SAVED — the distilled notes from a voice recording. Each note
+// is already in memory with the audio linked; the footer link plays the
+// source recording from Drive.
+export function addRecordingCard({ driveUrl, durationLabel, notes }) {
+  const card = cardShell(I_MIC, "Recording saved", durationLabel || "");
+  const list = Array.isArray(notes) ? notes : [];
+  if (list.length) {
+    const intro = document.createElement("p");
+    intro.className = "ac-q";
+    intro.textContent =
+      list.length + (list.length === 1 ? " note" : " notes") +
+      " saved to your memory — each links back to the audio.";
+    card.appendChild(intro);
+    for (const n of list) {
+      const row = document.createElement("div");
+      row.className = "ac-recnote";
+      const chip = document.createElement("span");
+      chip.className = "kind" + (n.entry_type === "task" ? " task" : "");
+      chip.textContent = n.entry_type || "note";
+      row.appendChild(chip);
+      const txt = document.createElement("div");
+      txt.className = "rn-txt";
+      const t = document.createElement("div");
+      t.className = "rn-t";
+      t.textContent = n.title || n.content || "(untitled)";
+      txt.appendChild(t);
+      if (n.content && n.content !== n.title) {
+        const c = document.createElement("div");
+        c.className = "rn-c";
+        c.textContent = n.content;
+        txt.appendChild(c);
+      }
+      row.appendChild(txt);
+      card.appendChild(row);
+    }
+  } else {
+    const p = document.createElement("p");
+    p.className = "ac-body";
+    p.textContent =
+      "Saved. I didn't find notes worth keeping this time — the full transcript is in your Sheet.";
+    card.appendChild(p);
+  }
+  if (driveUrl) {
+    const a = document.createElement("a");
+    a.className = "ac-foot ac-listen";
+    a.href = driveUrl;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.appendChild(svgOf(I_VOLUME));
+    a.appendChild(document.createTextNode("Listen to the recording · saved in your Drive"));
+    card.appendChild(a);
+  } else {
+    cardFoot(card, "Synced with your Google Sheet", { synced: true });
+  }
+  return appendToThread(card);
+}
+
 // Extract "Label: value" facts out of a reply for the LOOKED UP card.
 export function extractFacts(text) {
   const lines = (text || "").split("\n");
@@ -782,6 +905,7 @@ function emptyMessage() {
 }
 
 function kindOf(h) {
+  if (h.entry_type === "recording") return { cls: "recording", label: "recording" };
   if (String(h.status) === "done") return { cls: "done", label: "done" };
   if (h.entry_type === "task") return { cls: "task", label: "task" };
   return { cls: "", label: h.entry_type ? String(h.entry_type) : "note" };
@@ -848,29 +972,42 @@ function renderMemList() {
     });
     item.appendChild(row);
 
-    // expanded action row
+    // expanded action row — recordings are read-only: no edit/delete, just
+    // a link to play the audio from Drive.
     const actions = document.createElement("div");
     actions.className = "mi-actions";
-    if (h.entry_type === "task" && h.entry_id) {
-      const doneBtn = document.createElement("button");
-      doneBtn.type = "button";
-      doneBtn.className = "pill-btn primary";
-      doneBtn.textContent = isDone ? "Reopen" : "Mark done";
-      doneBtn.addEventListener("click", () => onToggleDone && onToggleDone(h));
-      actions.appendChild(doneBtn);
-    }
-    if (h.entry_id) {
-      const delBtn = document.createElement("button");
-      delBtn.type = "button";
-      delBtn.className = "pill-btn danger";
-      delBtn.textContent = "Delete";
-      delBtn.addEventListener("click", () => onDelete && onDelete(h));
-      actions.appendChild(delBtn);
+    if (h.entry_type === "recording") {
+      if (h.page_url) {
+        const listen = document.createElement("a");
+        listen.className = "pill-btn primary";
+        listen.href = h.page_url;
+        listen.target = "_blank";
+        listen.rel = "noopener noreferrer";
+        listen.textContent = "Listen";
+        actions.appendChild(listen);
+      }
+    } else {
+      if (h.entry_type === "task" && h.entry_id) {
+        const doneBtn = document.createElement("button");
+        doneBtn.type = "button";
+        doneBtn.className = "pill-btn primary";
+        doneBtn.textContent = isDone ? "Reopen" : "Mark done";
+        doneBtn.addEventListener("click", () => onToggleDone && onToggleDone(h));
+        actions.appendChild(doneBtn);
+      }
+      if (h.entry_id) {
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "pill-btn danger";
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", () => onDelete && onDelete(h));
+        actions.appendChild(delBtn);
+      }
     }
     const spacer = document.createElement("span");
     spacer.className = "spacer";
     actions.appendChild(spacer);
-    if (actions.querySelector("button")) item.appendChild(actions);
+    if (actions.querySelector("button,a")) item.appendChild(actions);
 
     groupCard.appendChild(item);
   }

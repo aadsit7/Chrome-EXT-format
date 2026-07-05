@@ -194,7 +194,8 @@ function updateStatus() {
   ui.setMicIndicator(micLive);
   ui.setVoiceIndicator(!!settings.readAloud);
 
-  if (thinking || busy) ui.setPhase("thinking");
+  if (recState === "recording") ui.setPhase("recording");
+  else if (thinking || busy) ui.setPhase("thinking");
   else if (speech.isSpeaking()) ui.setPhase("speaking");
   else if (hearing && micLive) ui.setPhase("hearing");
   else if (!micLive) ui.setPhase("muted");
@@ -945,6 +946,7 @@ async function evaluateActiveTab() {
     return;
   }
   if (!settings.autoRead) return;
+  if (recActive()) return; // never start reading aloud over a recording
   if (key === lastReadKey) return;
   lastReadKey = key;
 
@@ -1013,6 +1015,219 @@ async function loadMemory(query) {
   } catch (e) {
     if (seq !== memReqSeq) return;
     ui.memError("I couldn't load your Sheet — check your connection, then try the search again.");
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Voice recorder — press record, talk up to 30 minutes; the audio lands
+ * in Drive, the transcript in the Sheet, and the distilled notes in
+ * memory (each linking back to the audio). While recording, speech.js's
+ * recorder mode keeps Sharon silent: recognition keeps running with its
+ * restart stitching (so no words drop), but every result flows into the
+ * transcript accumulator here instead of the assist pipeline.
+ * ------------------------------------------------------------------ */
+const RECORD_MAX_MS = 30 * 60 * 1000; // hard cap — auto-stops at exactly 30:00
+const REC_TIMER_TICK_MS = 250;
+
+let recState = "idle"; // idle | recording | uploading
+let mediaRecorder = null;
+let recChunks = [];
+let recStartAt = 0;
+let recTimerInt = null;
+let recStageTimer = null;
+let recFinalText = ""; // confirmed words
+let recInterimText = ""; // in-flight words (shown lighter)
+
+function recActive() {
+  return recState !== "idle";
+}
+
+function fmtClock(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  return String(m).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+}
+
+function pickRecorderMime() {
+  if (!window.MediaRecorder) return null;
+  for (const m of ["audio/webm;codecs=opus", "audio/webm"]) {
+    if (MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return null;
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const s = String(r.result || "");
+      resolve(s.slice(s.indexOf(",") + 1)); // strip the data: URL prefix
+    };
+    r.onerror = () => reject(new Error("I couldn't read the recorded audio."));
+    r.readAsDataURL(blob);
+  });
+}
+
+async function startRecording() {
+  if (recActive()) return;
+  const mime = pickRecorderMime();
+  if (!mime) {
+    reportProblem(
+      "recording isn't supported in this browser.",
+      "Chrome should support it — try updating Chrome, then reload me."
+    );
+    return;
+  }
+
+  // Reuse speech.js's mic stream (one permission, same constraints).
+  let stream;
+  try {
+    stream = await speech.getMicStream();
+  } catch (_) {
+    reportProblem(
+      "I couldn't use the microphone to record.",
+      "Click the lock icon by Chrome's address bar, allow the microphone, then tap record again."
+    );
+    return;
+  }
+
+  resetCapture(); // drop any half-captured utterance cleanly
+  recFinalText = "";
+  recInterimText = "";
+  speech.enterRecorderMode({
+    onFinal: (text) => {
+      recFinalText = recFinalText ? recFinalText + " " + text : text;
+      recInterimText = "";
+      ui.recTranscript(recFinalText, "");
+    },
+    onInterim: (text) => {
+      recInterimText = text;
+      ui.recTranscript(recFinalText, text);
+    },
+  });
+
+  recChunks = [];
+  try {
+    mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+  } catch (_) {
+    speech.exitRecorderMode();
+    reportProblem("I couldn't start the recorder.", "Give it a second and tap record again.");
+    updateStatus();
+    return;
+  }
+  mediaRecorder.addEventListener("dataavailable", (ev) => {
+    if (ev.data && ev.data.size) recChunks.push(ev.data);
+  });
+  mediaRecorder.start(1000); // 1s chunks — a crash loses at most a second
+
+  recState = "recording";
+  recStartAt = Date.now();
+  ui.recTranscript("", "");
+  ui.setRecorderStage("recording");
+  ui.setRecTimer("00:00 / " + fmtClock(RECORD_MAX_MS));
+  ui.showRecorder();
+  recTimerInt = setInterval(() => {
+    const elapsed = Date.now() - recStartAt;
+    ui.setRecTimer(fmtClock(Math.min(elapsed, RECORD_MAX_MS)) + " / " + fmtClock(RECORD_MAX_MS));
+    if (elapsed >= RECORD_MAX_MS) stopRecording(); // auto-stop at 30:00
+  }, REC_TIMER_TICK_MS);
+  updateStatus();
+}
+
+function stopRecording() {
+  if (recState !== "recording") return;
+  recState = "uploading";
+  if (recTimerInt) {
+    clearInterval(recTimerInt);
+    recTimerInt = null;
+  }
+  const durationSeconds = Math.min(
+    Math.round((Date.now() - recStartAt) / 1000),
+    Math.round(RECORD_MAX_MS / 1000)
+  );
+
+  // Fold any in-flight interim into the transcript, then bounce recognition
+  // so those same words can't resurface in the assist flow afterward.
+  if (recInterimText.trim()) {
+    recFinalText = (recFinalText + " " + recInterimText).trim();
+    recInterimText = "";
+  }
+  speech.stopRecognition();
+  speech.exitRecorderMode(); // normal listening/barge-in/TTS resume from here
+
+  const transcript = recFinalText.trim();
+  ui.recTranscript(transcript, "");
+  ui.setRecorderStage("uploading");
+  updateStatus();
+
+  const rec = mediaRecorder;
+  mediaRecorder = null;
+  const finish = () =>
+    finishRecording((rec && rec.mimeType) || "audio/webm", durationSeconds, transcript);
+  if (rec && rec.state !== "inactive") {
+    rec.addEventListener("stop", finish, { once: true });
+    try {
+      rec.stop();
+    } catch (_) {
+      finish();
+    }
+  } else {
+    finish();
+  }
+}
+
+async function finishRecording(mimeType, durationSeconds, transcript) {
+  const blob = new Blob(recChunks, { type: mimeType || "audio/webm" });
+  recChunks = [];
+  if (!blob.size) {
+    recState = "idle";
+    ui.hideRecorder();
+    reportProblem(
+      "the recording came out empty, so there was nothing to save.",
+      "Tap record and try again."
+    );
+    updateStatus();
+    return;
+  }
+
+  // One round trip does everything server-side (Drive, Sheet, notes). We
+  // can't observe upload progress, so flip the label to "organizing" once
+  // the upload has plausibly finished — a size-based estimate.
+  const estUploadMs = Math.min(45000, Math.max(2500, blob.size / 150));
+  recStageTimer = setTimeout(() => ui.setRecorderStage("organizing"), estUploadMs);
+
+  try {
+    const audioBase64 = await blobToBase64(blob);
+    const id = await ensureSessionId();
+    const result = await api.saveRecording({
+      sessionId: id,
+      audioBase64,
+      mimeType: blob.type || "audio/webm",
+      durationSeconds,
+      transcript,
+      timestamp: new Date().toISOString(),
+    });
+    ui.hideRecorder();
+    const minutes = Math.max(1, Math.round(durationSeconds / 60));
+    ui.addRecordingCard({
+      driveUrl: result.drive_file_url,
+      durationLabel: minutes + " min",
+      notes: Array.isArray(result.notes) ? result.notes : [],
+    });
+    refreshMemoryCount();
+  } catch (err) {
+    ui.hideRecorder();
+    reportProblem(
+      "I couldn't save that recording — " + ((err && err.message) || "the upload failed."),
+      nextStepFor(err)
+    );
+  } finally {
+    if (recStageTimer) {
+      clearTimeout(recStageTimer);
+      recStageTimer = null;
+    }
+    recState = "idle";
+    updateStatus();
   }
 }
 
@@ -1138,6 +1353,26 @@ function wireControls() {
       }
     });
   }
+
+  // Recorder: the composer's record button toggles; the card's Stop stops.
+  if (e.recordBtn)
+    e.recordBtn.addEventListener("click", () => {
+      if (recState === "recording") stopRecording();
+      else if (!recActive()) startRecording(); // ignored while uploading
+    });
+  if (e.recStop) e.recStop.addEventListener("click", () => stopRecording());
+  // Closing the panel ends the recording (the card warns about this). All
+  // recorder state is in-memory, so a reopened panel always starts clean —
+  // never a stuck "recording" state.
+  window.addEventListener("pagehide", () => {
+    if (recState === "recording" && mediaRecorder && mediaRecorder.state !== "inactive") {
+      try {
+        mediaRecorder.stop();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  });
 
   // Live-presence card: mute pill, tap-to-edit strip, editor buttons.
   if (e.lcMute) e.lcMute.addEventListener("click", toggleMic);

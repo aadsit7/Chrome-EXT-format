@@ -27,6 +27,11 @@
 //   5. If the recognition engine stops itself (it does, periodically) it is
 //      restarted instantly, and any words caught mid-flight are stitched in
 //      so nothing you said is lost.
+//   6. Recorder mode: while a voice recording runs, Sharon goes silent —
+//      speak() is skipped (her voice would land in the audio) and every
+//      recognition result (interim, final, and restart-stitched orphans)
+//      is rerouted into the recorder's transcript instead of the assist
+//      flow. Exiting restores rules 1-5 untouched.
 //
 // This module is UI-free: the orchestrator registers callbacks.
 
@@ -232,7 +237,9 @@ export function isPaused() {
 export function speak(text, { onDone } = {}) {
   const full = (text || "").trim();
   onDoneSpeaking = onDone || null;
-  if (!synth || !cb.getSettings().readAloud || !full) {
+  // Recorder mode: her voice must never land in the recording, so nothing
+  // is spoken — replies still render, only the audio is skipped.
+  if (recorderMode || !synth || !cb.getSettings().readAloud || !full) {
     // Nothing will be spoken — settle, then signal completion.
     const done = onDoneSpeaking;
     onDoneSpeaking = null;
@@ -438,6 +445,7 @@ function echoFilterActive() {
  * the gate stays neutral — layers (b), (d), (e), (f) still protect.
  * ------------------------------------------------------------------ */
 let analyserAttempted = false;
+let micStream = null; // the one mic stream — shared with the recorder
 let audioCtx = null;
 let analyser = null;
 let energyData = null;
@@ -454,6 +462,7 @@ async function ensureMicAnalyser() {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
+    micStream = stream; // kept for the recorder — one stream, one permission
     const Ctx = window.AudioContext || window.webkitAudioContext;
     audioCtx = new Ctx();
     try {
@@ -545,6 +554,52 @@ function shouldBargeIn(text) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Recorder mode — the recorder borrows the ears without touching them.
+ * Recognition keeps running exactly as before (same engine, same restart
+ * stitching, so no words drop across its periodic self-stops), but every
+ * result is rerouted into the recorder's callbacks instead of the assist
+ * flow, and Sharon's voice is silenced for the duration (see speak()).
+ * ------------------------------------------------------------------ */
+let recorderMode = false;
+let recorderCb = { onFinal: () => {}, onInterim: () => {} };
+let recorderPrevMuted = false;
+
+export function isRecorderMode() {
+  return recorderMode;
+}
+
+// The recorder reuses the analyser's mic stream (one getUserMedia, one
+// permission prompt); if the analyser never got one, open a stream with
+// the exact constraints the analyser uses — echo layer (a).
+export async function getMicStream() {
+  if (micStream && micStream.getAudioTracks().some((t) => t.readyState === "live")) {
+    return micStream;
+  }
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  return micStream;
+}
+
+export function enterRecorderMode(callbacks) {
+  recorderMode = true;
+  recorderCb = { onFinal: () => {}, onInterim: () => {}, ...callbacks };
+  recorderPrevMuted = micMuted;
+  stopSpeaking(); // she goes quiet the instant recording starts
+  // Transcription needs the engine live even if the user had muted; a
+  // granted recorder stream is proof any earlier block is stale.
+  micBlocked = false;
+  micMuted = false;
+  startRecognition();
+}
+
+export function exitRecorderMode() {
+  recorderMode = false;
+  recorderCb = { onFinal: () => {}, onInterim: () => {} };
+  if (recorderPrevMuted) setMicMuted(true); // restore exactly what was there
+}
+
+/* ------------------------------------------------------------------ *
  * Listening (ASR) — continuous, self-healing, nothing dropped
  * ------------------------------------------------------------------ */
 let recognition = null;
@@ -569,6 +624,17 @@ export function isMicBlocked() {
 function handleHeard(finalText, interimText, conf) {
   consecutiveAsrErrors = 0;
   troubleSurfaced = false;
+
+  // Recorder mode: she isn't speaking (so echo and barge-in are moot) —
+  // every word flows into the recording's transcript, none into assist.
+  if (recorderMode) {
+    if (interimText) recorderCb.onInterim(interimText);
+    if (finalText) {
+      lastHeardAt = Date.now();
+      recorderCb.onFinal(finalText, conf);
+    }
+    return;
+  }
 
   const filtering = echoFilterActive();
   const finalOk = !!finalText && !(filtering && isSelfEcho(finalText));
@@ -670,7 +736,8 @@ function ensureRecognition() {
     lastInterimText = "";
     if (orphan && !micMuted && !micBlocked && !(echoFilterActive() && isSelfEcho(orphan))) {
       lastHeardAt = Date.now();
-      cb.onFinal(orphan, null);
+      if (recorderMode) recorderCb.onFinal(orphan, null);
+      else cb.onFinal(orphan, null);
     }
     if (!micMuted && !micBlocked) {
       const wait =

@@ -118,3 +118,31 @@ export function updateMemory({ entryId, status, title, content, deleted }) {
 export function getRecentTurns(sessionId, limit = 12) {
   return call("get_recent_turns", { session_id: sessionId, limit });
 }
+
+/**
+ * Upload a finished voice recording. The backend saves the audio to Drive,
+ * appends a row to the recordings tab, distills the transcript into memory
+ * notes (each linking the audio), and returns
+ * { recording_id, drive_file_url, notes }.
+ * Deliberately no abort signal: a 30-minute file is roughly 7–15 MB and the
+ * upload must never be killed mid-flight by a timeout.
+ */
+export function saveRecording({
+  sessionId,
+  audioBase64,
+  mimeType,
+  durationSeconds,
+  transcript,
+  timestamp,
+}) {
+  return call("save_recording", {
+    session_id: sessionId,
+    user_id: USER_ID,
+    assistant_id: ASSISTANT_ID,
+    audio_base64: audioBase64,
+    mime_type: mimeType,
+    duration_seconds: durationSeconds,
+    transcript: transcript,
+    timestamp: timestamp,
+  });
+}
