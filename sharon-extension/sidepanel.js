@@ -986,6 +986,44 @@ async function refreshMemoryCount() {
   }
 }
 
+// What the memory view is showing right now — the batch actions edit this
+// list optimistically and re-render, instead of re-fetching the Sheet.
+let memHits = [];
+let memAtLimit = false;
+let memHadQuery = false;
+
+function memCallbacks() {
+  return {
+    onToggleDone: async (h) => {
+      try {
+        await api.updateMemory({
+          entryId: h.entry_id,
+          status: String(h.status) === "done" ? "open" : "done",
+        });
+        loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
+      } catch (e) {
+        ui.memError(
+          "Couldn't update that: " + ((e && e.message) || e) + " — check your connection and tap it again."
+        );
+      }
+    },
+    onDelete: async (h) => {
+      try {
+        await api.updateMemory({ entryId: h.entry_id, deleted: true });
+        loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
+        refreshMemoryCount();
+      } catch (e) {
+        ui.memError(
+          "Couldn't delete that: " + ((e && e.message) || e) + " — check your connection and try again."
+        );
+      }
+    },
+    onListen: (h) => playRecordingFromHit(h),
+    onBatchStatus: (hits, status) => batchStatusSelected(hits, status),
+    onBatchDelete: (hits) => batchDeleteSelected(hits),
+  };
+}
+
 async function loadMemory(query) {
   const seq = ++memReqSeq;
   ui.memLoading();
@@ -994,42 +1032,164 @@ async function loadMemory(query) {
     if (seq !== memReqSeq) return;
     markSetup("memory");
     const list = Array.isArray(hits) ? hits : [];
-    if (!(query || "").trim()) {
-      ui.setMemorySubtitle(list.length, list.length >= 25);
+    memHits = list;
+    memHadQuery = !!(query || "").trim();
+    memAtLimit = list.length >= 25;
+    if (!memHadQuery) {
+      ui.setMemorySubtitle(list.length, memAtLimit);
       const openTasks = list.filter((h) => h.entry_type === "task" && String(h.status) !== "done").length;
       ui.setMemBadge(openTasks);
     }
     ui.memorySyncedNow();
-    ui.renderMemory(list, {
-      onToggleDone: async (h) => {
-        try {
-          await api.updateMemory({
-            entryId: h.entry_id,
-            status: String(h.status) === "done" ? "open" : "done",
-          });
-          loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
-        } catch (e) {
-          ui.memError(
-            "Couldn't update that: " + ((e && e.message) || e) + " — check your connection and tap it again."
-          );
-        }
-      },
-      onDelete: async (h) => {
-        try {
-          await api.updateMemory({ entryId: h.entry_id, deleted: true });
-          loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
-          refreshMemoryCount();
-        } catch (e) {
-          ui.memError(
-            "Couldn't delete that: " + ((e && e.message) || e) + " — check your connection and try again."
-          );
-        }
-      },
-      onListen: (h) => playRecordingFromHit(h),
-    });
+    ui.renderMemory(memHits, memCallbacks());
   } catch (e) {
     if (seq !== memReqSeq) return;
     ui.memError("I couldn't load your Sheet — check your connection, then try the search again.");
+  }
+}
+
+// Keep the "N things saved" subtitle and the open-task badge honest after an
+// optimistic batch edit — no extra round trip unless a search is filtering
+// the list (then the local list can't stand in for the whole Sheet).
+function updateMemMeta() {
+  if (memHadQuery) {
+    refreshMemoryCount();
+    return;
+  }
+  ui.setMemorySubtitle(memHits.length, memAtLimit && memHits.length >= 25);
+  const openTasks = memHits.filter((h) => h.entry_type === "task" && String(h.status) !== "done").length;
+  ui.setMemBadge(openTasks);
+}
+
+/* --------- bulk actions from selection mode --------- */
+// Mark complete / Reopen — optimistic: every selected task flips at once,
+// the whole batch goes up in ONE round trip, and anything the backend
+// couldn't update flips back.
+async function batchStatusSelected(hits, status) {
+  const targets = hits.filter((h) => h.entry_id);
+  if (!targets.length) return;
+  const prev = new Map(targets.map((h) => [h, h.status]));
+  targets.forEach((h) => {
+    h.status = status;
+  });
+  ui.exitMemSelect();
+  ui.renderMemory(memHits, memCallbacks());
+  updateMemMeta();
+  try {
+    const res = await api.batchUpdateMemory(targets.map((h) => ({ entryId: h.entry_id, status })));
+    const results = (res && res.results) || [];
+    const failedIds = new Set(results.filter((r) => r && !r.ok).map((r) => String(r.entry_id)));
+    const failed = targets.filter((h) => failedIds.has(String(h.entry_id)));
+    if (failed.length) {
+      failed.forEach((h) => {
+        h.status = prev.get(h);
+      });
+      ui.renderMemory(memHits, memCallbacks());
+    }
+    updateMemMeta();
+    ui.memorySyncedNow();
+    const okCount = targets.length - failed.length;
+    ui.showUndoToast({
+      label: failed.length
+        ? okCount + " updated, " + failed.length + " skipped"
+        : status === "done"
+        ? "Marked " + okCount + " complete"
+        : "Reopened " + okCount,
+    });
+  } catch (err) {
+    targets.forEach((h) => {
+      h.status = prev.get(h);
+    });
+    ui.renderMemory(memHits, memCallbacks());
+    updateMemMeta();
+    ui.showUndoToast({ label: "Couldn't update — check your connection." });
+  }
+}
+
+// Bulk delete with one Undo for the whole batch. The Sheet's delete is a
+// soft flag (deleted = TRUE), so Undo simply re-sends the same batch with
+// deleted:false and every row comes back.
+async function batchDeleteSelected(hits) {
+  const targets = hits.filter((h) => h.entry_id && h.entry_type !== "recording");
+  if (!targets.length) return;
+  const removed = targets
+    .map((h) => ({ h, index: memHits.indexOf(h) }))
+    .filter((x) => x.index >= 0)
+    .sort((a, b) => a.index - b.index);
+  for (let i = removed.length - 1; i >= 0; i--) memHits.splice(removed[i].index, 1);
+  ui.exitMemSelect();
+  ui.renderMemory(memHits, memCallbacks());
+  updateMemMeta();
+  try {
+    const res = await api.batchUpdateMemory(
+      removed.map((x) => ({ entryId: x.h.entry_id, deleted: true }))
+    );
+    const results = (res && res.results) || [];
+    const okIds = new Set(results.filter((r) => r && r.ok).map((r) => String(r.entry_id)));
+    const okRows = removed.filter((x) => okIds.has(String(x.h.entry_id)));
+    const failedRows = removed.filter((x) => !okIds.has(String(x.h.entry_id)));
+    if (failedRows.length) {
+      restoreMemRows(failedRows);
+      ui.renderMemory(memHits, memCallbacks());
+      updateMemMeta();
+    }
+    if (!okRows.length) {
+      ui.showUndoToast({ label: "Couldn't delete — check your connection." });
+      return;
+    }
+    ui.memorySyncedNow();
+    ui.showUndoToast({
+      label: failedRows.length
+        ? okRows.length + " deleted, " + failedRows.length + " skipped"
+        : "Deleted " + okRows.length + (okRows.length === 1 ? " item" : " items"),
+      duration: 6000,
+      onUndo: () => undoBatchDelete(okRows),
+    });
+  } catch (err) {
+    restoreMemRows(removed);
+    ui.renderMemory(memHits, memCallbacks());
+    updateMemMeta();
+    ui.showUndoToast({ label: "Couldn't delete — check your connection." });
+  }
+}
+
+// Put deleted rows back where they were (rows arrive sorted by original
+// index, so inserting in order rebuilds the exact list).
+function restoreMemRows(rows) {
+  for (const x of rows) memHits.splice(Math.min(x.index, memHits.length), 0, x.h);
+}
+
+async function undoBatchDelete(rows) {
+  restoreMemRows(rows);
+  ui.renderMemory(memHits, memCallbacks());
+  updateMemMeta();
+  try {
+    const res = await api.batchUpdateMemory(
+      rows.map((x) => ({ entryId: x.h.entry_id, deleted: false }))
+    );
+    const results = (res && res.results) || [];
+    const failedIds = new Set(results.filter((r) => r && !r.ok).map((r) => String(r.entry_id)));
+    if (failedIds.size) {
+      for (const x of rows) {
+        if (!failedIds.has(String(x.h.entry_id))) continue;
+        const at = memHits.indexOf(x.h);
+        if (at >= 0) memHits.splice(at, 1);
+      }
+      ui.renderMemory(memHits, memCallbacks());
+      ui.showUndoToast({
+        label: "Couldn't restore " + failedIds.size + (failedIds.size === 1 ? " item" : " items"),
+      });
+    }
+    updateMemMeta();
+    ui.memorySyncedNow();
+  } catch (err) {
+    for (const x of rows) {
+      const at = memHits.indexOf(x.h);
+      if (at >= 0) memHits.splice(at, 1);
+    }
+    ui.renderMemory(memHits, memCallbacks());
+    updateMemMeta();
+    ui.showUndoToast({ label: "Couldn't restore those — check your connection." });
   }
 }
 
@@ -1812,7 +1972,11 @@ function wireControls() {
   document.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape") return;
     if (ui.settingsOpen()) ui.closeSettings();
-    else if (ui.memoryOpen()) ui.closeMemory();
+    else if (ui.memoryOpen()) {
+      // Escape backs out one layer at a time: selection first, then the view.
+      if (ui.memSelectActive()) ui.exitMemSelect();
+      else ui.closeMemory();
+    }
   });
 
   // Memory search (debounced, live filtering via the backend).

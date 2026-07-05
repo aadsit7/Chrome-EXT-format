@@ -38,6 +38,11 @@
  *                       in the recordings tab (recording hits are read-only,
  *                       entry_id "rec:<recording_id>").
  *   update_memory     — patch a memory_log row (status/done/deleted/edits).
+ *   batch_update_memory — patch many memory_log rows in one pass (bulk
+ *                       mark-done / reopen / soft-delete and its undo).
+ *                       One sheet read, grouped writes; "rec:" ids and
+ *                       unknown ids are skipped gracefully, and the reply
+ *                       carries per-item results plus counts.
  *   save_recording    — save a voice recording: audio to the Drive folder
  *                       "Sharon Recordings", one row to the recordings tab
  *                       (transcript + timestamped "segments" JSON), then
@@ -118,6 +123,7 @@ function doPost(e) {
         case "distill_to_memory": out = { ok: true, result: actionDistill_(payload) }; break;
         case "search_memory":     out = { ok: true, result: searchMemory_(payload) }; break;
         case "update_memory":     out = { ok: true, result: updateMemory_(payload) }; break;
+        case "batch_update_memory": out = { ok: true, result: batchUpdateMemory_(payload) }; break;
         case "save_recording":    out = { ok: true, result: actionSaveRecording_(payload) }; break;
         case "get_recording_audio": out = { ok: true, result: actionGetRecordingAudio_(payload) }; break;
         case "summarize_memory":  out = { ok: true, result: actionSummarize_(payload) }; break;
@@ -1182,6 +1188,84 @@ function updateMemory_(p) {
     return { updated: true, entry_id: entryId };
   }
   throw new Error("entry not found: " + entryId);
+}
+
+/**
+ * batch_update_memory — many update_memory patches in ONE pass over the
+ * sheet. payload: { updates: [{ entry_id, status?, deleted? }, ...] }.
+ * A single read builds an entry_id → row map, then the writes are grouped
+ * by (column, value) into RangeLists — bulk "mark done" or "delete" is a
+ * couple of sheet writes total, however many rows are in the batch.
+ * Same rules as updateMemory_, but nothing here ever throws per item:
+ * "rec:" recording ids and unknown ids come back { ok:false, error } so
+ * the panel can report "8 updated, 2 skipped". Undo of a deleted batch is
+ * the same call again with deleted:false (the soft flag clears to "").
+ */
+function batchUpdateMemory_(p) {
+  var updates = Array.isArray(p.updates) ? p.updates : [];
+  var results = [];
+  var updated = 0;
+  var skipped = 0;
+  if (!updates.length) return { results: results, updated: 0, skipped: 0 };
+
+  var data = readAll_(SHEETS.memory); // the one read for the whole batch
+  var idx = indexMap_(data.headers);
+  var rowById = {};
+  for (var i = 0; i < data.rows.length; i++) {
+    rowById[String(data.rows[i][idx.entry_id])] = i + 2; // sheet row number
+  }
+
+  var groups = {}; // (column + value) -> { value, a1: ["C5","C9",...] }
+  var now = nowIso_();
+  var queue = function (rowNum, col, value) {
+    if (idx[col] == null) return;
+    var key = col + " " + String(value);
+    if (!groups[key]) groups[key] = { value: value, a1: [] };
+    groups[key].a1.push(colLetter_(idx[col] + 1) + rowNum);
+  };
+
+  for (var u = 0; u < updates.length; u++) {
+    var item = updates[u] || {};
+    var entryId = String(item.entry_id || "");
+    if (!entryId) {
+      skipped++;
+      results.push({ entry_id: "", ok: false, error: "entry_id is required" });
+      continue;
+    }
+    if (entryId.indexOf("rec:") === 0) {
+      // Recordings are read-only — the same graceful decline as updateMemory_.
+      skipped++;
+      results.push({ entry_id: entryId, ok: false, error: "recordings are read-only" });
+      continue;
+    }
+    var rowNum = rowById[entryId];
+    if (!rowNum) {
+      skipped++;
+      results.push({ entry_id: entryId, ok: false, error: "entry not found" });
+      continue;
+    }
+    if (item.status != null) queue(rowNum, "status", item.status);
+    if (item.deleted != null) queue(rowNum, "deleted", item.deleted ? "TRUE" : "");
+    queue(rowNum, "updated_at", now);
+    updated++;
+    results.push({ entry_id: entryId, ok: true });
+  }
+
+  for (var k in groups) {
+    data.sh.getRangeList(groups[k].a1).setValue(groups[k].value);
+  }
+  return { results: results, updated: updated, skipped: skipped };
+}
+
+// "A", "B", … "AA" for a 1-based column number (RangeList wants A1 notation).
+function colLetter_(col) {
+  var s = "";
+  while (col > 0) {
+    var r = (col - 1) % 26;
+    s = String.fromCharCode(65 + r) + s;
+    col = Math.floor((col - 1) / 26);
+  }
+  return s;
 }
 
 function memoryForScope_(p) {
