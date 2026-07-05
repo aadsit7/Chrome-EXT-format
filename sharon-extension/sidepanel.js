@@ -31,7 +31,7 @@ import * as ui from "./ui.js";
  * ------------------------------------------------------------------ */
 const SETTINGS_KEY = "sharon_settings";
 const DEFAULT_SETTINGS = {
-  autoRead: true, // read pages automatically on tab change
+  autoRead: false, // read pages automatically on tab change (opt-in only)
   allowScroll: true, // may Sharon scroll the active tab when asked?
   readAloud: true, // speak answers out loud?
   allowActions: false, // may Sharon click/type/act on the page? (opt-in)
@@ -158,6 +158,13 @@ const MAX_AGENT_STEPS = 8;
 let agentTask = null; // { goal, log: [], steps }
 let pendingPlan = null; // a plan awaiting the user's spoken "yes"
 
+// Screen access is OPT-IN. The page excerpt rides along with a turn only
+// when the user explicitly asked about the page, pressed the "Use this tab"
+// chip, or agent mode (an explicit settings toggle) needs the page to act.
+// useTabContext is deliberately NOT persisted — it resets OFF each session.
+let useTabContext = false;
+let turnUsingPage = false; // true while a page-carrying turn is in flight
+
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function uuid() {
@@ -201,9 +208,21 @@ function updateStatus() {
   else if (!micLive) ui.setPhase("muted");
   else ui.setPhase("listening");
 
+  updateTabPill();
+
   // Sharon's voice and a playing recording never overlap — every state
   // change re-checks the pair (see syncPlaybackWithSpeech).
   syncPlaybackWithSpeech();
+}
+
+// The tab pill only ever tells the truth: "Seeing this tab" when page
+// context is riding along right now (a page-carrying turn in flight) or
+// will ride along with the next message (chip on / agent mode on, page
+// readable, recorder idle); "Not reading this tab" otherwise.
+function updateTabPill() {
+  ui.setTabAwareness(
+    turnUsingPage || (!recActive() && !restricted && (useTabContext || settings.allowActions))
+  );
 }
 
 // Speak + show a short local note from Sharon (no server round trip).
@@ -327,6 +346,12 @@ function openEditor() {
 }
 
 function commitPending(auto) {
+  // Voice captured around a recording is DROPPED, never queued — the seal
+  // in speech.js keeps new words out; this drops anything already pending.
+  if (recActive() || !speech.recorderSealOpen()) {
+    resetCapture();
+    return;
+  }
   const text = pendingText.trim();
   const conf = pendingConf;
   resetCapture();
@@ -434,7 +459,9 @@ async function handleScroll(direction) {
       : "I've just scrolled further down the page" +
         (direction === "bottom" ? " to the very bottom" : "") +
         ". Read the newly revealed part naturally — don't re-summarize from the top. If there's genuinely nothing new, just say so in one short sentence.";
-  await sendTurn(instruction, { showAsUser: false });
+  // The user explicitly asked to move through the page — reading what the
+  // scroll revealed is that same request, so the page rides along.
+  await sendTurn(instruction, { showAsUser: false, withPage: true });
 }
 
 function tryImmediateCommand(text, cmd) {
@@ -469,6 +496,16 @@ function tryImmediateCommand(text, cmd) {
 function handleUserUtterance(text, conf, { typed = false } = {}) {
   text = (text || "").trim();
   if (!text) return;
+
+  // The recorder seal, end to end: while the recorder is anything but idle
+  // (or trailing recording audio is still in its grace window), voice can
+  // never become a message. speech.js already swallows recognition results;
+  // this guards every other way in. Typed composer messages still work —
+  // they're deliberate keyboard input, not leaked audio.
+  if (!typed && (recActive() || !speech.recorderSealOpen())) {
+    resetCapture();
+    return;
+  }
 
   const cmd = text.toLowerCase().replace(/[.!?,]+$/g, "").trim();
 
@@ -527,7 +564,7 @@ function handleUserUtterance(text, conf, { typed = false } = {}) {
 /* ------------------------------------------------------------------ *
  * The main turn — one assist() round trip
  * ------------------------------------------------------------------ */
-async function sendTurn(userText, { raw = "", conf = null, showAsUser = true } = {}) {
+async function sendTurn(userText, { raw = "", conf = null, showAsUser = true, withPage = null } = {}) {
   userText = (userText || "").trim();
   if (!userText) return;
 
@@ -549,9 +586,25 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true } =
 
   try {
     const id = await ensureSessionId();
-    const ctx = await page.readPageContext();
-    const pageRestricted = !!ctx.restricted;
-    restricted = pageRestricted;
+
+    // Screen access is opt-in: the page rides along ONLY when this turn is
+    // an explicit page request (withPage — auto-read/scroll follow-ups — or
+    // the words ask about the page), the "Use this tab" chip is on, or
+    // agent mode (an explicit settings toggle) needs the page to act. Never
+    // while the recorder is anything but idle, whatever the toggles say.
+    const includePage =
+      !recActive() &&
+      (withPage === true || useTabContext || settings.allowActions || isPageIntent(userText));
+
+    let ctx = { restricted: true };
+    let pageRestricted = true;
+    if (includePage) {
+      ctx = await page.readPageContext();
+      pageRestricted = !!ctx.restricted;
+      restricted = pageRestricted;
+    }
+    turnUsingPage = includePage && !pageRestricted;
+    updateTabPill();
 
     // When Sharon may act, include what's clickable so the model can plan.
     let agent = null;
@@ -614,6 +667,7 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true } =
     if (abortController === ac) {
       busy = false;
       abortController = null;
+      turnUsingPage = false; // the pill goes back to telling the steady truth
     }
     // A just-started page task manages its own thinking state.
     if (!agentTask) thinking = false;
@@ -625,6 +679,22 @@ async function sendTurn(userText, { raw = "", conf = null, showAsUser = true } =
 function isPageRecapIntent(text) {
   return /\b(sum(mar)?\w*\s+(up\s+)?(this|the)\s+(page|article|tab)|what'?s\s+(this|the)\s+(page|article)\s+about|recap\s+(this|the)\s+(page|article)|read\s+me\s+this\s+page|tl;?dr)\b/i.test(
     text || ""
+  );
+}
+
+// The broader page-intent test behind opt-in screen access: does this
+// message explicitly ask about the page/tab/screen? Only then (or via the
+// "Use this tab" chip / agent mode) does the page excerpt ride along.
+function isPageIntent(text) {
+  const t = (text || "").toLowerCase();
+  return (
+    isPageRecapIntent(text) ||
+    /\b(this|that|the|current|active|open)\s+(web\s*)?(page|tab|article|site|website|screen|post|email|thread|doc|document)\b/.test(t) ||
+    /\b(on|about|reading)\s+(my|the)\s+screen\b/.test(t) ||
+    /\bmy\s+(open\s+|current\s+)?tab\b/.test(t) ||
+    /\bread\s+(this|it|that|me\s+this)\b/.test(t) ||
+    /\bwhat\s+am\s+i\s+(looking\s+at|reading|seeing)\b/.test(t) ||
+    /\b(look|looking)\s+at\s+(this|my\s+screen|the\s+screen)\b/.test(t)
   );
 }
 
@@ -965,7 +1035,9 @@ async function evaluateActiveTab() {
   lastReadKey = key;
 
   speech.stopSpeaking();
-  await sendTurn(READ_PAGE_TEXT, { showAsUser: false });
+  // Auto-read runs only when its settings toggle is explicitly on (checked
+  // above) — that turn is a page read by definition.
+  await sendTurn(READ_PAGE_TEXT, { showAsUser: false, withPage: true });
 }
 
 /* ------------------------------------------------------------------ *
@@ -1207,7 +1279,7 @@ const REC_TIMER_TICK_MS = 250;
 // recording stays well under the backend's play-in-panel size cap.
 const RECORD_AUDIO_BPS = 32000;
 
-let recState = "idle"; // idle | recording | uploading
+let recState = "idle"; // idle | recording | uploading | organizing — mirrored into speech.js's seal
 let mediaRecorder = null;
 let recChunks = [];
 let recStartAt = 0;
@@ -1279,7 +1351,7 @@ async function startRecording() {
   recInterimText = "";
   recSegments = [];
   recStartAt = Date.now(); // set before recorder mode so segment stamps are right
-  speech.enterRecorderMode({
+  speech.setRecorderState("recording", {
     onFinal: (text) => {
       // Stamp each finalized segment with its elapsed recording time so
       // search can later queue playback to the matching moment.
@@ -1304,7 +1376,7 @@ async function startRecording() {
       audioBitsPerSecond: RECORD_AUDIO_BPS,
     });
   } catch (_) {
-    speech.exitRecorderMode();
+    speech.setRecorderState("idle"); // nothing was captured — reopen normally
     reportProblem("I couldn't start the recorder.", "Give it a second and tap record again.");
     updateStatus();
     return;
@@ -1340,8 +1412,10 @@ function stopRecording() {
   );
 
   // Fold any in-flight interim into the transcript (and its own timestamped
-  // segment), then bounce recognition so those same words can't resurface
-  // in the assist flow afterward.
+  // segment) FIRST — then hand the seal to speech.js, which aborts the
+  // engine (discarding everything it still owes for the recorded audio) and
+  // keeps discarding results until the whole flow is idle again. Nothing
+  // said during the recording can resurface in the assist flow afterward.
   if (recInterimText.trim()) {
     recSegments.push({
       t: Math.max(0, Math.round((Date.now() - recStartAt) / 1000)),
@@ -1350,8 +1424,7 @@ function stopRecording() {
     recFinalText = (recFinalText + " " + recInterimText).trim();
     recInterimText = "";
   }
-  speech.stopRecognition();
-  speech.exitRecorderMode(); // normal listening/barge-in/TTS resume from here
+  speech.setRecorderState("uploading");
 
   const transcript = recFinalText.trim();
   const segments = recSegments.slice();
@@ -1381,6 +1454,7 @@ async function finishRecording(mimeType, durationSeconds, transcript, segments) 
   recChunks = [];
   if (!blob.size) {
     recState = "idle";
+    speech.setRecorderState("idle");
     ui.hideRecorder();
     reportProblem(
       "the recording came out empty, so there was nothing to save.",
@@ -1394,7 +1468,11 @@ async function finishRecording(mimeType, durationSeconds, transcript, segments) 
   // can't observe upload progress, so flip the label to "organizing" once
   // the upload has plausibly finished — a size-based estimate.
   const estUploadMs = Math.min(45000, Math.max(2500, blob.size / 150));
-  recStageTimer = setTimeout(() => ui.setRecorderStage("organizing"), estUploadMs);
+  recStageTimer = setTimeout(() => {
+    recState = "organizing";
+    speech.setRecorderState("organizing");
+    ui.setRecorderStage("organizing");
+  }, estUploadMs);
 
   try {
     const audioBase64 = await blobToBase64(blob);
@@ -1448,6 +1526,7 @@ async function finishRecording(mimeType, durationSeconds, transcript, segments) 
       recStageTimer = null;
     }
     recState = "idle";
+    speech.setRecorderState("idle"); // the seal lifts after its grace period
     updateStatus();
   }
 }
@@ -1872,6 +1951,16 @@ function wireControls() {
     });
   }
 
+  // "Use this tab" chip — the explicit opt-in for screen access. Session
+  // only (never saved), so it always starts OFF the next time the panel
+  // opens; the tab pill re-tells the truth on every flip.
+  if (e.useTabChip)
+    e.useTabChip.addEventListener("click", () => {
+      useTabContext = !useTabContext;
+      ui.setUseTabChip(useTabContext);
+      updateTabPill();
+    });
+
   // Recorder: the composer's record button toggles; the card's Stop stops.
   if (e.recordBtn)
     e.recordBtn.addEventListener("click", () => {
@@ -1922,6 +2011,10 @@ function wireControls() {
   if (e.lcStrip) e.lcStrip.addEventListener("click", openEditor);
   if (e.lcSend)
     e.lcSend.addEventListener("click", () => {
+      if (recActive()) {
+        resetCapture(); // voice drafts never survive into a recording
+        return;
+      }
       const text = ui.liveEditorValue().trim();
       const conf = pendingConf;
       resetCapture();
