@@ -3,7 +3,7 @@
 // one conversation loop:
 //
 //   listen → live transcript streams into the presence card → (instant
-//   command? do it locally) → visible 1.6s countdown (tap to edit) →
+//   command? do it locally) → adaptive silence countdown (tap to edit) →
 //   assist() one round trip: Claude answers AND/OR reads-writes the Google
 //   Sheet database through tools AND/OR returns an on-page action plan →
 //   answer cards in the thread (+ spoken-aloud line) → undo toast → listen.
@@ -15,8 +15,10 @@
 //     and answering all happen inside a single assist() call.
 //   • Page snapshots are cached briefly so back-to-back questions about the
 //     same page don't pay the extraction cost twice.
-//   • Sharon never interrupts: speech.js holds her voice the instant you
-//     start talking and only resumes if it was noise or her own echo.
+//   • Sharon never interrupts you — your words accumulate until a genuine,
+//     adaptive silence — and you can interrupt HER: confident speech cancels
+//     her reply instantly, while speech.js's six echo-protection layers keep
+//     her from ever reacting to her own voice.
 
 import { HISTORY_TURNS } from "./config.js";
 import * as api from "./api.js";
@@ -233,10 +235,30 @@ function reportProblem(msg, nextStep) {
 }
 
 /* ------------------------------------------------------------------ *
- * The capture pipeline — stream → countdown → (edit) → send → undo
+ * The capture pipeline — stream → adaptive silence → (edit) → send → undo
  * ------------------------------------------------------------------ */
-const COUNTDOWN_MS = 1600;
+// Adaptive end-of-speech: after your last words, the transcript is sent once
+// the mic stays silent this long. Tune both windows here.
+const SILENCE_COMPLETE_MS = 800; // what you said reads as a finished thought
+const SILENCE_UNFINISHED_MS = 1400; // trailing "and…", "um…", a dangling clause
 const HEARING_DECAY_MS = 1200;
+
+// Trailing words that signal a thought still in flight (conjunctions,
+// fillers, articles, possessives — kept conservative on purpose).
+const UNFINISHED_TAIL = new Set([
+  "and", "or", "but", "so", "because", "then", "also", "plus",
+  "um", "uh", "er", "hmm", "like",
+  "the", "a", "an", "my", "your", "his", "her", "their", "our", "its",
+  "to", "if", "when", "while", "although", "though",
+]);
+
+function looksUnfinished(text) {
+  const t = (text || "").trim();
+  if (!t) return false;
+  if (/[,\-–—:]$/.test(t)) return true; // a dangling clause
+  const last = t.toLowerCase().replace(/[.!?]+$/g, "").split(/\s+/).pop();
+  return UNFINISHED_TAIL.has(last);
+}
 
 let pendingText = ""; // committed finals awaiting send
 let pendingConf = null;
@@ -263,6 +285,12 @@ function onInterimHeard(text) {
   if (hearingTimer) clearTimeout(hearingTimer);
   hearingTimer = setTimeout(() => {
     hearing = false;
+    hearingTimer = null;
+    // Words were heard but never finalized (interim that went quiet) — don't
+    // let a captured message sit forever without its send countdown.
+    if (pendingText && !editing && ui.els.html.getAttribute("data-capture") !== "counting") {
+      startCountdown();
+    }
     updateStatus();
   }, HEARING_DECAY_MS);
   if (editing) return; // the user took the keyboard — don't fight them
@@ -273,9 +301,11 @@ function onInterimHeard(text) {
 }
 
 function startCountdown() {
+  // Fast when the thought sounds complete, patient when it sounds unfinished.
+  const wait = looksUnfinished(pendingText) ? SILENCE_UNFINISHED_MS : SILENCE_COMPLETE_MS;
   ui.setCapture("counting");
   ui.liveTranscript(pendingText, "");
-  ui.liveShowStrip(COUNTDOWN_MS, () => commitPending(true));
+  ui.liveShowStrip(wait, () => commitPending(true));
 }
 
 function openEditor() {
@@ -475,7 +505,10 @@ function handleUserUtterance(text, conf, { typed = false } = {}) {
 
   // Otherwise accumulate and (re)start the visible auto-send countdown.
   pendingText = pendingText ? pendingText + " " + text : text;
-  if (conf != null && !Number.isNaN(conf)) pendingConf = conf;
+  // Overall confidence for the utterance = its weakest segment, so the
+  // backend's asr_confidence flow keeps flagging shaky transcripts.
+  if (conf != null && !Number.isNaN(conf))
+    pendingConf = pendingConf == null ? conf : Math.min(pendingConf, conf);
   startCountdown();
   updateStatus();
 }
@@ -1317,6 +1350,12 @@ function wireControls() {
         );
       }
       updateStatus();
+    },
+    onRecognitionTrouble: () => {
+      reportProblem(
+        "my hearing keeps cutting out.",
+        "Voice recognition needs the internet — check your connection. I'll keep retrying quietly, and you can type to me in the meantime."
+      );
     },
     onVoicesChanged: () => populateVoiceSelect(),
   });
