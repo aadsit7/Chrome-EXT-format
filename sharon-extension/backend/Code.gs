@@ -1219,7 +1219,7 @@ function batchUpdateMemory_(p) {
   var now = nowIso_();
   var queue = function (rowNum, col, value) {
     if (idx[col] == null) return;
-    var key = col + " " + String(value);
+    var key = col + ":" + String(value);
     if (!groups[key]) groups[key] = { value: value, a1: [] };
     groups[key].a1.push(colLetter_(idx[col] + 1) + rowNum);
   };
