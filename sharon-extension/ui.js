@@ -35,6 +35,15 @@ export const els = {
   memFilters: document.getElementById("memFilters"),
   memList: document.getElementById("memList"),
   memSynced: document.getElementById("memSynced"),
+  memSelectBtn: document.getElementById("memSelectBtn"),
+  memSelBar: document.getElementById("memSelBar"),
+  selCancel: document.getElementById("selCancel"),
+  selCount: document.getElementById("selCount"),
+  selAllBtn: document.getElementById("selAllBtn"),
+  memActBar: document.getElementById("memActBar"),
+  selDoneBtn: document.getElementById("selDoneBtn"),
+  selReopenBtn: document.getElementById("selReopenBtn"),
+  selDeleteBtn: document.getElementById("selDeleteBtn"),
   composer: document.getElementById("composer"),
   composerInput: document.getElementById("composerInput"),
   sendBtn: document.getElementById("sendBtn"),
@@ -93,6 +102,7 @@ export const els = {
 
 export function initUI() {
   wireMemoryFilters();
+  wireMemorySelection();
 }
 
 /* ------------------------------------------------------------------ *
@@ -834,6 +844,8 @@ export function showUndoToast({ label, onUndo, duration = 4000 } = {}) {
   dismissToast();
   if (!els.undoToast) return;
   els.toastLabel.textContent = label || "Sent what I heard";
+  // A toast without an undo action is just a quiet confirmation line.
+  if (els.toastUndo) els.toastUndo.classList.toggle("hidden", !onUndo);
   els.undoToast.classList.remove("hidden");
   const undoOnce = () => {
     dismissToast();
@@ -860,6 +872,7 @@ export function openMemory() {
   els.html.setAttribute("data-view", "memory");
 }
 export function closeMemory() {
+  exitMemSelect(); // never leave a half-finished selection behind
   els.html.setAttribute("data-view", "chat");
 }
 export function memoryOpen() {
@@ -972,9 +985,144 @@ function passesFilter(h) {
   return true;
 }
 
+/* --------- selection mode (multi-select bulk editing) --------- */
+const LONG_PRESS_MS = 500;
+let memSelect = false;
+let selIds = new Set(); // entry_ids currently selected
+let suppressClick = false; // swallow the click that trails a long-press
+let delConfirmTimer = null;
+
+function selectableHit_(h) {
+  // Recording entries ("rec:" ids) are read-only by design — never selectable.
+  return !!(h && h.entry_id && h.entry_type !== "recording");
+}
+
+function selectedHits() {
+  return memCache.hits.filter((h) => selIds.has(String(h.entry_id || "")));
+}
+
+export function memSelectActive() {
+  return memSelect;
+}
+
+export function enterMemSelect(seed) {
+  if (memSelect) return;
+  memSelect = true;
+  els.html.setAttribute("data-mem-select", "on");
+  if (seed && selectableHit_(seed)) selIds.add(String(seed.entry_id));
+  renderMemList();
+  updateSelUI();
+}
+
+export function exitMemSelect() {
+  if (!memSelect) return;
+  memSelect = false;
+  selIds.clear();
+  resetDeleteConfirm();
+  els.html.removeAttribute("data-mem-select");
+  renderMemList();
+}
+
+function toggleSelect(h, row) {
+  const id = String(h.entry_id || "");
+  if (!id || !selectableHit_(h)) return;
+  if (selIds.has(id)) {
+    selIds.delete(id);
+    if (!selIds.size) {
+      // Deselecting the last item leaves selection mode entirely.
+      exitMemSelect();
+      return;
+    }
+  } else {
+    selIds.add(id);
+  }
+  if (row) row.setAttribute("aria-selected", selIds.has(id) ? "true" : "false");
+  updateSelUI();
+}
+
+function updateSelUI() {
+  if (!memSelect || !els.selCount) return;
+  const n = selIds.size;
+  els.selCount.textContent = n
+    ? n + " selected"
+    : "Select items";
+  const sel = selectedHits();
+  const openTasks = sel.filter((h) => h.entry_type === "task" && String(h.status) !== "done");
+  const doneTasks = sel.filter((h) => h.entry_type === "task" && String(h.status) === "done");
+  // Actions that don't apply to the selection are disabled (notes have no
+  // status, so Mark complete needs at least one open task); Reopen only
+  // shows up once a completed item is in the selection.
+  if (els.selDoneBtn) els.selDoneBtn.disabled = !openTasks.length;
+  if (els.selReopenBtn) els.selReopenBtn.classList.toggle("hidden", !doneTasks.length);
+  if (els.selDeleteBtn) els.selDeleteBtn.disabled = !n;
+  resetDeleteConfirm();
+}
+
+function resetDeleteConfirm() {
+  if (delConfirmTimer) {
+    clearTimeout(delConfirmTimer);
+    delConfirmTimer = null;
+  }
+  if (els.selDeleteBtn && els.selDeleteBtn.hasAttribute("data-confirm")) {
+    els.selDeleteBtn.removeAttribute("data-confirm");
+    els.selDeleteBtn.textContent = "Delete";
+  }
+}
+
+function wireMemorySelection() {
+  if (els.memSelectBtn) els.memSelectBtn.addEventListener("click", () => enterMemSelect());
+  if (els.selCancel) els.selCancel.addEventListener("click", () => exitMemSelect());
+  if (els.selAllBtn)
+    els.selAllBtn.addEventListener("click", () => {
+      // Everything currently visible under the active filter (and search) —
+      // never items the filter is hiding, never read-only recordings.
+      memCache.hits.filter(passesFilter).forEach((h) => {
+        if (selectableHit_(h)) selIds.add(String(h.entry_id));
+      });
+      renderMemList();
+      updateSelUI();
+    });
+  if (els.selDoneBtn)
+    els.selDoneBtn.addEventListener("click", () => {
+      const targets = selectedHits().filter(
+        (h) => h.entry_type === "task" && String(h.status) !== "done"
+      );
+      if (targets.length && memCache.cb.onBatchStatus) memCache.cb.onBatchStatus(targets, "done");
+    });
+  if (els.selReopenBtn)
+    els.selReopenBtn.addEventListener("click", () => {
+      const targets = selectedHits().filter(
+        (h) => h.entry_type === "task" && String(h.status) === "done"
+      );
+      if (targets.length && memCache.cb.onBatchStatus) memCache.cb.onBatchStatus(targets, "open");
+    });
+  if (els.selDeleteBtn)
+    els.selDeleteBtn.addEventListener("click", () => {
+      const targets = selectedHits().filter(selectableHit_);
+      if (!targets.length) return;
+      // One in-place confirmation: the button itself asks "Delete 5 items?"
+      // and a second tap (within a few seconds) goes through with it.
+      if (!els.selDeleteBtn.hasAttribute("data-confirm")) {
+        els.selDeleteBtn.setAttribute("data-confirm", "1");
+        els.selDeleteBtn.textContent =
+          "Delete " + targets.length + (targets.length === 1 ? " item?" : " items?");
+        delConfirmTimer = setTimeout(resetDeleteConfirm, 4000);
+        return;
+      }
+      resetDeleteConfirm();
+      if (memCache.cb.onBatchDelete) memCache.cb.onBatchDelete(targets);
+    });
+}
+
 export function renderMemory(hits, callbacks = {}) {
   memCache = { hits: Array.isArray(hits) ? hits : [], cb: callbacks };
+  // Selection can only ever refer to entries that are actually loaded.
+  if (selIds.size) {
+    const live = new Set(memCache.hits.map((h) => String(h.entry_id || "")));
+    for (const id of Array.from(selIds)) if (!live.has(id)) selIds.delete(id);
+  }
   renderMemList();
+  updateSelUI();
 }
 
 function emptyMessage() {
@@ -1020,13 +1168,29 @@ function renderMemList() {
     }
 
     const isDone = String(h.status) === "done";
+    const canSelect = selectableHit_(h);
     const item = document.createElement("div");
-    item.className = "mi" + (isDone ? " done" : "");
+    item.className = "mi" + (isDone ? " done" : "") + (memSelect && !canSelect ? " noselect" : "");
 
     const row = document.createElement("button");
     row.type = "button";
     row.className = "mi-row";
-    row.setAttribute("aria-expanded", "false");
+    if (memSelect) {
+      // Rows are selection targets now — expose that instead of expansion.
+      row.setAttribute(
+        "aria-selected",
+        canSelect && selIds.has(String(h.entry_id)) ? "true" : "false"
+      );
+      if (!canSelect) row.setAttribute("aria-disabled", "true");
+      // The selection mark: a blue circle, deliberately round so it can't be
+      // read as the square green task done-checkbox.
+      const selMark = document.createElement("span");
+      selMark.className = "mi-sel";
+      selMark.appendChild(svgOf(I_CHECK));
+      row.appendChild(selMark);
+    } else {
+      row.setAttribute("aria-expanded", "false");
+    }
     const kind = kindOf(h);
     const chip = document.createElement("span");
     chip.className = "kind" + (kind.cls ? " " + kind.cls : "");
@@ -1039,17 +1203,52 @@ function renderMemList() {
     t.textContent = h.title || h.content || "(untitled)";
     txt.appendChild(t);
     const when = metaTime(h.created_at);
-    if (when) {
+    let metaText = when ? "Saved · " + when : "";
+    if (memSelect && !canSelect) {
+      // The subtle hint on read-only recordings while selecting.
+      metaText = metaText ? metaText + " · read-only" : "Recordings are read-only";
+    }
+    if (metaText) {
       const m = document.createElement("div");
       m.className = "mi-m";
-      m.textContent = "Saved · " + when;
+      m.textContent = metaText;
       txt.appendChild(m);
     }
     row.appendChild(txt);
     row.addEventListener("click", () => {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
+      if (memSelect) {
+        if (canSelect) toggleSelect(h, row);
+        return;
+      }
       const open = item.classList.toggle("open");
       row.setAttribute("aria-expanded", open ? "true" : "false");
     });
+    // Press-and-hold (~500ms) on any row enters selection mode directly.
+    let lpTimer = null;
+    row.addEventListener("pointerdown", (ev) => {
+      if (ev.button != null && ev.button !== 0) return;
+      suppressClick = false;
+      if (lpTimer) clearTimeout(lpTimer);
+      lpTimer = setTimeout(() => {
+        lpTimer = null;
+        suppressClick = true; // the release click IS the long-press, not a tap
+        if (!memSelect) enterMemSelect(h);
+        else if (canSelect && !selIds.has(String(h.entry_id))) toggleSelect(h, row);
+      }, LONG_PRESS_MS);
+    });
+    const cancelPress = () => {
+      if (lpTimer) {
+        clearTimeout(lpTimer);
+        lpTimer = null;
+      }
+    };
+    row.addEventListener("pointerup", cancelPress);
+    row.addEventListener("pointerleave", cancelPress);
+    row.addEventListener("pointercancel", cancelPress);
     item.appendChild(row);
 
     // expanded action row — recordings are read-only: no edit/delete, just

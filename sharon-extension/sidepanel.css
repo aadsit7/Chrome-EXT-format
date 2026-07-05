@@ -82,6 +82,7 @@ a.pill-btn{text-decoration:none;display:inline-flex;align-items:center}
 .pill-btn.danger:hover{background:var(--coral-deep)}
 .pill-btn.outline{background:#fff;border-color:var(--blue);color:var(--blue)}
 .pill-btn.outline:hover{background:var(--blue-tint)}
+.pill-btn:disabled{opacity:.45;cursor:default;pointer-events:none}
 
 .txt-link{
   border:none;background:transparent;color:var(--blue);
@@ -594,8 +595,39 @@ html[data-mic="muted"] .mic-btn .m-slash{opacity:1}
 }
 html[data-view="memory"] .memory{display:flex}
 .mem-head{flex:none;display:flex;align-items:center;gap:10px;padding:2px 0 10px}
+.mem-hd-txt{flex:1;min-width:0}
 .mem-title{font-family:var(--f-head);font-weight:700;font-size:17px;line-height:1.2}
 .mem-sub{font-size:12px;color:var(--tertiary);margin-top:1px}
+
+/* selection mode — the selection bar replaces the header, and the action
+   bar replaces the synced footer, while data-mem-select="on". Blue is the
+   selection language (interactive), the same as everywhere else; the green
+   square task checkbox never appears in this mode, so the two can't be
+   confused. */
+.mem-selbar{flex:none;display:none;align-items:center;gap:10px;padding:2px 0 10px}
+html[data-mem-select="on"] .mem-head{display:none}
+html[data-mem-select="on"] .mem-selbar{display:flex}
+.sel-count{flex:1;min-width:0;font-size:14px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mi-sel{
+  width:21px;height:21px;border-radius:50%;flex:none;margin-top:1px;
+  border:1.5px solid var(--hairline-strong);background:#fff;color:#fff;
+  display:grid;place-items:center;
+  transition:background .15s var(--ease),border-color .15s var(--ease);
+}
+.mi-sel svg{width:12px;height:12px;opacity:0}
+.mi-row[aria-selected="true"]{background:var(--blue-tint)}
+.mi-row[aria-selected="true"] .mi-sel{background:var(--blue);border-color:var(--blue)}
+.mi-row[aria-selected="true"] .mi-sel svg{opacity:1}
+.mi.noselect .mi-row{opacity:.55;cursor:default}
+.mi.noselect .mi-sel{border-style:dashed;background:transparent}
+html[data-mem-select="on"] .mi-actions{display:none!important}
+.mem-actbar{
+  flex:none;display:none;align-items:center;gap:8px;
+  padding:10px 2px 12px;border-top:1px solid var(--hairline);
+}
+.mem-actbar .spacer{flex:1}
+html[data-mem-select="on"] .mem-actbar{display:flex}
+html[data-mem-select="on"] .mem-foot{display:none}
 .mem-search{
   flex:none;display:flex;align-items:center;gap:8px;
   background:#fff;border:1px solid var(--hairline);border-radius:var(--r-pill);

@@ -114,6 +114,23 @@ export function updateMemory({ entryId, status, title, content, deleted }) {
   });
 }
 
+/**
+ * Patch many memory entries in ONE round trip (bulk mark done / reopen /
+ * soft-delete, and the batch undo, which re-sends with deleted:false).
+ * updates: [{ entryId, status?, deleted? }, ...]
+ * Returns { results: [{ entry_id, ok, error? }], updated, skipped } so the
+ * panel can report "8 updated, 2 skipped" and roll back only the failures.
+ */
+export function batchUpdateMemory(updates) {
+  return call("batch_update_memory", {
+    updates: (Array.isArray(updates) ? updates : []).map((u) => ({
+      entry_id: u.entryId,
+      status: u.status,
+      deleted: u.deleted,
+    })),
+  });
+}
+
 /** Recent turns for this session so a reopened panel remembers the thread. */
 export function getRecentTurns(sessionId, limit = 12) {
   return call("get_recent_turns", { session_id: sessionId, limit });
