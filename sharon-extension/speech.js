@@ -27,11 +27,15 @@
 //   5. If the recognition engine stops itself (it does, periodically) it is
 //      restarted instantly, and any words caught mid-flight are stitched in
 //      so nothing you said is lost.
-//   6. Recorder mode: while a voice recording runs, Sharon goes silent —
-//      speak() is skipped (her voice would land in the audio) and every
-//      recognition result (interim, final, and restart-stitched orphans)
-//      is rerouted into the recorder's transcript instead of the assist
-//      flow. Exiting restores rules 1-5 untouched.
+//   6. Recorder mode: the recorder owns the ears from the moment recording
+//      starts until the whole flow (recording → uploading → organizing) is
+//      idle again. While recording, every recognition result (interim,
+//      final, and restart-stitched orphans) is rerouted into the recorder's
+//      transcript; from stop until idle — plus a short grace period for
+//      trailing audio — results are DISCARDED outright, so nothing said
+//      during a recording can ever become a command or chat message.
+//      Sharon stays silent the whole time (her voice would land in the
+//      audio). Reaching idle restores rules 1-5 untouched.
 //   7. Playback mode: while a saved recording plays in the panel, that audio
 //      is real speech in the room — often the user's own voice — so nothing
 //      heard while it plays (or in its short echo tail) may become a command
@@ -244,9 +248,10 @@ export function isPaused() {
 export function speak(text, { onDone } = {}) {
   const full = (text || "").trim();
   onDoneSpeaking = onDone || null;
-  // Recorder mode: her voice must never land in the recording, so nothing
-  // is spoken — replies still render, only the audio is skipped.
-  if (recorderMode || !synth || !cb.getSettings().readAloud || !full) {
+  // Recorder non-idle: her voice must never land in the recording (or talk
+  // over the upload), so nothing is spoken — replies still render, only
+  // the audio is skipped.
+  if (recorderState !== "idle" || !synth || !cb.getSettings().readAloud || !full) {
     // Nothing will be spoken — settle, then signal completion.
     const done = onDoneSpeaking;
     onDoneSpeaking = null;
@@ -562,17 +567,30 @@ function shouldBargeIn(text) {
 
 /* ------------------------------------------------------------------ *
  * Recorder mode — the recorder borrows the ears without touching them.
- * Recognition keeps running exactly as before (same engine, same restart
- * stitching, so no words drop across its periodic self-stops), but every
- * result is rerouted into the recorder's callbacks instead of the assist
- * flow, and Sharon's voice is silenced for the duration (see speak()).
+ * ONE authoritative state seals the whole flow:
+ *   idle → recording → uploading → organizing → idle
+ * While "recording", recognition keeps running exactly as before (same
+ * engine, same restart stitching, so no words drop across its periodic
+ * self-stops), but every result is rerouted into the recorder's callbacks;
+ * the assist flow is unreachable. Leaving "recording" ABORTS the engine
+ * (abort discards buffered results — stop() would flush them out as fresh
+ * finals into whatever mode comes next). Through "uploading"/"organizing",
+ * and for a short grace period after returning to "idle", every result is
+ * discarded, so trailing audio can never become a command. Sharon's voice
+ * is silenced whenever the state isn't idle (see speak()).
  * ------------------------------------------------------------------ */
-let recorderMode = false;
+const POST_RECORD_GRACE_MS = 1000; // trailing recording audio ≠ a command
+
+let recorderState = "idle"; // idle | recording | uploading | organizing
+let recorderGraceUntil = 0; // input stays sealed until this after idle
 let recorderCb = { onFinal: () => {}, onInterim: () => {} };
 let recorderPrevMuted = false;
 
-export function isRecorderMode() {
-  return recorderMode;
+// True only when the recorder flow is fully over AND the grace period for
+// trailing recording audio has passed — the one test for "voice input may
+// reach the assist flow again".
+export function recorderSealOpen() {
+  return recorderState === "idle" && Date.now() >= recorderGraceUntil;
 }
 
 // The recorder reuses the analyser's mic stream (one getUserMedia, one
@@ -588,22 +606,41 @@ export async function getMicStream() {
   return micStream;
 }
 
-export function enterRecorderMode(callbacks) {
-  recorderMode = true;
-  recorderCb = { onFinal: () => {}, onInterim: () => {}, ...callbacks };
-  recorderPrevMuted = micMuted;
-  stopSpeaking(); // she goes quiet the instant recording starts
-  // Transcription needs the engine live even if the user had muted; a
-  // granted recorder stream is proof any earlier block is stale.
-  micBlocked = false;
-  micMuted = false;
-  startRecognition();
-}
+// The orchestrator drives every transition through here, so this flag is
+// the single gate — there is no second path recognition results can take.
+export function setRecorderState(state, callbacks) {
+  const prev = recorderState;
+  if (state === prev) return;
+  recorderState = state;
 
-export function exitRecorderMode() {
-  recorderMode = false;
-  recorderCb = { onFinal: () => {}, onInterim: () => {} };
-  if (recorderPrevMuted) setMicMuted(true); // restore exactly what was there
+  if (state === "recording") {
+    recorderCb = { onFinal: () => {}, onInterim: () => {}, ...(callbacks || {}) };
+    recorderPrevMuted = micMuted;
+    stopSpeaking(); // she goes quiet the instant recording starts
+    // Transcription needs the engine live even if the user had muted; a
+    // granted recorder stream is proof any earlier block is stale.
+    micBlocked = false;
+    micMuted = false;
+    startRecognition();
+    return;
+  }
+
+  if (prev === "recording") {
+    // The recording just ended. Anything the engine still owes us belongs
+    // to the recording session — abort() discards it (stop() would flush
+    // buffered speech out as fresh finals AFTER this flag flipped, which is
+    // exactly the leak this gate exists to close).
+    recorderCb = { onFinal: () => {}, onInterim: () => {} };
+    abortRecognition();
+  }
+
+  if (state === "idle") {
+    // Recognition may already be live again; trailing audio from the
+    // recording session stays sealed for a moment longer.
+    recorderGraceUntil = Date.now() + POST_RECORD_GRACE_MS;
+    if (recorderPrevMuted) setMicMuted(true); // restore exactly what was there
+    recorderPrevMuted = false;
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -655,9 +692,12 @@ function handleHeard(finalText, interimText, conf) {
   consecutiveAsrErrors = 0;
   troubleSurfaced = false;
 
-  // Recorder mode: she isn't speaking (so echo and barge-in are moot) —
-  // every word flows into the recording's transcript, none into assist.
-  if (recorderMode) {
+  // The recorder seal. While recording, she isn't speaking (so echo and
+  // barge-in are moot) — every word flows into the recording's transcript,
+  // none into assist. From stop until the flow is idle again (uploading /
+  // organizing / the post-idle grace window), results are DISCARDED: the
+  // assist pipeline is unreachable for anything heard around a recording.
+  if (recorderState === "recording") {
     if (interimText) recorderCb.onInterim(interimText);
     if (finalText) {
       lastHeardAt = Date.now();
@@ -665,6 +705,7 @@ function handleHeard(finalText, interimText, conf) {
     }
     return;
   }
+  if (!recorderSealOpen()) return;
 
   // Playback mode (rule 7): nothing heard while a recording plays — or in
   // its short echo tail — ever reaches the assist flow. Confident speech
@@ -777,10 +818,11 @@ function ensureRecognition() {
     const orphan = lastInterimText.trim();
     lastInterimText = "";
     if (orphan && !micMuted && !micBlocked && !(echoFilterActive() && isSelfEcho(orphan))) {
-      if (recorderMode) {
+      if (recorderState === "recording") {
         lastHeardAt = Date.now();
         recorderCb.onFinal(orphan, null);
-      } else if (!playbackGuardActive()) {
+      } else if (recorderSealOpen() && !playbackGuardActive()) {
+        // Rule 6: an orphan around a recording belongs to the recording.
         // Rule 7: an orphan caught mid-playback may be the playback itself.
         lastHeardAt = Date.now();
         cb.onFinal(orphan, null);
@@ -818,6 +860,21 @@ export function stopRecognition() {
   lastInterimText = ""; // a deliberate stop drops in-flight words
   try {
     recognition.stop();
+  } catch (_) {
+    /* ignore */
+  }
+  recognizing = false;
+}
+
+// Unlike stop(), abort() DISCARDS everything the engine has buffered — no
+// flush of pending finals. Used when leaving recorder mode, where a flush
+// would deliver the recording's tail into whatever mode comes next. The
+// engine restarts itself through the normal onend path.
+function abortRecognition() {
+  if (!recognition) return;
+  lastInterimText = "";
+  try {
+    recognition.abort();
   } catch (_) {
     /* ignore */
   }

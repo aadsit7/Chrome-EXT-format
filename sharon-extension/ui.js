@@ -14,7 +14,9 @@ export const els = {
   memBadge: document.getElementById("memBadge"),
   settingsBtn: document.getElementById("settingsBtn"),
   tabPill: document.getElementById("tabPill"),
+  tabSeeing: document.getElementById("tabSeeing"),
   tabTitle: document.getElementById("tabTitle"),
+  useTabChip: document.getElementById("useTabChip"),
   liveCard: document.getElementById("liveCard"),
   lcLabel: document.getElementById("lcLabel"),
   lcMute: document.getElementById("lcMute"),
@@ -174,6 +176,27 @@ export function setVoiceIndicator(on) {
 
 export function setTabTitle(title) {
   if (els.tabTitle) els.tabTitle.textContent = title || "open a website";
+}
+
+// The pill claims "Seeing this tab" ONLY when page context genuinely rides
+// along (this turn, or with the next message under the opt-in rules);
+// otherwise it says so plainly. The eye icon closes to match.
+export function setTabAwareness(seeing) {
+  if (els.tabPill) els.tabPill.setAttribute("data-seeing", seeing ? "on" : "off");
+  if (els.tabSeeing) els.tabSeeing.textContent = seeing ? "Seeing this tab" : "Not reading this tab";
+}
+
+// The composer's "Use this tab" opt-in chip — pressed state only; the
+// orchestrator owns the actual flag (session-only, never persisted).
+export function setUseTabChip(on) {
+  if (!els.useTabChip) return;
+  els.useTabChip.setAttribute("aria-pressed", on ? "true" : "false");
+  els.useTabChip.setAttribute(
+    "title",
+    on
+      ? "Sharon is including this tab with what you send — tap to stop"
+      : "Include this tab's content with what you send"
+  );
 }
 
 // Blue badge on the memory (book) button = open-task count.

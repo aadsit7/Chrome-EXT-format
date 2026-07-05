@@ -42,10 +42,11 @@
         </div>
       </header>
 
-      <!-- Page-awareness pill -->
-      <div class="tabpill" id="tabPill">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
-        Seeing this tab —&nbsp;<b id="tabTitle">open a website</b>
+      <!-- Page-awareness pill — only ever claims "Seeing" when page context
+           will genuinely be sent (screen access is opt-in) -->
+      <div class="tabpill" id="tabPill" data-seeing="off">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/><path class="eye-slash" d="m4 4 16 16"/></svg>
+        <span id="tabSeeing">Not reading this tab</span>&nbsp;—&nbsp;<b id="tabTitle">open a website</b>
       </div>
 
       <!-- ================= Live-presence card ================= -->
@@ -152,6 +153,16 @@
         </a>
         <button class="pl-close" id="plClose" type="button" aria-label="Close the player">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+
+      <!-- Screen access opt-in: while this chip is on, the open tab's
+           content rides along with what you send. Off by default, resets
+           every session. -->
+      <div class="ctx-row" id="ctxRow">
+        <button class="ctx-chip" id="useTabChip" type="button" aria-pressed="false" title="Include this tab's content with what you send">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+          Use this tab
         </button>
       </div>
 

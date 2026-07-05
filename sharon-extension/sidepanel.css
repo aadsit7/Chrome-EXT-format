@@ -172,6 +172,16 @@ html[data-voice="off"] #voiceBtn .v-slash{display:block}
 .tabpill svg{flex:none;color:var(--tertiary)}
 .tabpill b{font-weight:600;color:var(--secondary);overflow:hidden;text-overflow:ellipsis;min-width:0}
 html[data-view="memory"] .tabpill{display:none}
+/* Truthful states: "Seeing" reads active (blue, open eye); "Not reading"
+   stays quiet (dimmed, slashed eye). */
+.tabpill .eye-slash{display:none}
+.tabpill[data-seeing="on"]{background:var(--blue-tint);color:var(--blue-deep)}
+.tabpill[data-seeing="on"] svg{color:var(--blue)}
+.tabpill[data-seeing="on"] b{color:var(--blue-deep)}
+.tabpill[data-seeing="off"]{color:var(--placeholder)}
+.tabpill[data-seeing="off"] svg{color:var(--placeholder)}
+.tabpill[data-seeing="off"] b{color:var(--tertiary)}
+.tabpill[data-seeing="off"] .eye-slash{display:block}
 
 /* ================= Live-presence card ================= */
 .live-card{
@@ -501,6 +511,21 @@ html[data-voice="off"] .spoken-line{display:none}
 .pl-drive svg,.pl-close svg{width:15px;height:15px}
 
 /* ================= Composer ================= */
+/* "Use this tab" chip — the screen-access opt-in, sits just above the composer */
+.ctx-row{flex:none;display:flex;padding:8px 14px 0}
+html[data-view="memory"] .ctx-row{display:none}
+.ctx-chip{
+  display:inline-flex;align-items:center;gap:6px;
+  border:1px solid var(--hairline-strong);background:#fff;color:var(--tertiary);
+  font-family:inherit;font-size:11.5px;font-weight:600;
+  padding:4px 11px;border-radius:var(--r-pill);cursor:pointer;
+  transition:background .15s var(--ease),color .15s var(--ease),border-color .15s var(--ease);
+}
+.ctx-chip svg{flex:none}
+.ctx-chip:hover{background:var(--hover);color:var(--ink)}
+.ctx-chip:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
+.ctx-chip[aria-pressed="true"]{background:var(--blue-tint);border-color:var(--blue);color:var(--blue-deep)}
+
 .composer{
   flex:none;
   display:flex;align-items:flex-end;gap:8px;
