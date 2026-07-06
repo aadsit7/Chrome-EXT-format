@@ -5,23 +5,29 @@
 //      (sidepanel.js) and only send after a genuine, adaptive silence — a
 //      breath mid-thought never ends your turn.
 //   2. You can cut HER off (barge-in): the mic stays live while she speaks,
-//      and confident user speech cancels the rest of her reply instantly.
-//      "Sharon…" or "stop" always cuts through, however short.
-//   3. She never reacts to her own voice. Six layers of echo protection:
+//      but ONLY the instant-interrupt keywords ("Sharon…", "stop",
+//      "stop stop") cut through — because while she's talking the mic is
+//      almost certainly hearing her own voice, not yours (see rule 3), and
+//      those keywords are the one thing an echo tail can't fake.
+//   3. She never reacts to her own voice. The hard guarantee: while she is
+//      speaking, and through a post-speech cooldown, NO recognized speech
+//      becomes a command or an interim — the assist pipeline is simply
+//      unreachable. Text-matching her words out of the transcript is too
+//      fragile to rely on (the mic hears a garbled version through the
+//      speakers that rarely matches word-for-word), so instead of trying to
+//      tell echo from user we refuse all input in that window and let only
+//      the rule-2 keywords act. The supporting layers:
 //      (a) the mic stream requests echoCancellation / noiseSuppression /
 //          autoGainControl,
-//      (b) a rolling ~10s buffer of her own spoken words — recognition
-//          results that substantially overlap it are ignored,
-//      (c) a Web Audio energy gate — word-based interrupts need sustained
-//          input clearly above the calibrated ambient baseline (speaker echo
-//          after echo cancellation is far weaker than a person at the mic),
-//      (d) at least MIN_INTERRUPT_WORDS novel (non-echo) words before she
-//          stops talking, so a cough or fragment never silences her,
-//      (e) EXCEPT the instant-interrupt words ("Sharon…", "stop",
-//          "stop stop"), which bypass (c) and (d),
-//      (f) a short post-speech cooldown keeps the echo filter active after
-//          her audio ends (echo tails outlive the sound) without ever
-//          suppressing non-matching user speech.
+//      (b) a rolling ~10s buffer of her own spoken words — a candidate
+//          keyword that substantially overlaps it is treated as her own echo
+//          and does NOT self-interrupt her,
+//      (c) a Web Audio energy gate + (d) a novel-word threshold: these still
+//          power the richer barge-in used for PLAYBACK (rule 7), where the
+//          audio is the user's own recorded voice rather than Sharon's,
+//      (e) the instant-interrupt words bypass (c)/(d),
+//      (f) POST_SPEECH_COOLDOWN_MS keeps the echo window open after her audio
+//          ends, since recognition of her voice lags the sound itself.
 //   4. She never STARTS speaking while you're mid-sentence — a reply that
 //      arrives while you're still talking waits for you to finish.
 //   5. If the recognition engine stops itself (it does, periodically) it is
@@ -61,7 +67,7 @@ const WAIT_TO_SPEAK_MAX_MS = 6000;
 const SELF_SPEECH_WINDOW_MS = 10000; // (b) rolling buffer of her own words
 const SELF_ECHO_OVERLAP = 0.6; // (b) ≥60% token overlap = her own echo
 const MIN_INTERRUPT_WORDS = 3; // (d) novel words required to cut her off
-const POST_SPEECH_COOLDOWN_MS = 400; // (f) echo filter outlives her audio
+const POST_SPEECH_COOLDOWN_MS = 1200; // (f) echo filter outlives her audio (recognition lags her voice)
 const PLAYBACK_COOLDOWN_MS = 800; // rule 7: playback echo tails outlive the sound too
 const ENERGY_SUSTAIN_MS = 300; // (c) energy must run hot at least this long
 const ENERGY_RECENT_MS = 1200; // (c) a sustained burst opens the gate this long
@@ -719,25 +725,44 @@ function handleHeard(finalText, interimText, conf) {
     return;
   }
 
-  const filtering = echoFilterActive();
-  const finalOk = !!finalText && !(filtering && isSelfEcho(finalText));
-  const interimOk = !!interimText && !(filtering && isSelfEcho(interimText));
-
-  // Barge-in check first, so an interrupting final lands after her voice has
-  // already been cancelled and the UI has flipped to "hearing".
-  if (speaking) {
-    const candidate = ((finalOk ? finalText : "") + " " + (interimOk ? interimText : "")).trim();
-    if (candidate && shouldBargeIn(candidate)) {
-      stopSpeaking();
-      cb.onStateChange();
+  // While Sharon is speaking — or in the post-speech cooldown, where the
+  // recognizer is still catching up on her voice — the mic is almost
+  // certainly hearing HER, not you. Text-matching her words out is fragile:
+  // the mic hears a garbled version through the speakers that rarely matches
+  // word-for-word, so echo leaks through as a "command" and she answers her
+  // own voice on a loop. So in this window we refuse to turn ANY recognized
+  // speech into a command or interim. The only thing heard speech may do is
+  // barge in through the instant-interrupt keywords ("stop", "Sharon…") —
+  // short, distinctive, and not something an echo tail fakes convincingly.
+  // (Rich barge-in on novel words + the energy gate stays alive for playback,
+  // rule 7 — see playbackGuardActive/shouldBargeIn.)
+  if (echoFilterActive()) {
+    if (speaking) {
+      const candidate = ((finalText || "") + " " + (interimText || "")).trim();
+      const norm = normalize(candidate);
+      // Barge in only on a real keyword that isn't itself her own echo (if she
+      // just said "stop" in a reply, the echo of it must not self-interrupt).
+      if (norm && isInstantInterrupt(norm) && !isSelfEcho(candidate)) {
+        stopSpeaking();
+        cb.onStateChange();
+        // A bare "stop" is also a command: forward it so the orchestrator can
+        // cancel a pending action plan / agent step, not just silence her.
+        // "Sharon…" phrases only stop her — the rest of the phrase this close
+        // to her voice can't be trusted as a command, so the user re-asks.
+        if (finalText && (norm === "stop" || norm === "stop stop")) {
+          lastHeardAt = Date.now();
+          cb.onFinal(finalText, conf);
+        }
+      }
     }
+    return; // nothing heard while she speaks (or just after) becomes input
   }
 
-  if (interimOk) {
+  if (interimText) {
     lastHeardAt = Date.now();
     cb.onInterim(interimText);
   }
-  if (finalOk) {
+  if (finalText) {
     lastHeardAt = Date.now();
     cb.onFinal(finalText, conf);
   }
@@ -817,13 +842,15 @@ function ensureRecognition() {
     // Stitch: words caught mid-flight when the engine stopped must not drop.
     const orphan = lastInterimText.trim();
     lastInterimText = "";
-    if (orphan && !micMuted && !micBlocked && !(echoFilterActive() && isSelfEcho(orphan))) {
+    if (orphan && !micMuted && !micBlocked) {
       if (recorderState === "recording") {
         lastHeardAt = Date.now();
         recorderCb.onFinal(orphan, null);
-      } else if (recorderSealOpen() && !playbackGuardActive()) {
+      } else if (recorderSealOpen() && !playbackGuardActive() && !echoFilterActive()) {
         // Rule 6: an orphan around a recording belongs to the recording.
         // Rule 7: an orphan caught mid-playback may be the playback itself.
+        // Echo window: an orphan caught while she speaks (or just after) is
+        // almost certainly her own voice — dropped, never sent as a command.
         lastHeardAt = Date.now();
         cb.onFinal(orphan, null);
       }
