@@ -1124,8 +1124,9 @@ let suppressClick = false; // swallow the click that trails a long-press
 let delConfirmTimer = null;
 
 function selectableHit_(h) {
-  // Recording entries ("rec:" ids) are read-only by design — never selectable.
-  return !!(h && h.entry_id && h.entry_type !== "recording");
+  // Any saved row with an id can be selected for bulk delete — recordings
+  // included (they support delete/undelete just like notes and tasks).
+  return !!(h && h.entry_id);
 }
 
 function selectedHits() {
@@ -1336,11 +1337,7 @@ function renderMemList() {
     t.textContent = h.title || h.content || "(untitled)";
     txt.appendChild(t);
     const when = metaTime(h.created_at);
-    let metaText = when ? "Saved · " + when : "";
-    if (memSelect && !canSelect) {
-      // The subtle hint on read-only recordings while selecting.
-      metaText = metaText ? metaText + " · read-only" : "Recordings are read-only";
-    }
+    const metaText = when ? "Saved · " + when : "";
     if (metaText) {
       const m = document.createElement("div");
       m.className = "mi-m";
@@ -1404,6 +1401,15 @@ function renderMemList() {
         listen.rel = "noopener noreferrer";
         listen.textContent = "Listen";
         actions.appendChild(listen);
+      }
+      // Recordings are deletable now — same Delete affordance as notes/tasks.
+      if (h.entry_id) {
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "pill-btn danger";
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", () => onDelete && onDelete(h));
+        actions.appendChild(delBtn);
       }
     } else {
       if (h.entry_type === "task" && h.entry_id) {
