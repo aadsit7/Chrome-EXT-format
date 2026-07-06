@@ -169,6 +169,21 @@ export function saveRecording({
 }
 
 /**
+ * List every saved voice recording, newest first — the browse-all list
+ * behind the memory view's "Recordings" filter and the "show my recordings"
+ * voice request. Each entry comes back in the same shape a recording search
+ * hit uses (entry_id "rec:<id>", entry_type "recording", the Drive audio as
+ * page_url), so the panel plays any of them in place. Returns an array.
+ */
+export function listRecordings({ limit = 50 } = {}) {
+  return call("list_recordings", {
+    limit,
+    user_id: USER_ID,
+    assistant_id: ASSISTANT_ID,
+  });
+}
+
+/**
  * Fetch a saved recording's audio so it can play right inside the panel.
  * The Drive file's sharing settings are never touched — the bytes flow
  * through the backend, so recordings stay private.

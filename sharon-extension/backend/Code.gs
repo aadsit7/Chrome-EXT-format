@@ -54,6 +54,9 @@
  *                       flow through here, so recordings stay private.
  *                       Files past AUDIO_MAX_BYTES return
  *                       { too_large: true, drive_file_url } instead.
+ *   list_recordings   — every saved recording, newest first (date, length,
+ *                       transcript preview), for the browse-all list and the
+ *                       "show me my recordings" voice request.
  *   summarize_memory  — fetch matching memory rows and have the model
  *                       compose a short spoken summary.
  *   get_recent_turns  — recent conversation_turns for a session (lets the
@@ -70,6 +73,13 @@ var MAX_TOOL_ROUNDS = 4;
 var REPLY_MAX_TOKENS = 1500; // a little extra room for web-search answers with sources
 var HISTORY_FALLBACK_TURNS = 12;
 var WEB_SEARCH_MAX_USES = 3; // max live web searches per question (cost guard, ~1¢ each)
+
+// The user's home location. Every date/time Sharon logs, states, or reasons
+// about is anchored to this place and its timezone — never UTC. The system
+// prompt tells the model, buildUserBlock_ stamps each turn with the current
+// local time, and recording dates/filenames are formatted in this zone.
+var USER_LOCATION = "Lake Tapps, Washington, United States";
+var USER_TIMEZONE = "America/Los_Angeles"; // Pacific Time (Lake Tapps, WA)
 
 var SHEETS = {
   turns: "conversation_turns",
@@ -126,6 +136,7 @@ function doPost(e) {
         case "batch_update_memory": out = { ok: true, result: batchUpdateMemory_(payload) }; break;
         case "save_recording":    out = { ok: true, result: actionSaveRecording_(payload) }; break;
         case "get_recording_audio": out = { ok: true, result: actionGetRecordingAudio_(payload) }; break;
+        case "list_recordings":   out = { ok: true, result: listRecordings_(payload) }; break;
         case "summarize_memory":  out = { ok: true, result: actionSummarize_(payload) }; break;
         case "get_recent_turns":  out = { ok: true, result: recentTurns_(payload) }; break;
         default: out = { ok: false, error: "unknown action: " + body.action };
@@ -148,6 +159,13 @@ var SYSTEM_CORE =
   "spoken replies short, natural, and conversational — a few sentences unless " +
   "they asked you to read something long. Never use markdown, headings, " +
   "bullets, or emoji: plain spoken prose only.\n\n" +
+  "Where the user is: the user is located in " + USER_LOCATION + ", which is " +
+  "in the Pacific Time zone. ALWAYS interpret and state dates, times, and " +
+  "days of the week in the user's local Pacific time — never UTC or any other " +
+  "zone. Whenever they ask what day or time it is, what is going on right now, " +
+  "or when something was recorded or logged, answer from the CURRENT LOCAL " +
+  "TIME line given at the top of their message and phrase it naturally (e.g. " +
+  "'today is Tuesday' or 'it's just after 3 in the afternoon').\n\n" +
   "What you can see: you canNOT see the user's screen by default. A user " +
   "message includes a PAGE CONTEXT block with the text visible on their " +
   "active browser tab only when they explicitly asked about the page or " +
@@ -183,6 +201,12 @@ var SYSTEM_CORE =
   "- summarize_memory: when they want an overview — 'summarize my notes', " +
   "'what are my open tasks', 'recap what we discussed' — call this and then " +
   "relay the summary conversationally.\n" +
+  "- list_recordings: when they ask to see, browse, or play back ALL of their " +
+  "voice recordings (not a keyword search) — 'show me my recordings', 'what " +
+  "recordings do I have', 'let me hear my recordings' — call this. The panel " +
+  "shows a clickable, dated list they can play right there, so keep your " +
+  "spoken reply short: say how many there are and that they're on screen " +
+  "ready to play.\n" +
   "Use tools decisively whenever the request maps to one; don't ask " +
   "permission for a simple save or search. After a tool result, always give " +
   "a short spoken confirmation or answer.\n\n" +
@@ -337,6 +361,18 @@ function memoryTools_() {
           days: { type: "integer", description: "Only entries from the last N days" },
         },
         required: ["scope"],
+      },
+    },
+    {
+      name: "list_recordings",
+      description:
+        "List the user's saved voice recordings, newest first, when they ask to see, browse, or play back ALL of their recordings (not a keyword search — use search_memory for that). Returns each recording's date, length, and a short transcript preview; the panel shows a clickable list the user can play.",
+      input_schema: {
+        type: "object",
+        properties: {
+          limit: { type: "integer", description: "Max recordings to list (default 50)" },
+        },
+        required: [],
       },
     },
   ];
@@ -556,6 +592,10 @@ function actionAssist_(p) {
 
 function buildUserBlock_(userText, page, p, agentMode) {
   var parts = [];
+  // The one dynamic time anchor — every turn carries the user's current local
+  // (Pacific) date and time so answers about "today", "right now", or when
+  // something happened are always in Lake Tapps time, never the server's UTC.
+  parts.push(nowLocalContext_());
   var excerpt = String(page.excerpt || "").trim();
   if (excerpt) {
     parts.push(
@@ -786,6 +826,23 @@ function runMemoryTool_(name, input, ctx) {
       event: { kind: "updated", entry_id: input.entry_id, patch: input },
     };
   }
+  if (name === "list_recordings") {
+    var recs = listRecordings_({ limit: input.limit || 50 });
+    // The model gets a compact view (date + length + preview); the panel gets
+    // the full objects so it can render the clickable, playable list.
+    var forModel = recs.map(function (r) {
+      return {
+        title: r.title,
+        minutes: Math.max(1, Math.round((Number(r.duration_seconds) || 0) / 60)),
+        recorded_at: r.created_at,
+        preview: r.content,
+      };
+    });
+    return {
+      forModel: { count: recs.length, recordings: forModel },
+      event: { kind: "recordings_list", count: recs.length, recordings: recs },
+    };
+  }
   if (name === "summarize_memory") {
     var rows = memoryForScope_({
       scope: input.scope || "all",
@@ -838,6 +895,19 @@ function uuid_() {
 
 function nowIso_() {
   return new Date().toISOString();
+}
+
+// The "CURRENT LOCAL TIME" line prepended to every user turn — the user's own
+// Pacific-time clock (Lake Tapps, WA), so the model never has to guess the
+// date, day, or hour and never falls back to the server's UTC.
+function nowLocalContext_() {
+  var stamp;
+  try {
+    stamp = Utilities.formatDate(new Date(), USER_TIMEZONE, "EEEE, MMMM d, yyyy 'at' h:mm a");
+  } catch (_) {
+    stamp = new Date().toISOString();
+  }
+  return "CURRENT LOCAL TIME (" + USER_LOCATION + ", Pacific Time): " + stamp;
 }
 
 function domainOf_(url) {
@@ -1085,7 +1155,7 @@ function searchRecordings_(terms) {
     try {
       title =
         "Recording — " +
-        Utilities.formatDate(new Date(createdAt), Session.getScriptTimeZone(), "MMM d") +
+        Utilities.formatDate(new Date(createdAt), USER_TIMEZONE, "MMM d") +
         " (" + min + " min)";
     } catch (_) {
       // date unparsable: the duration-only title still reads fine
@@ -1117,6 +1187,61 @@ function searchRecordings_(terms) {
     out.push({ score: score, obj: obj });
   }
   return out;
+}
+
+// Every saved recording, newest first — the browse-all list (no keyword
+// scoring). Same object shape the panel already renders for recording hits,
+// so the memory view and the recordings card can play any of them in place.
+function listRecordings_(p) {
+  var limit = Math.max(1, Math.min(200, Number(p && p.limit) || 50));
+  var sh = ss_().getSheetByName(SHEETS.recordings);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var headers = headers_(sh);
+  var idx = indexMap_(headers);
+  var rows = sh.getRange(2, 1, sh.getLastRow() - 1, headers.length).getValues();
+  var out = [];
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var recId = String(r[idx.recording_id] || "");
+    if (!recId) continue;
+    var createdAt = isoOf_(r[idx.created_at]);
+    var durationSec = Number(r[idx.duration_seconds]) || 0;
+    var min = Math.max(1, Math.round(durationSec / 60));
+    var title = "Recording (" + min + " min)";
+    try {
+      title =
+        "Recording — " +
+        Utilities.formatDate(new Date(createdAt), USER_TIMEZONE, "EEE, MMM d 'at' h:mm a") +
+        " (" + min + " min)";
+    } catch (_) {
+      // date unparsable: the duration-only title still reads fine
+    }
+    out.push({
+      entry_id: "rec:" + recId,
+      recording_id: recId,
+      entry_type: "recording",
+      title: title,
+      content: recordingPreview_(String(r[idx.transcript] || "")),
+      tags: "",
+      status: "",
+      importance: "",
+      created_at: createdAt,
+      page_url: String(r[idx.drive_file_url] || ""),
+      duration_seconds: durationSec,
+      notes_saved: Number(r[idx.notes_saved]) || 0,
+    });
+  }
+  out.sort(function (a, b) {
+    return String(b.created_at).localeCompare(String(a.created_at)); // newest first
+  });
+  return out.slice(0, limit);
+}
+
+// A short, single-line transcript preview for the browse-all list.
+function recordingPreview_(transcript) {
+  var s = String(transcript || "").replace(/\s+/g, " ").trim();
+  if (s.length <= 160) return s;
+  return s.slice(0, 157) + "…";
 }
 
 // Pick the segment whose text best matches the query — the exact scoring
@@ -1311,7 +1436,7 @@ function actionSaveRecording_(p) {
   // 1) The audio lands in Drive first — everything else can degrade.
   var folder = recordingsFolder_();
   var minutes = Math.max(1, Math.round(duration / 60));
-  var stamp = Utilities.formatDate(when, Session.getScriptTimeZone(), "yyyy-MM-dd HH.mm");
+  var stamp = Utilities.formatDate(when, USER_TIMEZONE, "yyyy-MM-dd HH.mm");
   var name = "Sharon " + stamp + " (" + minutes + " min).webm";
   var file = folder.createFile(Utilities.newBlob(Utilities.base64Decode(b64), mime, name));
   var fileUrl = file.getUrl();
