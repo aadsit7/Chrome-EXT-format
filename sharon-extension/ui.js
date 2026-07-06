@@ -103,6 +103,11 @@ export const els = {
   changeShortcut: document.getElementById("changeShortcut"),
 };
 
+// The user lives in Lake Tapps, WA — every date and time on screen is shown
+// in their Pacific clock, so displayed timestamps stay honest even if the
+// device's own timezone differs.
+const DISPLAY_TZ = "America/Los_Angeles";
+
 export function initUI() {
   wireMemoryFilters();
   wireMemorySelection();
@@ -401,7 +406,7 @@ export function removeCard(el) {
 function fmtTime(d) {
   try {
     return (d || new Date())
-      .toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      .toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: DISPLAY_TZ })
       .toLowerCase()
       .replace(/\s+/g, " ");
   } catch (_) {
@@ -790,6 +795,61 @@ export function addRecordingCard({ driveUrl, recordingId, durationLabel, notes, 
   return appendToThread(card);
 }
 
+// YOUR RECORDINGS — the browse-all list surfaced by voice ("show me my
+// recordings"). Each row plays that recording right in the panel; when there
+// are more than fit, the footer opens the full list in the memory view.
+export function addRecordingsListCard({ recordings, onListen, onOpenAll } = {}) {
+  const list = Array.isArray(recordings) ? recordings : [];
+  const card = cardShell(
+    I_MIC,
+    "Your recordings",
+    list.length + (list.length === 1 ? " recording" : " recordings")
+  );
+  if (!list.length) {
+    const p = document.createElement("p");
+    p.className = "ac-body";
+    p.textContent =
+      "You don't have any voice recordings yet — tap the round record button to make one.";
+    card.appendChild(p);
+    return appendToThread(card);
+  }
+  const SHOWN = 8;
+  for (const h of list.slice(0, SHOWN)) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "ac-note";
+    const t = document.createElement("div");
+    t.className = "n-t";
+    t.textContent = h.title || "Recording";
+    row.appendChild(t);
+    const when = metaTime(h.created_at);
+    const notes = Number(h.notes_saved) || 0;
+    const meta =
+      (when ? "Saved · " + when : "") +
+      (notes ? (when ? " · " : "") + notes + (notes === 1 ? " note" : " notes") : "");
+    if (meta) {
+      const m = document.createElement("div");
+      m.className = "n-m";
+      m.textContent = meta;
+      row.appendChild(m);
+    }
+    row.addEventListener("click", () => onListen && onListen(h));
+    card.appendChild(row);
+  }
+  if (list.length > SHOWN && onOpenAll) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "ac-foot ac-listen";
+    more.appendChild(svgOf(I_BOOK));
+    more.appendChild(document.createTextNode("See all " + list.length + " recordings"));
+    more.addEventListener("click", onOpenAll);
+    card.appendChild(more);
+  } else {
+    cardFoot(card, "Tap any recording to play it here", { synced: true });
+  }
+  return appendToThread(card);
+}
+
 // Extract "Label: value" facts out of a reply for the LOOKED UP card.
 export function extractFacts(text) {
   const lines = (text || "").split("\n");
@@ -923,6 +983,12 @@ export function setMemorySubtitle(n, atLimit) {
     " · your “Speaking Assistant” Sheet";
 }
 
+export function setRecordingsSubtitle(n) {
+  if (!els.memSubtitle) return;
+  els.memSubtitle.textContent =
+    (n === 1 ? "1 voice recording" : n + " voice recordings") + " · tap any to play it here";
+}
+
 export function memorySyncedNow() {
   if (els.memSynced) els.memSynced.textContent = "Synced with your Google Sheet · just now";
 }
@@ -953,7 +1019,7 @@ export function relativeTime(iso) {
   if (day === 1) return "yesterday";
   if (day < 7) return day + "d ago";
   try {
-    return then.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return then.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: DISPLAY_TZ });
   } catch (_) {
     return day + "d ago";
   }
@@ -971,8 +1037,8 @@ export function metaTime(iso) {
   try {
     if (days === 0) return "today " + t;
     if (days === 1) return "yesterday " + t;
-    if (days < 7) return d.toLocaleDateString(undefined, { weekday: "short" }) + " " + t;
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    if (days < 7) return d.toLocaleDateString(undefined, { weekday: "short", timeZone: DISPLAY_TZ }) + " " + t;
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: DISPLAY_TZ });
   } catch (_) {
     return t;
   }
@@ -988,7 +1054,7 @@ function groupLabel(iso) {
   if (days === 1) return "Yesterday";
   if (days < 7) return "Earlier this week";
   try {
-    return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    return d.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: DISPLAY_TZ });
   } catch (_) {
     return "Earlier";
   }
@@ -996,23 +1062,52 @@ function groupLabel(iso) {
 
 let memCache = { hits: [], cb: {} };
 let memFilter = "all";
+// The orchestrator registers this so it can fetch the right data when a
+// filter needs its own source (Recordings live in a separate sheet, not in
+// the loaded memory list). Returning true means "I've taken over loading and
+// will re-render" — the pure client-side filters (all/notes/tasks/done) just
+// re-slice the already-loaded list, so the handler returns falsy for those.
+let onMemFilterChange = null;
+export function setMemFilterHandler(fn) {
+  onMemFilterChange = typeof fn === "function" ? fn : null;
+}
+
+function applyFilterPills(name) {
+  if (!els.memFilters) return;
+  els.memFilters.querySelectorAll(".m-pill").forEach((b) => {
+    const on = (b.getAttribute("data-filter") || "all") === name;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
+// Programmatically select a filter (used when a voice request or the search
+// box needs to steer the memory view), mirroring a pill tap.
+export function selectFilter(name) {
+  memFilter = name || "all";
+  applyFilterPills(memFilter);
+}
 
 function wireMemoryFilters() {
   if (!els.memFilters) return;
   els.memFilters.querySelectorAll(".m-pill").forEach((btn) => {
     btn.addEventListener("click", () => {
       memFilter = btn.getAttribute("data-filter") || "all";
-      els.memFilters.querySelectorAll(".m-pill").forEach((b) => {
-        const on = b === btn;
-        b.classList.toggle("on", on);
-        b.setAttribute("aria-pressed", on ? "true" : "false");
-      });
+      applyFilterPills(memFilter);
+      // Let the orchestrator load a filter-specific source if it needs to;
+      // otherwise this is a client-side re-slice of what's already loaded.
+      if (onMemFilterChange && onMemFilterChange(memFilter)) return;
       renderMemList();
     });
   });
 }
 
 function passesFilter(h) {
+  const isRecording = h.entry_type === "recording";
+  // Recordings only ever appear under their own filter — never mixed into
+  // All / Notes / Tasks / Done.
+  if (memFilter === "recordings") return isRecording;
+  if (isRecording) return false;
   const isTask = h.entry_type === "task";
   const isDone = String(h.status) === "done";
   if (memFilter === "notes") return !isTask;
@@ -1165,6 +1260,8 @@ function emptyMessage() {
   if (memFilter === "tasks") return "No tasks here — say “remind me to…” and I'll save one.";
   if (memFilter === "done") return "Nothing marked done yet — tap a task's box when it's finished.";
   if (memFilter === "notes") return "No notes here — say “make a note…” and I'll save one.";
+  if (memFilter === "recordings")
+    return "No voice recordings yet — tap the round record button to make one.";
   return "Nothing saved yet — just talk, and what matters lands in your Sheet.";
 }
 

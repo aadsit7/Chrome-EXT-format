@@ -876,6 +876,17 @@ function renderEvents(userText, events) {
           onListen: (h) => playRecordingFromHit(h),
         });
       }
+    } else if (d.kind === "recordings_list") {
+      ui.addRecordingsListCard({
+        recordings: Array.isArray(d.recordings) ? d.recordings : [],
+        onListen: (h) => playRecordingFromHit(h),
+        onOpenAll: () => {
+          memShowingRecordings = true;
+          ui.selectFilter("recordings");
+          ui.openMemory();
+          loadRecordings();
+        },
+      });
     } else if (d.kind === "updated") {
       const p = d.patch || {};
       ui.addQuietCapture({
@@ -1189,6 +1200,52 @@ async function loadMemory(query) {
     if (seq !== memReqSeq) return;
     ui.memError("I couldn't load your Sheet — check your connection, then try the search again.");
   }
+}
+
+// True while the memory view is showing the Recordings filter — the one
+// filter whose data comes from the recordings sheet, not the memory list, so
+// leaving it (or searching) needs a reload of the normal memory entries.
+let memShowingRecordings = false;
+
+// Load every saved recording into the memory view (newest first). Shares
+// memReqSeq with loadMemory so switching filters quickly never renders a
+// stale response over a newer one.
+async function loadRecordings() {
+  const seq = ++memReqSeq;
+  ui.memLoading();
+  try {
+    const recs = await api.listRecordings({ limit: 100 });
+    if (seq !== memReqSeq) return;
+    markSetup("memory");
+    const list = Array.isArray(recs) ? recs : [];
+    memHits = list;
+    memHadQuery = false;
+    memAtLimit = false;
+    ui.setRecordingsSubtitle(list.length);
+    ui.memorySyncedNow();
+    ui.renderMemory(memHits, memCallbacks());
+  } catch (e) {
+    if (seq !== memReqSeq) return;
+    ui.memError("I couldn't load your recordings — check your connection, then try again.");
+  }
+}
+
+// The memory view's filter pills. Recordings needs its own source; every
+// other filter is a client-side re-slice of the already-loaded list. Return
+// true when we take over loading so ui.js doesn't also re-render.
+function onMemFilterChange(filter) {
+  if (filter === "recordings") {
+    memShowingRecordings = true;
+    loadRecordings();
+    return true;
+  }
+  if (memShowingRecordings) {
+    // Coming back from Recordings — reload the normal memory entries.
+    memShowingRecordings = false;
+    loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
+    return true;
+  }
+  return false; // pure client-side filter — let ui.js re-slice
 }
 
 // Keep the "N things saved" subtitle and the open-task badge honest after an
@@ -2248,6 +2305,9 @@ function wireControls() {
     });
   if (e.memoryBtn)
     e.memoryBtn.addEventListener("click", () => {
+      // Always open on the full memory list, never a stale Recordings filter.
+      memShowingRecordings = false;
+      ui.selectFilter("all");
       ui.openMemory();
       loadMemory(e.memSearchInput ? e.memSearchInput.value.trim() : "");
     });
@@ -2276,6 +2336,12 @@ function wireControls() {
   if (e.memSearchInput)
     e.memSearchInput.addEventListener("input", () => {
       const q = e.memSearchInput.value.trim();
+      // Searching always works against the full memory list (a keyword search
+      // also surfaces recording transcripts), so drop the Recordings filter.
+      if (memShowingRecordings) {
+        memShowingRecordings = false;
+        ui.selectFilter("all");
+      }
       if (memSearchTimer) clearTimeout(memSearchTimer);
       memSearchTimer = setTimeout(() => loadMemory(q), 320);
     });
@@ -2396,6 +2462,7 @@ function wireControls() {
   await loadSetup();
 
   ui.initUI();
+  ui.setMemFilterHandler(onMemFilterChange);
 
   // The mode manager — Sharon is in exactly one mode; every feature routes
   // its entries and exits through here. Opens in LISTENING (the default),
