@@ -1163,7 +1163,15 @@ function memCallbacks() {
     },
     onDelete: async (h) => {
       try {
-        await api.updateMemory({ entryId: h.entry_id, deleted: true });
+        const res = await api.updateMemory({ entryId: h.entry_id, deleted: true });
+        // A current backend deletes and returns updated:true. An older
+        // deployment that predates recording deletes accepts the call but
+        // returns updated:false / readonly — surface that honestly instead
+        // of silently leaving the recording in place.
+        if (res && res.updated === false) {
+          warnRecordingDeleteUnsupported();
+          return;
+        }
         reloadMemoryView(); // recordings and notes each reload their own list
         refreshMemoryCount();
       } catch (e) {
@@ -1317,6 +1325,21 @@ async function batchStatusSelected(hits, status) {
   }
 }
 
+// The one message for "this backend can't delete recordings yet": a visible
+// toast over the memory view plus the full redeploy steps in the thread.
+// Deleting is a server operation, so the only fix is updating the Apps
+// Script deployment to the latest backend/Code.gs.
+function warnRecordingDeleteUnsupported() {
+  ui.showUndoToast({
+    label: "Deleting recordings needs the latest backend — update your Apps Script.",
+    duration: 7000,
+  });
+  reportProblem(
+    "I can't delete recordings yet — your Google Apps Script backend is an older version that doesn't support it.",
+    REDEPLOY_STEPS
+  );
+}
+
 // Bulk delete with one Undo for the whole batch. The Sheet's delete is a
 // soft flag (deleted = TRUE) for notes/tasks and recordings alike, so Undo
 // simply re-sends the same batch with deleted:false and every row comes back
@@ -1346,7 +1369,17 @@ async function batchDeleteSelected(hits) {
       updateMemMeta();
     }
     if (!okRows.length) {
-      ui.showUndoToast({ label: "Couldn't delete — check your connection." });
+      // Everything came back skipped. If the backend rejected the recordings
+      // as read-only / unsupported, it's an older deployment — say so and how
+      // to fix it, rather than blaming the connection.
+      const reason = (results.find((r) => r && r.error) || {}).error || "";
+      if (/read-only|unknown action|support delete only|older version/i.test(reason)) {
+        warnRecordingDeleteUnsupported();
+      } else {
+        ui.showUndoToast({
+          label: reason ? "Couldn't delete — " + reason : "Couldn't delete — check your connection.",
+        });
+      }
       return;
     }
     ui.memorySyncedNow();
