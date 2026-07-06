@@ -92,7 +92,7 @@ var SHEETS = {
 var RECORDINGS_FOLDER = "Sharon Recordings"; // Drive folder (created if missing)
 var RECORDING_HEADERS = [
   "recording_id", "created_at", "duration_seconds", "drive_file_url",
-  "transcript", "session_id", "notes_saved", "segments",
+  "transcript", "session_id", "notes_saved", "segments", "deleted",
 ];
 var TRANSCRIPT_CELL_MAX = 45000; // Sheets caps a cell at 50,000 chars — stay clear
 var DISTILL_MAX_TOKENS = 4000; // room for a long recording's worth of notes
@@ -1141,6 +1141,7 @@ function searchRecordings_(terms) {
   var out = [];
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
+    if (idx.deleted != null && String(r[idx.deleted]).toLowerCase() === "true") continue;
     var transcript = String(r[idx.transcript] || "");
     var hay = transcript.toLowerCase();
     var score = 0;
@@ -1204,6 +1205,7 @@ function listRecordings_(p) {
     var r = rows[i];
     var recId = String(r[idx.recording_id] || "");
     if (!recId) continue;
+    if (idx.deleted != null && String(r[idx.deleted]).toLowerCase() === "true") continue;
     var createdAt = isoOf_(r[idx.created_at]);
     var durationSec = Number(r[idx.duration_seconds]) || 0;
     var min = Math.max(1, Math.round(durationSec / 60));
@@ -1235,6 +1237,36 @@ function listRecordings_(p) {
     return String(b.created_at).localeCompare(String(a.created_at)); // newest first
   });
   return out.slice(0, limit);
+}
+
+// Soft-delete (or restore, for undo) one recording. The row's "deleted" flag
+// is the source of truth — set it, then best-effort move the audio file to
+// Drive's trash so a deleted recording actually leaves the "Sharon
+// Recordings" folder; undo un-trashes it. A Drive hiccup never fails the
+// delete: the flag alone already hides it from every list and search.
+// Returns true if a matching row was found.
+function setRecordingDeleted_(recId, deleted) {
+  recId = String(recId || "").replace(/^rec:/, "").trim();
+  if (!recId) return false;
+  var sh = recordingsSheet_(); // ensures the "deleted" column exists
+  if (sh.getLastRow() < 2) return false;
+  var headers = headers_(sh);
+  var idx = indexMap_(headers);
+  var rows = sh.getRange(2, 1, sh.getLastRow() - 1, headers.length).getValues();
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i][idx.recording_id]) !== recId) continue;
+    if (idx.deleted != null) {
+      sh.getRange(i + 2, idx.deleted + 1).setValue(deleted ? "TRUE" : "");
+    }
+    try {
+      var fileId = driveFileIdFromUrl_(String(rows[i][idx.drive_file_url] || ""));
+      if (fileId) DriveApp.getFileById(fileId).setTrashed(!!deleted);
+    } catch (_) {
+      // The row flag already hides it; Drive can be reconciled later.
+    }
+    return true;
+  }
+  return false;
 }
 
 // A short, single-line transcript preview for the browse-all list.
@@ -1297,9 +1329,14 @@ function clockLabel_(secs) {
 function updateMemory_(p) {
   var entryId = String(p.entry_id || "");
   if (!entryId) throw new Error("entry_id is required");
-  // Recordings are read-only — decline politely instead of erroring, so a
-  // stray edit/delete attempt from any flow never breaks the panel.
+  // Recordings live in their own sheet. They can be DELETED (and un-deleted,
+  // for undo) just like notes and tasks; their text/status is not editable.
   if (entryId.indexOf("rec:") === 0) {
+    if (p.deleted != null) {
+      var okRec = setRecordingDeleted_(entryId.slice(4), !!p.deleted);
+      if (!okRec) throw new Error("recording not found: " + entryId.slice(4));
+      return { updated: true, entry_id: entryId, deleted: !!p.deleted };
+    }
     return { updated: false, readonly: true, entry_id: entryId };
   }
   var data = readAll_(SHEETS.memory);
@@ -1328,9 +1365,11 @@ function updateMemory_(p) {
  * by (column, value) into RangeLists — bulk "mark done" or "delete" is a
  * couple of sheet writes total, however many rows are in the batch.
  * Same rules as updateMemory_, but nothing here ever throws per item:
- * "rec:" recording ids and unknown ids come back { ok:false, error } so
- * the panel can report "8 updated, 2 skipped". Undo of a deleted batch is
- * the same call again with deleted:false (the soft flag clears to "").
+ * unknown ids (and non-delete patches on "rec:" recordings) come back
+ * { ok:false, error } so the panel can report "8 updated, 2 skipped".
+ * Recordings support delete / undelete here just like notes. Undo of a
+ * deleted batch is the same call again with deleted:false (the soft flag
+ * clears to "" and any trashed audio is restored).
  */
 function batchUpdateMemory_(p) {
   var updates = Array.isArray(p.updates) ? p.updates : [];
@@ -1364,9 +1403,26 @@ function batchUpdateMemory_(p) {
       continue;
     }
     if (entryId.indexOf("rec:") === 0) {
-      // Recordings are read-only — the same graceful decline as updateMemory_.
+      // Recordings support delete / undelete (soft flag + reversible Drive
+      // trash); they're written to their own sheet right here rather than
+      // queued into the memory-sheet RangeList groups below.
+      if (item.deleted != null) {
+        try {
+          if (setRecordingDeleted_(entryId.slice(4), !!item.deleted)) {
+            updated++;
+            results.push({ entry_id: entryId, ok: true });
+          } else {
+            skipped++;
+            results.push({ entry_id: entryId, ok: false, error: "recording not found" });
+          }
+        } catch (recErr) {
+          skipped++;
+          results.push({ entry_id: entryId, ok: false, error: String((recErr && recErr.message) || recErr) });
+        }
+        continue;
+      }
       skipped++;
-      results.push({ entry_id: entryId, ok: false, error: "recordings are read-only" });
+      results.push({ entry_id: entryId, ok: false, error: "recordings support delete only" });
       continue;
     }
     var rowNum = rowById[entryId];

@@ -1164,7 +1164,7 @@ function memCallbacks() {
     onDelete: async (h) => {
       try {
         await api.updateMemory({ entryId: h.entry_id, deleted: true });
-        loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
+        reloadMemoryView(); // recordings and notes each reload their own list
         refreshMemoryCount();
       } catch (e) {
         ui.memError(
@@ -1248,10 +1248,21 @@ function onMemFilterChange(filter) {
   return false; // pure client-side filter — let ui.js re-slice
 }
 
+// Reload whichever list the memory view is currently showing — recordings
+// have their own source, so a single delete/edit must refresh the right one.
+function reloadMemoryView() {
+  if (memShowingRecordings) loadRecordings();
+  else loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
+}
+
 // Keep the "N things saved" subtitle and the open-task badge honest after an
 // optimistic batch edit — no extra round trip unless a search is filtering
 // the list (then the local list can't stand in for the whole Sheet).
 function updateMemMeta() {
+  if (memShowingRecordings) {
+    ui.setRecordingsSubtitle(memHits.length);
+    return;
+  }
   if (memHadQuery) {
     refreshMemoryCount();
     return;
@@ -1307,10 +1318,11 @@ async function batchStatusSelected(hits, status) {
 }
 
 // Bulk delete with one Undo for the whole batch. The Sheet's delete is a
-// soft flag (deleted = TRUE), so Undo simply re-sends the same batch with
-// deleted:false and every row comes back.
+// soft flag (deleted = TRUE) for notes/tasks and recordings alike, so Undo
+// simply re-sends the same batch with deleted:false and every row comes back
+// (a deleted recording's audio is trashed and restored the same way).
 async function batchDeleteSelected(hits) {
-  const targets = hits.filter((h) => h.entry_id && h.entry_type !== "recording");
+  const targets = hits.filter((h) => h.entry_id);
   if (!targets.length) return;
   const removed = targets
     .map((h) => ({ h, index: memHits.indexOf(h) }))
