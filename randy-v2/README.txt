@@ -78,8 +78,47 @@ WHAT IT DOES
 - One-way (just the mic) or two-way (mic + shared computer audio) listening.
 - Typed chat, a searchable history sidebar, and a settings/config screen for
   the persona, research domains, and voice.
+- Audio-component selection in Settings (Voice section): pick the microphone
+  Randy opens, pick the speaking voice he answers with, and choose one-way vs
+  two-way listening. Guidance adapts to Windows vs macOS.
 - Answers are fetched and streamed from already-hosted backend services (see
   below); the extension does not change or replace those services.
+
+
+CHOOSING YOUR AUDIO COMPONENTS (works on PC or Mac)
+---------------------------------------------------
+Open Settings (Voice section). Three choices let Randy work with any audio
+setup:
+
+  MICROPHONE — pick the input device, or leave it on the system default.
+    IMPORTANT: Chrome's live speech recognizer always transcribes the
+    OPERATING SYSTEM's DEFAULT microphone — a browser API can't point it at a
+    specific device. Randy still opens the device you pick (to hold the mic
+    permission and keep the background watchdog alive), but for the recognizer
+    to hear a particular mic you must ALSO set that mic as your default input:
+      - Windows: Settings -> System -> Sound -> Input
+      - macOS:   System Settings -> Sound -> Input
+    Settings shows a reminder (and warns you) when a non-default mic is pinned.
+
+  SPEAKING VOICE — choose which installed voice Randy answers in, or leave it
+    on "Automatic" (Randy scores the installed voices and picks the most
+    natural-sounding one — the original behavior). "Natural", "Neural", or
+    Google voices sound the most human. Your pick is remembered; if that voice
+    is ever uninstalled Randy silently falls back to the automatic pick so
+    speech never breaks. Use "Preview Voice" to hear it.
+
+  ONE-WAY vs TWO-WAY —
+      One-way: microphone only, with echo cancellation / noise suppression on.
+        Best on SPEAKERS when you only want your own voice picked up.
+      Two-way: microphone PLUS your computer's own audio (captured via the
+        screen-share picker), which is how Randy hears the OTHER side of the
+        call when you're on HEADPHONES. When the share succeeds you'll see
+        "Computer audio connected." Sharing differs by OS:
+          - Windows: tick "Share system audio" (or share the call's tab).
+          - macOS:   share the call's browser TAB and tick "Share tab audio"
+                     (macOS Chrome can't share whole-system audio).
+    See the note below about in-browser transcription of shared computer audio
+    under the Manifest V3 content-security-policy.
 
 
 EXTERNAL SERVICES IT TALKS TO
