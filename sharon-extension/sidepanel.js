@@ -145,6 +145,34 @@ let ready = false;
 let skipFirstAutoRead = true; // panel opens LISTENING, never mid-monologue
 let abortController = null;
 
+// The mode-bar buttons (mic / record / screen) can kick off async work
+// (opening the mic stream, reading the page) BEFORE the mode actually
+// changes. Without a lock, a second tap — the same button again, or a
+// different one — slips through that async gap and overlaps the first,
+// which is exactly what made switching between them feel flaky. Every
+// mode-button action runs through runModeAction(), so only one is ever in
+// flight and taps never interleave.
+let modeActionBusy = false;
+async function runModeAction(fn) {
+  if (modeActionBusy) return; // a transition is already settling — ignore the tap
+  modeActionBusy = true;
+  try {
+    await fn();
+  } catch (_) {
+    // A thrown action must never wedge the lock; the mode manager already
+    // lands in a clean LISTENING state on any enter/exit failure.
+  } finally {
+    modeActionBusy = false;
+    updateStatus();
+  }
+}
+
+// A quiet, non-spoken confirmation line — used to answer a tap that can't do
+// what it normally would right now, so a button never feels dead.
+function hint(label) {
+  ui.showUndoToast({ label });
+}
+
 // Conversation history — the panel's short-term memory.
 let history = []; // [{role:"user"|"assistant", content}]
 function remember(role, content) {
@@ -1783,7 +1811,11 @@ function enterListeningMode() {
 // snapshot attached (sendTurn), then the mode ends itself. Tapping the icon
 // again while in SCREEN exits immediately without sending anything.
 async function toggleScreenMode() {
-  if (recActive()) return; // the recorder owns everything until it's done
+  if (recActive()) {
+    // The recorder owns everything until it's done.
+    hint("I'm recording right now — tap the round button to stop.");
+    return;
+  }
   if (inMode(MODES.SCREEN)) {
     speech.stopSpeaking(); // she may still be mid-question
     enterMode(MODES.LISTENING);
@@ -2136,7 +2168,12 @@ async function playRecording({ recordingId, driveUrl, startSeconds = 0, label = 
  * Wiring: mic, composer, live card, header, memory, settings, welcome
  * ------------------------------------------------------------------ */
 function toggleMic() {
-  if (recActive()) return; // the recorder owns the ears — muting would cut the transcript
+  if (modeActionBusy) return; // a mode transition is settling — let it finish
+  if (recActive()) {
+    // The recorder owns the ears — muting would cut the transcript.
+    hint("I'm recording right now — tap the round button to stop.");
+    return;
+  }
   if (!speech.speechRecognitionAvailable()) {
     reportProblem(
       "Voice input isn't available in this browser.",
@@ -2260,15 +2297,22 @@ function wireControls() {
   // enters/exits the one-look SCREEN mode. The globe is an indicator only.
   if (e.micBtn) e.micBtn.addEventListener("click", toggleMic);
   if (e.recordBtn)
-    e.recordBtn.addEventListener("click", () => {
-      if (recState === "recording") stopRecording();
-      else if (!recActive()) startRecording(); // ignored while uploading
-    });
+    e.recordBtn.addEventListener("click", () =>
+      runModeAction(async () => {
+        if (recState === "recording") {
+          stopRecording();
+        } else if (recActive()) {
+          // The mode is RECORDING but the mic has stopped — we're mid
+          // upload/organize. Starting again now would race the save.
+          hint("Still saving your last recording — one moment.");
+        } else {
+          await startRecording();
+        }
+      })
+    );
   if (e.screenBtn)
-    e.screenBtn.addEventListener("click", () => {
-      toggleScreenMode();
-    });
-  if (e.recStop) e.recStop.addEventListener("click", () => stopRecording());
+    e.screenBtn.addEventListener("click", () => runModeAction(toggleScreenMode));
+  if (e.recStop) e.recStop.addEventListener("click", () => runModeAction(async () => stopRecording()));
   // Closing the panel ends the recording (the card warns about this). All
   // recorder state is in-memory, so a reopened panel always starts clean —
   // never a stuck "recording" state.
