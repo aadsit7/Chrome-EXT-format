@@ -51,13 +51,19 @@
         // never leave the pipeline frozen on "Analyzing"/"Researching" (the
         // classic "Randy heard it but never answered"). Every stage is bounded
         // so it always settles, and a self-healing watchdog un-sticks anything
-        // that slips through. Wedge limits sit ABOVE the matching timeout so the
-        // in-call timeout fires first and the watchdog is only ever a backstop.
+        // that slips through. Wedge limits sit ABOVE the WORST-CASE stage
+        // duration so the in-call timeout(s) fire first and the watchdog is only
+        // ever a backstop. The classifier makes ONE bounded call, so its wedge
+        // only has to clear one timeout. The answer stage can chain up to THREE
+        // bounded calls on the same controller (stream → search → no-search
+        // retry), so its wedge must clear the SUM, not a single call — otherwise
+        // the watchdog aborts a legitimately-running retry and drops the
+        // question exactly under the slow-network conditions it exists to guard.
         CLASSIFY_TIMEOUT_MS: 15000,  // hard ceiling on the classifier round-trip
-        ANSWER_TIMEOUT_MS: 45000,    // hard ceiling on one research+answer call
+        ANSWER_TIMEOUT_MS: 45000,    // hard ceiling on ONE research+answer call
         WATCHDOG_MS: 4000,           // how often the self-healing watchdog checks
-        PENDING_WEDGE_MS: 22000,     // pending longer than this ⇒ classifier wedged
-        ANSWER_WEDGE_MS: 105000,     // loading longer than this ⇒ answer wedged
+        PENDING_WEDGE_MS: 22000,     // pending longer than this ⇒ classifier wedged (> CLASSIFY_TIMEOUT_MS)
+        ANSWER_WEDGE_MS: 150000,     // loading longer than this ⇒ answer wedged (> 3 × ANSWER_TIMEOUT_MS retry chain)
         PROXY_WARM_MS: 240000        // keep-warm ping cadence while listening (< Apps Script idle spindown)
       };
 
@@ -565,7 +571,13 @@
           MIC.devices = list
             .filter(d => d.kind === 'audioinput')
             .map(d => ({ deviceId: d.deviceId, label: d.label || '' }));
-          if (MIC.deviceId && !MIC.devices.some(d => d.deviceId === MIC.deviceId)) {
+          // Only prune a pinned device we can trust is really gone. Before mic
+          // permission has been granted this session, enumerateDevices() returns
+          // entries with blank deviceIds/labels; pruning the pin against that
+          // placeholder list would wrongly forget a valid saved device. Require
+          // at least one real (non-blank) deviceId before deciding it's missing.
+          const haveRealIds = MIC.devices.some(d => d.deviceId);
+          if (MIC.deviceId && haveRealIds && !MIC.devices.some(d => d.deviceId === MIC.deviceId)) {
             MIC.deviceId = '';
             try { saveSettings(); } catch {}
           }
@@ -1207,6 +1219,15 @@
         try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
       }
 
+      // Only http(s) URLs are safe in an href. Source URLs arrive from the model/
+      // proxy (web_search results), so a stray javascript:/data: scheme could in
+      // theory become a clickable source chip that runs script in the panel.
+      // Anything that isn't plainly http(s) collapses to an inert '#'.
+      function safeHref(url) {
+        const s = String(url || '').trim();
+        return /^https?:\/\//i.test(s) ? s : '#';
+      }
+
       /* ================================================================
        * TOAST
        * ================================================================ */
@@ -1644,7 +1665,8 @@
       }
 
       function playTtsChunk(idx, q, text) {
-        const clean = prepareForSpeech(stripMarkdown(text));
+        const raw = stripMarkdown(text);
+        const clean = prepareForSpeech(raw);
         if (!clean) return Promise.resolve();
         if (!VOICE.ttsSupported) return Promise.resolve();
         return new Promise((resolve) => {
@@ -1658,7 +1680,13 @@
           // as engaged rather than narrated.
           u.pitch = 1.0;
           u.rate = 1.04;
+          // Echo-match against BOTH the spoken respelling (what the synth says)
+          // AND the original words. The mic/desktop tap re-transcribes the real
+          // words ("SCCM", "Intune"), not the lexicon respelling ("S C C M",
+          // "Intoon"), so storing only `clean` let acronym-heavy answers slip
+          // back in as spurious questions — feed the raw text too.
           appendRecentTts(clean);
+          appendRecentTts(raw);
           slot.isSpeaking = true;
           TTS_STATE.speakingSlot = idx;
           VOICE.playingMsg = { slot: idx, msg: q.msgIdx };
@@ -1680,11 +1708,15 @@
 
       function speakText(text, idx, msgIdx) {
         if (!VOICE.ttsSupported) return;
-        const clean = prepareForSpeech(stripMarkdown(text));
+        const raw = stripMarkdown(text);
+        const clean = prepareForSpeech(raw);
         if (!clean) return;
         STATE.slots.forEach((_, i) => teardownTtsQueue(i));
         try { window.speechSynthesis.cancel(); } catch {}
+        // Store both the respelling and the raw words — the mic re-hears the raw
+        // words, so echo-matching needs them (see playTtsChunk).
         appendRecentTts(clean);
+        appendRecentTts(raw);
         const u = new SpeechSynthesisUtterance(clean);
         const v = pickDeepVoice();
         if (v) u.voice = v;
@@ -2363,8 +2395,15 @@
         // slider, falling back to the remembered preference, then two-way.
         const audioMode = (mode === 'one-way' || mode === 'two-way') ? mode
           : (slot.audioMode === 'one-way' ? 'one-way' : 'two-way');
-        slot.audioMode = audioMode;
-        saveSettings();
+        // Persist the mode only for an explicit user choice. The auto-start path
+        // ALWAYS runs one-way (its screen-share picker can't open without a
+        // click), so it must not overwrite a saved two-way preference — on disk
+        // or in memory — or every panel open would silently downgrade a two-way
+        // user to one-way and their next manual toggle would start one-way too.
+        if (!auto) {
+          slot.audioMode = audioMode;
+          saveSettings();
+        }
         const twoWay = audioMode === 'two-way';
 
         // TWO-WAY ONLY: offer the digital computer-audio tap FIRST, while the
@@ -2437,6 +2476,13 @@
             // manual path keeps its original feedback.
             if (!auto) showToast('Randy needs the microphone. Click Allow and try again.');
           }
+          // Two-way opened the computer-audio share BEFORE this mic prompt (the
+          // share picker needs the click's fresh activation). A mic failure here
+          // leaves slot.listenOn false, so no listening session exists and
+          // nothing will ever call stopListening() — that would strand the live
+          // screen/tab share, its AudioContext, and the Whisper worker running
+          // invisibly until the panel closes. Tear the tap down now.
+          if (twoWay) stopDesktopCapture();
           render();
           return micStatus;
         }
@@ -2702,8 +2748,13 @@
           DESKTOP.worker.onerror = (e) => {
             // Same graceful, silent fallback as the worker 'error' message:
             // the mic path still works, so don't show an alarming banner/toast.
+            // Tear down the now-useless capture graph (share + AudioContext +
+            // worker) instead of just clearing the status — otherwise a headless
+            // computer-audio tap keeps running idle for the rest of the session
+            // (this is the expected path under the MV3 CSP, which blocks the
+            // worker's remote model import).
             console.warn('desktop transcriber failed to load — using mic only:', (e && e.message) || '');
-            setDesktopStatus('');
+            stopDesktopCapture();
           };
           DESKTOP.worker.postMessage({ type: 'init' });
         } catch (err) {
@@ -2762,7 +2813,10 @@
           // only confuses people. Fall back to mic-only silently; the detail is
           // left in the console for debugging.
           console.warn('desktop transcriber unavailable — using mic only:', d.error || '');
-          setDesktopStatus('');
+          // The transcriber can't run, so the computer-audio tap can never
+          // produce text — tear the whole graph down rather than leave the
+          // share/AudioContext/worker running idle for the rest of the session.
+          stopDesktopCapture();
           return;
         }
         if (d.type === 'result') {
@@ -3843,6 +3897,34 @@
         }
       }
 
+      // render() rebuilds #app wholesale, which drops focus from whatever field
+      // the user was typing in. Background renders fire constantly during a call
+      // (an overheard answer landing, a toast, a live-status refresh), so without
+      // this a user typing in the composer — or searching History — loses the
+      // caret every few seconds. Capture the focused input/textarea and its caret
+      // before the rebuild and restore both after. Only same-page fields with a
+      // stable id qualify; if nothing is focused it's a no-op.
+      function captureFocus() {
+        const el = document.activeElement;
+        if (!el || !el.id) return null;
+        if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return null;
+        let start = null, end = null;
+        try { start = el.selectionStart; end = el.selectionEnd; } catch {}
+        return { id: el.id, start, end };
+      }
+
+      function restoreFocus(state) {
+        if (!state) return;
+        const el = document.getElementById(state.id);
+        if (!el || el === document.activeElement) return;
+        try {
+          el.focus();
+          if (state.start != null && el.setSelectionRange) {
+            el.setSelectionRange(state.start, state.end);
+          }
+        } catch {}
+      }
+
       // One-time onboarding screen: ask for first + last name, then hand off to
       // the normal tool. Reuses the global click/keydown handlers (the Save
       // button is data-action="save-onboarding"). The name is read straight off
@@ -3888,6 +3970,7 @@
           return;
         }
         const scroll = captureScroll();
+        const focus = captureFocus();
         root.innerHTML = `
           <div class="app-frame">
             ${renderSidebar()}
@@ -3902,6 +3985,7 @@
         `;
         if (window.lucide?.createIcons) try { window.lucide.createIcons(); } catch {}
         restoreScroll(scroll);
+        restoreFocus(focus);
         bindEvents();
         if (PIP.window) renderPip();
       }
@@ -4263,7 +4347,7 @@
             ${badge}
             ${mdToHtml(m.content)}
             ${srcs.length ? `<div class="src-chips">${srcs.map(u => `
-              <a href="${escAttr(u)}" target="_blank" rel="noopener noreferrer" title="${escAttr(u)}">
+              <a href="${escAttr(safeHref(u))}" target="_blank" rel="noopener noreferrer" title="${escAttr(u)}">
                 <i data-lucide="link" class="w-3 h-3"></i>${escHtml(hostnameOf(u))}
               </a>`).join('')}</div>` : ''}
           </div>${copyBtnHtml(slotIdx, mi)}${speakerBtnHtml(slotIdx, mi)}</div>`;
@@ -5205,7 +5289,7 @@
             badge +
             mdToHtml(m.content) +
             (srcs.length ? '<div class="pip-src">' + srcs.map(u =>
-              '<a href="' + escAttr(u) + '" target="_blank" rel="noopener noreferrer" title="' + escAttr(u) + '">' + escHtml(hostnameOf(u)) + '</a>').join('') + '</div>' : '') +
+              '<a href="' + escAttr(safeHref(u)) + '" target="_blank" rel="noopener noreferrer" title="' + escAttr(u) + '">' + escHtml(hostnameOf(u)) + '</a>').join('') + '</div>' : '') +
             '</div></div>';
         });
         if (slot.loading) {
