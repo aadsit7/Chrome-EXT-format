@@ -122,8 +122,11 @@ setup:
           - Windows: tick "Share system audio" (or share the call's tab).
           - macOS:   share the call's browser TAB and tick "Share tab audio"
                      (macOS Chrome can't share whole-system audio).
-    See the note below about in-browser transcription of shared computer audio
-    under the Manifest V3 content-security-policy.
+        The shared audio is transcribed locally by an in-browser Whisper model
+        (see maintainer note 4 below). The FIRST time you use two-way, Randy
+        downloads that model once (~77 MB) — you'll see "loading transcriber…"
+        briefly; after that it's cached. The audio itself never leaves your
+        machine. If the transcriber can't load, Randy simply stays on the mic.
 
 
 EXTERNAL SERVICES IT TALKS TO
@@ -160,17 +163,32 @@ with behavior-preserving adjustments:
 The external backend calls (Apps Script proxy + Cloudflare Worker) were left
 exactly as-is.
 
-  4. ONE BEHAVIOR NOTE (two-way "Share computer audio"): the original also has
-     an optional mode that transcribes shared computer audio in-browser with a
-     Whisper model. That path loads the Transformers.js library and the model
-     weights from the internet at runtime, which the MV3 content-security-policy
-     blocks. The original code already falls back silently to mic-only when that
-     transcriber can't start, so under the extension that exact fallback runs:
-     one-way microphone listening (the default, which auto-starts) and all of
-     Randy's on-screen and spoken answering work normally; only the in-browser
-     transcription of shared computer audio is unavailable. Making it work would
-     mean bundling a large ML model locally and broadening permissions/CSP, which
-     is out of scope here — the code for it is preserved unchanged.
+  4. TWO-WAY "Share computer audio" — in-browser Whisper, now working under MV3.
+     The two-way path transcribes shared computer audio locally with a Whisper
+     model (Transformers.js + ONNX Runtime), so Randy hears the OTHER side of a
+     call even on headphones. Originally this loaded Transformers.js and the ONNX
+     runtime from a CDN inside a Blob worker, which the MV3 content-security-
+     policy (script-src 'self') blocks — so it silently fell back to mic-only.
+     It now runs under MV3 because everything the worker needs is bundled and
+     same-origin:
+       - whisper-worker.js is a REAL module worker file (not a Blob and not a
+         CDN import), loaded via chrome.runtime.getURL. Same-origin scripts are
+         allowed by script-src 'self'; Blob/CDN workers are not.
+       - lib/transformers/ vendors Transformers.js (self-contained ESM build)
+         and the ONNX Runtime (WASM + WebGPU) — transformers.min.js, the ORT
+         glue .mjs, and the ORT .wasm. The worker points wasmPaths at this
+         folder, so no code is ever fetched from the network.
+       - manifest.json adds a content_security_policy that appends
+         'wasm-unsafe-eval' to the default script-src (needed to compile the
+         ONNX WASM). This is a strict SUPERSET of the MV3 default — it only adds
+         WASM permission and changes nothing else — so no existing behavior is
+         affected.
+     Only the model WEIGHTS (~77 MB for the quantized/CPU build) download once
+     from the Hugging Face hub on first use, then the browser caches them; audio
+     itself never leaves the machine. WebGPU is used when available (real-time),
+     with a WASM/CPU fallback that works everywhere. If anything about the
+     transcriber fails to load, the code still falls back to mic-only exactly as
+     before, so this can never make Randy worse than one-way listening.
 
 
 FILES
@@ -182,5 +200,7 @@ FILES
   tailwind.css           Static local Tailwind build (replaces the CDN runtime)
   background.js          Service worker — makes the toolbar icon open the panel
   lib/lucide.min.js      Lucide icon library, bundled locally
+  whisper-worker.js      Computer-audio transcription worker (two-way listening)
+  lib/transformers/      Vendored Transformers.js + ONNX Runtime (local, for Whisper)
   icons/                 Toolbar/extension icons (16, 48, 128 px)
   README.txt             This file
