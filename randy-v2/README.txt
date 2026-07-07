@@ -99,6 +99,11 @@ setup:
       - Windows: Settings -> System -> Sound -> Input
       - macOS:   System Settings -> Sound -> Input
     Settings shows a reminder (and warns you) when a non-default mic is pinned.
+    A "Test microphone" button opens a live input-level meter so you can
+    confirm the selected mic is actually being picked up before a call, and
+    Settings also shows which device is your current OS default input (the one
+    Chrome transcribes). The test uses its own short-lived capture and never
+    touches Randy's listening.
 
   SPEAKING VOICE — choose which installed voice Randy answers in, or leave it
     on "Automatic" (Randy scores the installed voices and picks the most
