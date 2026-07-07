@@ -608,6 +608,24 @@
         chosenName: ''
       };
 
+      // One-tap microphone check in Settings. Opens a SHORT-LIVED capture on
+      // the currently selected device and paints a live input-level meter so
+      // the user can confirm their mic is actually being picked up before a
+      // call. It is a completely SEPARATE, temporary stream — it never touches
+      // VOICE.micStream or the recognizer — and its animation loop stops itself
+      // the instant the meter leaves the screen, so no navigation path can
+      // leave a test capture running.
+      const MICTEST = {
+        active: false,
+        starting: false,   // getUserMedia in flight — ignore re-clicks
+        stream: null,
+        audioCtx: null,
+        analyser: null,
+        rafId: 0,
+        data: null,
+        sawSound: false    // has real sound crossed the bar this run?
+      };
+
       // Re-read the available microphones. Safe to call any time; labels only
       // appear once capture permission has been granted. Drops a pinned device
       // that has been unplugged so listening falls back to the system default.
@@ -675,6 +693,106 @@
         // Capture is granted now, so device labels are finally readable.
         refreshMicDevices();
         return 'ok';
+      }
+
+      // The label of the device Chrome's speech recognizer actually
+      // transcribes — the OS default input. enumerateDevices exposes it as the
+      // 'default' pseudo-device on most platforms; we strip the "Default - "
+      // prefix browsers add. Returns '' when the OS default can't be named
+      // (e.g. before permission, or on platforms without the pseudo-device).
+      function osDefaultMicLabel() {
+        const def = MIC.devices.find(d => d.deviceId === 'default' && d.label);
+        if (def) return def.label.replace(/^Default\s*[-–—]\s*/i, '').trim();
+        return '';
+      }
+
+      // Start the Settings mic check. Opens its OWN capture on the selected
+      // device (processing left on — we only need to show sound is arriving)
+      // and kicks off the level-meter loop. Fully independent of listening.
+      async function startMicTest() {
+        if (MICTEST.active || MICTEST.starting) return;
+        if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+          showToast('This browser can’t open the microphone for a test.');
+          return;
+        }
+        MICTEST.starting = true;
+        MICTEST.sawSound = false;
+        let stream;
+        try {
+          const dev = MIC.deviceId ? { exact: MIC.deviceId } : { ideal: 'default' };
+          stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: dev } });
+        } catch (err) {
+          MICTEST.starting = false;
+          const name = (err && err.name) || '';
+          if (name === 'NotAllowedError' || name === 'SecurityError' || name === 'PermissionDeniedError') showToast('Allow microphone access to run the test.');
+          else if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError') showToast('That microphone isn’t available — pick another and try again.');
+          else showToast('Couldn’t start the microphone test — try again.');
+          return;
+        }
+        // Labels become readable once capture is granted.
+        try { refreshMicDevices(); } catch {}
+        try {
+          const Ctx = window.AudioContext || window.webkitAudioContext;
+          MICTEST.audioCtx = new Ctx();
+          if (MICTEST.audioCtx.state === 'suspended') { try { await MICTEST.audioCtx.resume(); } catch {} }
+          const src = MICTEST.audioCtx.createMediaStreamSource(stream);
+          const an = MICTEST.audioCtx.createAnalyser();
+          an.fftSize = 1024;
+          src.connect(an);
+          MICTEST.analyser = an;
+          MICTEST.data = new Uint8Array(an.fftSize);
+        } catch (err) {
+          try { stream.getTracks().forEach(t => t.stop()); } catch {}
+          if (MICTEST.audioCtx) { try { MICTEST.audioCtx.close(); } catch {} MICTEST.audioCtx = null; }
+          MICTEST.starting = false;
+          showToast('Couldn’t start the microphone test — try again.');
+          return;
+        }
+        MICTEST.stream = stream;
+        MICTEST.active = true;
+        MICTEST.starting = false;
+        render();          // draw the meter shell
+        micTestTick();     // begin the animation loop
+      }
+
+      // Self-terminating level-meter loop. Reads the input peak each frame and
+      // paints the bar/status by id. If the meter element has left the DOM
+      // (user navigated away from Settings, panel closing, a full re-render
+      // without the meter), it stops the whole test — so a capture can never
+      // outlive the meter that owns it.
+      function micTestTick() {
+        if (!MICTEST.active || !MICTEST.analyser) return;
+        const bar = document.getElementById('mic-test-bar');
+        if (!bar) { stopMicTest(); return; }
+        MICTEST.analyser.getByteTimeDomainData(MICTEST.data);
+        let peak = 0;
+        for (let i = 0; i < MICTEST.data.length; i++) {
+          const dev = Math.abs(MICTEST.data[i] - 128);
+          if (dev > peak) peak = dev;
+        }
+        const level = Math.min(1, (peak / 128) * 1.6);   // 0..1, lightly boosted for visibility
+        bar.style.width = Math.round(level * 100) + '%';
+        bar.style.background = level > 0.02 ? '#0F7A3F' : '#cbd5e1';
+        if (level > 0.05) MICTEST.sawSound = true;
+        const status = document.getElementById('mic-test-status');
+        if (status) {
+          status.textContent = MICTEST.sawSound
+            ? 'Picking up sound ✓ — this microphone is working.'
+            : 'Listening… speak now and watch the bar move.';
+          status.style.color = MICTEST.sawSound ? '#0F7A3F' : '#64748b';
+        }
+        MICTEST.rafId = requestAnimationFrame(micTestTick);
+      }
+
+      function stopMicTest() {
+        const wasActive = MICTEST.active;
+        MICTEST.active = false;
+        if (MICTEST.rafId) { try { cancelAnimationFrame(MICTEST.rafId); } catch {} MICTEST.rafId = 0; }
+        if (MICTEST.stream) { try { MICTEST.stream.getTracks().forEach(t => t.stop()); } catch {} MICTEST.stream = null; }
+        if (MICTEST.audioCtx) { try { MICTEST.audioCtx.close(); } catch {} MICTEST.audioCtx = null; }
+        MICTEST.analyser = null;
+        MICTEST.data = null;
+        if (wasActive && STATE.activeTab === 'settings') render();
       }
 
       // Listening runtime state. Randy hears on two channels: (1) the
@@ -4666,9 +4784,23 @@
                     <p class="text-[11px] text-slate-400 mt-1">The microphone Randy opens when he listens. If the default device isn&rsquo;t picking you up, switch here.</p>
                     <p class="text-[11px] text-slate-400 mt-1"><strong>Important:</strong> Chrome&rsquo;s live transcription always listens to your computer&rsquo;s <strong>default</strong> microphone &mdash; it can&rsquo;t be pointed at a specific device from here. To make Randy hear a particular mic, set it as your default input in <strong>${escHtml(osDefaultMicPath())}</strong>.</p>
                     ${MIC.deviceId ? `<div class="text-[11px] mt-2" style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px"><i data-lucide="alert-triangle" class="w-3 h-3 inline mr-1"></i>You&rsquo;ve pinned a specific microphone. Randy will capture it for keep-alive, but live transcription still follows your OS default input &mdash; set the same device as default in <strong>${escHtml(osDefaultMicPath())}</strong> so what Randy hears matches your choice.</div>` : ''}
-                    <button class="btn-outline" style="font-size:11px;padding:5px 12px;margin-top:8px" data-action="refresh-mics">
-                      <i data-lucide="refresh-cw" class="w-3 h-3 inline mr-1"></i> Refresh device list
-                    </button>
+                    <div class="flex flex-wrap items-center gap-2" style="margin-top:8px">
+                      <button class="btn-outline" style="font-size:11px;padding:5px 12px" data-action="refresh-mics">
+                        <i data-lucide="refresh-cw" class="w-3 h-3 inline mr-1"></i> Refresh device list
+                      </button>
+                      <button class="btn-outline" style="font-size:11px;padding:5px 12px" data-action="${MICTEST.active ? 'stop-mic-test' : 'test-mic'}">
+                        <i data-lucide="${MICTEST.active ? 'square' : 'activity'}" class="w-3 h-3 inline mr-1"></i> ${MICTEST.active ? 'Stop test' : 'Test microphone'}
+                      </button>
+                    </div>
+                    ${MICTEST.active ? `
+                      <div style="margin-top:10px">
+                        <div style="height:10px;background:#e2e8f0;border-radius:999px;overflow:hidden">
+                          <div id="mic-test-bar" style="height:100%;width:0%;background:#cbd5e1;border-radius:999px;transition:width .05s linear"></div>
+                        </div>
+                        <p id="mic-test-status" class="text-[11px] mt-1" style="color:#64748b">Listening… speak now and watch the bar move.</p>
+                      </div>
+                    ` : ''}
+                    ${osDefaultMicLabel() ? `<p class="text-[11px] text-slate-400 mt-2">Your computer&rsquo;s current default input &mdash; what Chrome actually transcribes &mdash; is <strong>${escHtml(osDefaultMicLabel())}</strong>.</p>` : ''}
                   </div>
                 ` : ''}
 
@@ -5567,6 +5699,10 @@
               break;
             }
             case 'switch-tab': {
+              // Leaving Settings ends any running mic test (the meter loop also
+              // self-terminates, but stop it up front so the capture closes the
+              // instant the user navigates).
+              if (act.dataset.tab !== 'settings' && MICTEST.active) stopMicTest();
               STATE.activeTab = act.dataset.tab;
               render();
               // Opening Settings is a good moment to refresh the mic list so
@@ -5576,6 +5712,7 @@
             }
             case 'close-settings-bg': {
               if (!e.target.hasAttribute('data-action')) break;
+              if (MICTEST.active) stopMicTest();
               STATE.activeTab = 'home';
               render();
               break;
@@ -5669,6 +5806,8 @@
               })();
               break;
             }
+            case 'test-mic': { startMicTest(); break; }
+            case 'stop-mic-test': { stopMicTest(); break; }
             case 'set-audio-mode': {
               const m = act.dataset.mode === 'one-way' ? 'one-way' : 'two-way';
               STATE.slots[0].audioMode = m;
