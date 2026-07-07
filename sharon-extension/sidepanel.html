@@ -168,8 +168,9 @@
       <!-- ================= Mode bar =================
            Sharon is in exactly ONE mode at a time; the lit icon shows which.
            Mic (tap = mute), record (tap = start/stop) and screen (tap = one
-           look at this tab) are controls; the globe is an indicator only —
-           it lights on its own while she searches the web. -->
+           look at this tab) are controls. Past the divider, the memory button
+           toggles between the conversation and the notes/tasks/recordings view
+           so you can flip back and forth without reaching for the header. -->
       <div class="modebar" id="modeBar" role="group" aria-label="Sharon's mode">
         <button class="mode-btn" id="micBtn" type="button" aria-label="Microphone is on — tap to mute" aria-pressed="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
@@ -181,9 +182,11 @@
         <button class="mode-btn" id="screenBtn" type="button" aria-label="Look at this tab — I'll answer one question about it" aria-pressed="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
         </button>
-        <span class="mode-ind" id="searchIcon" role="status" aria-label="Web search indicator — lights up while I search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/></svg>
-        </span>
+        <span class="mode-sep" aria-hidden="true"></span>
+        <button class="mode-btn" id="memNavBtn" type="button" aria-label="Sharon's memory — notes, tasks and recordings" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          <span class="badge hidden" id="memNavBadge"></span>
+        </button>
       </div>
 
       <!-- Undo toast -->

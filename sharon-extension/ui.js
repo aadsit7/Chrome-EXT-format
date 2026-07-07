@@ -52,6 +52,8 @@ export const els = {
   recordBtn: document.getElementById("recordBtn"),
   screenBtn: document.getElementById("screenBtn"),
   searchIcon: document.getElementById("searchIcon"),
+  memNavBtn: document.getElementById("memNavBtn"),
+  memNavBadge: document.getElementById("memNavBadge"),
   recCard: document.getElementById("recCard"),
   recLabel: document.getElementById("recLabel"),
   recTimer: document.getElementById("recTimer"),
@@ -217,20 +219,25 @@ export function setMode(m) {
     );
 }
 
-// Blue badge on the memory (book) button = open-task count.
+// Blue badge on the memory (book) buttons = open-task count. The same count
+// rides both the header button and the bottom-bar toggle so they stay in step.
 export function setMemBadge(openTasks) {
-  if (!els.memBadge) return;
   const n = Number(openTasks) || 0;
-  if (n > 0) {
-    els.memBadge.textContent = n > 25 ? "25+" : String(n);
-    els.memBadge.classList.remove("hidden");
-  } else {
-    els.memBadge.classList.add("hidden");
+  const label = n > 0 ? "Sharon's memory — " + n + " open task" + (n === 1 ? "" : "s") : "Sharon's memory";
+  for (const badge of [els.memBadge, els.memNavBadge]) {
+    if (!badge) continue;
+    if (n > 0) {
+      badge.textContent = n > 25 ? "25+" : String(n);
+      badge.classList.remove("hidden");
+    } else {
+      badge.classList.add("hidden");
+    }
   }
-  if (els.memoryBtn)
-    els.memoryBtn.setAttribute(
+  if (els.memoryBtn) els.memoryBtn.setAttribute("aria-label", label);
+  if (els.memNavBtn)
+    els.memNavBtn.setAttribute(
       "aria-label",
-      n > 0 ? "Sharon's memory — " + n + " open task" + (n === 1 ? "" : "s") : "Sharon's memory"
+      n > 0 ? label + " (notes, tasks and recordings)" : "Sharon's memory — notes, tasks and recordings"
     );
 }
 
@@ -966,10 +973,12 @@ export function dismissToast() {
  * ------------------------------------------------------------------ */
 export function openMemory() {
   els.html.setAttribute("data-view", "memory");
+  if (els.memNavBtn) els.memNavBtn.setAttribute("aria-pressed", "true");
 }
 export function closeMemory() {
   exitMemSelect(); // never leave a half-finished selection behind
   els.html.setAttribute("data-view", "chat");
+  if (els.memNavBtn) els.memNavBtn.setAttribute("aria-pressed", "false");
 }
 export function memoryOpen() {
   return els.html.getAttribute("data-view") === "memory";

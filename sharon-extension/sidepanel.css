@@ -552,7 +552,12 @@ html[data-view="memory"] .composer{display:none}
   flex:none;display:flex;align-items:center;justify-content:center;gap:18px;
   padding:2px 14px 12px;
 }
-html[data-view="memory"] .modebar{display:none}
+/* the mode bar stays put in the memory view too, so the memory button below
+   can toggle the two views back and forth from a fixed spot */
+.mode-sep{
+  width:1px;height:20px;flex:none;border-radius:1px;
+  background:var(--hairline-strong);
+}
 .mode-btn,.mode-ind{
   width:42px;height:34px;border-radius:12px;flex:none;position:relative;
   display:grid;place-items:center;
@@ -582,6 +587,13 @@ html[data-mode="recording"] #recordBtn{background:var(--coral);color:#fff;animat
 html[data-mode="screen"] #screenBtn{background:var(--teal);color:#fff;box-shadow:0 0 0 4px rgba(10,143,130,.16)}
 html[data-mode="searching"] #searchIcon{background:var(--blue);color:#fff;animation:searchGlow 1.6s var(--ease) infinite}
 @keyframes searchGlow{0%,100%{box-shadow:0 0 0 0 var(--blue-halo)}50%{box-shadow:0 0 0 8px rgba(47,107,255,0)}}
+
+/* memory toggle: lit while the memory view is open, so it reads as the
+   currently selected view rather than a listening mode */
+html[data-view="memory"] #memNavBtn{background:var(--dark);color:#fff}
+html[data-view="memory"] #memNavBtn:hover{background:var(--ink);color:#fff}
+#memNavBtn .badge{background:var(--blue)}
+html[data-view="memory"] #memNavBtn .badge{background:#fff;color:var(--dark)}
 
 /* undo toast */
 .toast{

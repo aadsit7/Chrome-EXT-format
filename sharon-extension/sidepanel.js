@@ -2392,13 +2392,20 @@ function wireControls() {
       ui.setVoiceIndicator(settings.readAloud);
       updateStatus();
     });
-  if (e.memoryBtn)
-    e.memoryBtn.addEventListener("click", () => {
-      // Always open on the full memory list, never a stale Recordings filter.
-      memShowingRecordings = false;
-      ui.selectFilter("all");
-      ui.openMemory();
-      loadMemory(e.memSearchInput ? e.memSearchInput.value.trim() : "");
+  const openMemoryView = () => {
+    // Always open on the full memory list, never a stale Recordings filter.
+    memShowingRecordings = false;
+    ui.selectFilter("all");
+    ui.openMemory();
+    loadMemory(e.memSearchInput ? e.memSearchInput.value.trim() : "");
+  };
+  if (e.memoryBtn) e.memoryBtn.addEventListener("click", openMemoryView);
+  // Bottom-bar toggle: flip between the conversation and the memory view from
+  // a fixed spot, so you can bounce back and forth without hunting the header.
+  if (e.memNavBtn)
+    e.memNavBtn.addEventListener("click", () => {
+      if (ui.memoryOpen()) ui.closeMemory();
+      else openMemoryView();
     });
   if (e.memBack) e.memBack.addEventListener("click", ui.closeMemory);
   if (e.settingsBtn)
