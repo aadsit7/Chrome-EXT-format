@@ -550,6 +550,43 @@
         dictationTarget: null     // where dictation writes: {kind:'pip'} or {kind:'home', slot}
       };
 
+      // Best-effort operating-system detection so the audio-setup guidance can
+      // speak to each platform accurately. It's advisory only — never a gate on
+      // capability — because two facts differ by OS:
+      //   1. macOS Chrome can share a browser TAB's audio but not whole-system
+      //      audio; Windows Chrome can share system audio as well as a tab.
+      //   2. The exact place to change the default input device differs.
+      // We read the modern navigator.userAgentData.platform first (present in
+      // Chromium) and fall back to navigator.platform / userAgent.
+      const PLATFORM = (() => {
+        let hint = '';
+        try { hint = (navigator.userAgentData && navigator.userAgentData.platform) || ''; } catch {}
+        if (!hint) { try { hint = navigator.platform || ''; } catch {} }
+        let ua = '';
+        try { ua = navigator.userAgent || ''; } catch {}
+        const s = (hint + ' ' + ua).toLowerCase();
+        if (/mac|iphone|ipad|ipod/.test(s)) return 'mac';
+        if (/win/.test(s)) return 'win';
+        return 'other';
+      })();
+
+      // Where the user changes their default microphone, per OS. Chrome's live
+      // speech recognizer always captures the OS default input (it can't be
+      // pointed at a specific device from JavaScript), so this is the setting
+      // that actually decides what Randy hears.
+      function osDefaultMicPath() {
+        if (PLATFORM === 'mac') return 'System Settings → Sound → Input';
+        if (PLATFORM === 'win') return 'Settings → System → Sound → Input';
+        return "your operating system’s sound settings";
+      }
+
+      // The exact "share audio" wording the screen-share picker shows, per OS.
+      function osShareAudioHint() {
+        if (PLATFORM === 'mac') return 'pick the call’s browser tab and tick “Share tab audio” (macOS Chrome can’t share whole-system audio)';
+        if (PLATFORM === 'win') return 'tick “Share system audio” (or share the call’s tab and tick “Share tab audio”)';
+        return 'tick “Share tab/system audio”';
+      }
+
       // Which microphone Randy opens. '' = the system default device
       // (recommended — and the device Chrome's live speech recognizer always
       // uses); a specific deviceId pins the capture to that input so the user
@@ -559,6 +596,16 @@
       const MIC = {
         deviceId: '',             // '' = system default, else a specific deviceId
         devices: []               // cached [{deviceId, label}] of audioinput devices
+      };
+
+      // The speaking voice the user picked in Settings, by its
+      // SpeechSynthesisVoice.name. '' = automatic (Randy scores the installed
+      // voices and picks the most natural — the original behaviour). A chosen
+      // voice is honoured only while it's still installed; if it disappears
+      // (voice packs change between sessions) Randy silently falls back to the
+      // automatic pick so speech never breaks.
+      const TTS = {
+        chosenName: ''
       };
 
       // Re-read the available microphones. Safe to call any time; labels only
@@ -745,6 +792,7 @@
           speakAnswers: !!s.speakAnswers,
           audioMode: s.audioMode === 'one-way' ? 'one-way' : 'two-way',
           micDeviceId: MIC.deviceId || '',
+          ttsVoiceName: TTS.chosenName || '',
           allowedDomains: s.allowedDomains
         }));
         try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(data)); } catch {}
@@ -789,6 +837,11 @@
           // first record. Validated against the live device list once labels
           // load (refreshMicDevices), so a stale id can't strand listening.
           if (data[0] && typeof data[0].micDeviceId === 'string') MIC.deviceId = data[0].micDeviceId;
+          // The chosen speaking voice is also global (one voice for Randy),
+          // read off the first record. Validated against the live voice list at
+          // speak time (resolveVoice), so a voice that's since been uninstalled
+          // just falls back to the automatic pick.
+          if (data[0] && typeof data[0].ttsVoiceName === 'string') TTS.chosenName = data[0].ttsVoiceName;
         } catch {}
         // Listening always starts OFF — the screen-share picker needs a click.
         // The proxy URL used to be overridable per-browser, which left some
@@ -1467,6 +1520,21 @@
         return pool.slice().sort((a, b) => scoreVoice(b) - scoreVoice(a))[0];
       }
 
+      // The voice Randy actually speaks with. Honours the user's explicit
+      // choice from Settings when that voice is still installed; otherwise
+      // (no choice, or the chosen voice is gone) falls back to the automatic
+      // pick. This is the single resolver every speak path calls, so the
+      // choice and the auto-pick can never drift apart.
+      function resolveVoice() {
+        if (!VOICE.ttsSupported) return null;
+        if (TTS.chosenName) {
+          const voices = window.speechSynthesis.getVoices() || [];
+          const match = voices.find(v => v.name === TTS.chosenName);
+          if (match) return match;
+        }
+        return pickDeepVoice();
+      }
+
       // Pronunciation lexicon — a substitution dictionary applied before text
       // reaches the speech engine. Three kinds of entries:
       //   - expansions the field actually says ("ConfigMgr" → "Config Manager",
@@ -1673,7 +1741,7 @@
           if (q.signal && q.signal.aborted) return resolve();
           const slot = STATE.slots[idx];
           const u = new SpeechSynthesisUtterance(clean);
-          const v = pickDeepVoice();
+          const v = resolveVoice();
           if (v) u.voice = v;
           // Neural voices are tuned at their defaults; bending pitch is what
           // made the old output sound synthetic. A whisper-faster rate reads
@@ -1718,7 +1786,7 @@
         appendRecentTts(clean);
         appendRecentTts(raw);
         const u = new SpeechSynthesisUtterance(clean);
-        const v = pickDeepVoice();
+        const v = resolveVoice();
         if (v) u.voice = v;
         u.pitch = 1.0;
         u.rate = 1.04;
@@ -2677,7 +2745,7 @@
           // Shared a window/screen but didn't tick "share audio". The video is
           // useless to us, so drop the whole share and stay on the mic.
           try { stream.getTracks().forEach(t => t.stop()); } catch {}
-          showToast('No computer audio shared — re-share and tick “Share tab/system audio”. Using mic only.');
+          showToast('No computer audio shared — re-share and ' + osShareAudioHint() + '. Using mic only.');
           return;
         }
         // Audio only — stop the video track so we aren't grabbing the screen.
@@ -4528,8 +4596,8 @@
                   <button class="seg2-opt ${mode === 'two-way' ? 'on' : ''}" data-action="pick-audio-mode" data-mode="two-way"><i data-lucide="volume-2" class="w-3.5 h-3.5"></i>Two-way</button>
                 </div>
                 <p class="set-note">${mode === 'two-way'
-                  ? 'Mic <strong>plus your computer&rsquo;s audio</strong>. A screen-share prompt picks the tab or window to listen to &mdash; tick &ldquo;Share tab/system audio.&rdquo; Works on headphones.'
-                  : 'Your <strong>microphone only</strong> &mdash; just what you say, not the call audio on your speakers.'}</p>
+                  ? 'Mic <strong>plus your computer&rsquo;s audio</strong> &mdash; the way to have Randy hear the other side of the call on <strong>headphones</strong>. A screen-share prompt appears; ' + osShareAudioHint() + '. When the capture succeeds you&rsquo;ll see &ldquo;Computer audio connected&rdquo; below.'
+                  : 'Your <strong>microphone only</strong> &mdash; just what you say, not the call audio on your speakers. Best when you&rsquo;re on <strong>speakers</strong> and only want your own voice picked up.'}</p>
                 ${mode === 'two-way' ? `
                   <button class="set-share" data-action="share-computer-audio"><i data-lucide="monitor-speaker" class="w-4 h-4"></i>${DESKTOP.on ? 'Re-share computer audio&hellip;' : 'Share computer audio&hellip;'}</button>
                   ${DESKTOP.on ? `<div class="set-ok"><i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>Computer audio connected</div>` : ''}
@@ -4595,7 +4663,9 @@
                         .map((d, i) => `<option value="${escAttr(d.deviceId)}"${MIC.deviceId === d.deviceId ? ' selected' : ''}>${escHtml(d.label || ('Microphone ' + (i + 1)))}</option>`)
                         .join('')}
                     </select>
-                    <p class="text-[11px] text-slate-400 mt-1">The microphone Randy opens when he listens. If the default device isn&rsquo;t picking you up, switch here. Live listening follows your computer&rsquo;s default mic, so for best results also set your preferred device as the system default in your OS sound settings.</p>
+                    <p class="text-[11px] text-slate-400 mt-1">The microphone Randy opens when he listens. If the default device isn&rsquo;t picking you up, switch here.</p>
+                    <p class="text-[11px] text-slate-400 mt-1"><strong>Important:</strong> Chrome&rsquo;s live transcription always listens to your computer&rsquo;s <strong>default</strong> microphone &mdash; it can&rsquo;t be pointed at a specific device from here. To make Randy hear a particular mic, set it as your default input in <strong>${escHtml(osDefaultMicPath())}</strong>.</p>
+                    ${MIC.deviceId ? `<div class="text-[11px] mt-2" style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px"><i data-lucide="alert-triangle" class="w-3 h-3 inline mr-1"></i>You&rsquo;ve pinned a specific microphone. Randy will capture it for keep-alive, but live transcription still follows your OS default input &mdash; set the same device as default in <strong>${escHtml(osDefaultMicPath())}</strong> so what Randy hears matches your choice.</div>` : ''}
                     <button class="btn-outline" style="font-size:11px;padding:5px 12px;margin-top:8px" data-action="refresh-mics">
                       <i data-lucide="refresh-cw" class="w-3 h-3 inline mr-1"></i> Refresh device list
                     </button>
@@ -4604,17 +4674,20 @@
 
                 ${VOICE.ttsSupported ? `
                   <div>
-                    <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Available Speech Voices <span class="text-slate-400 normal-case">(picked automatically — prefers natural-sounding voices)</span></label>
-                    <select id="setting-voice-list" disabled style="opacity:0.85;width:100%;padding:10px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:14px">
+                    <label class="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Speaking Voice <span class="text-slate-400 normal-case">(pick one, or let Randy choose the most natural)</span></label>
+                    <select id="setting-voice-list" style="width:100%;padding:10px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:14px">
                       ${(() => {
                         const picked = pickDeepVoice();
+                        const auto = TTS.chosenName === '';
+                        const head = `<option value=""${auto ? ' selected' : ''}>Automatic${picked ? ' — currently ' + escHtml(picked.name) : ''} (recommended)</option>`;
                         const opts = (window.speechSynthesis.getVoices() || [])
                           .filter(v => /^en(-|_|$)/i.test(v.lang))
-                          .map(v => `<option${picked && v.name === picked.name ? ' selected' : ''}>${escHtml(v.name)} — ${escHtml(v.lang)}${picked && v.name === picked.name ? ' (in use)' : ''}</option>`)
+                          .map(v => `<option value="${escAttr(v.name)}"${TTS.chosenName === v.name ? ' selected' : ''}>${escHtml(v.name)} — ${escHtml(v.lang)}</option>`)
                           .join('');
-                        return opts || '<option>(voices will load after first click)</option>';
+                        return head + (opts || '<option value="" disabled>(voices will load after first click)</option>');
                       })()}
                     </select>
+                    <p class="text-[11px] text-slate-400 mt-1">Voices come from your operating system and browser. &ldquo;Natural&rdquo;, &ldquo;Neural&rdquo; or Google voices sound the most human. Your choice is remembered; if it&rsquo;s ever uninstalled Randy falls back to the automatic pick.</p>
                     <button class="btn-outline" style="font-size:11px;padding:5px 12px;margin-top:8px" data-action="preview-voice" data-idx="${es}">
                       <i data-lucide="play" class="w-3 h-3 inline mr-1"></i> Preview Voice
                     </button>
@@ -5414,7 +5487,20 @@
         // stream is swapped — so two-way users aren't re-prompted.
         document.addEventListener('change', e => {
           const el = e.target;
-          if (!el || el.id !== 'setting-mic') return;
+          if (!el) return;
+
+          // The speaking-voice picker. '' = automatic. Changing it re-renders
+          // Settings so the "(currently …)" hint and selection stay accurate;
+          // the next spoken sentence uses the new voice via resolveVoice().
+          if (el.id === 'setting-voice-list') {
+            TTS.chosenName = el.value || '';
+            saveSettings();
+            showToast(TTS.chosenName ? 'Voice set to ' + TTS.chosenName : 'Using the automatic voice');
+            render();
+            return;
+          }
+
+          if (el.id !== 'setting-mic') return;
           MIC.deviceId = el.value || '';
           saveSettings();
           if (STATE.slots[0].listenOn) {
@@ -5428,6 +5514,7 @@
             });
           }
           showToast(MIC.deviceId ? 'Microphone switched' : 'Using the system default microphone');
+          render();
         });
 
         document.addEventListener('click', e => {
