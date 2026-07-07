@@ -2781,51 +2781,11 @@
         registerProcessor('randy-pcm', RandyPCM);
       `;
 
-      // The transcription worker. Loaded from a Blob URL so it stays inside
-      // this single-file app; it pulls Transformers.js from a CDN and keeps
-      // WASM single-threaded so no cross-origin isolation (SharedArrayBuffer)
-      // is required. NOTE: keep this free of ${...} — it lives in a template.
-      const WHISPER_WORKER_SRC = `
-        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5';
-        env.allowLocalModels = false;
-        try { env.backends.onnx.wasm.numThreads = 1; } catch (e) {}
-        const MODEL = 'onnx-community/whisper-base.en';
-        let asr = null;
-        let device = '';
-        async function build(dev) {
-          return await pipeline('automatic-speech-recognition', MODEL, {
-            device: dev,
-            dtype: dev === 'webgpu' ? 'fp32' : 'q8'
-          });
-        }
-        async function init() {
-          try { asr = await build('webgpu'); device = 'webgpu'; }
-          catch (e) {
-            try { asr = await build('wasm'); device = 'wasm'; }
-            catch (e2) { self.postMessage({ type: 'error', error: String((e2 && e2.message) || e2) }); return; }
-          }
-          self.postMessage({ type: 'ready', device: device });
-        }
-        self.onmessage = async (ev) => {
-          const d = ev.data || {};
-          if (d.type === 'init') { await init(); return; }
-          if (d.type === 'transcribe') {
-            if (!asr) { self.postMessage({ type: 'result', id: d.id, final: d.final, text: '' }); return; }
-            try {
-              // no_repeat_ngram_size stops Whisper's classic failure mode on
-              // call audio: looping a word or short clause ("patching patching
-              // patching…") until the segment ends. Greedy decoding (num_beams
-              // 1) stays fast for live use; the repetition guard is the cheap,
-              // high-value accuracy win.
-              const out = await asr(d.audio, { language: 'en', task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: false, no_repeat_ngram_size: 3, num_beams: 1 });
-              const text = ((out && out.text) || '').trim();
-              self.postMessage({ type: 'result', id: d.id, final: d.final, text: text });
-            } catch (err) {
-              self.postMessage({ type: 'result', id: d.id, final: d.final, text: '', error: String((err && err.message) || err) });
-            }
-          }
-        };
-      `;
+      // The transcription worker now lives in its own bundled file,
+      // whisper-worker.js, which imports the vendored Transformers.js + ONNX
+      // Runtime locally (no CDN) so it runs under the MV3 CSP. See
+      // startWhisperWorker() below and the header comment in that file. Only the
+      // model weights download at runtime; audio never leaves the machine.
 
       // Reflect capture state in the live strip without a full re-render.
       function setDesktopStatus(text) {
@@ -2926,19 +2886,23 @@
       function startWhisperWorker() {
         if (DESKTOP.worker) return;
         try {
-          const blob = new Blob([WHISPER_WORKER_SRC], { type: 'text/javascript' });
-          DESKTOP.workerUrl = URL.createObjectURL(blob);
-          DESKTOP.worker = new Worker(DESKTOP.workerUrl, { type: 'module' });
+          // The transcriber is a REAL bundled file (whisper-worker.js) that
+          // imports the vendored Transformers.js + ONNX Runtime locally — no
+          // CDN, so the MV3 CSP (script-src 'self') permits it. Resolve its URL
+          // through chrome.runtime so it's the extension origin; fall back to a
+          // relative path only when that API is somehow absent.
+          const workerUrl = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
+            ? chrome.runtime.getURL('whisper-worker.js')
+            : 'whisper-worker.js';
+          DESKTOP.worker = new Worker(workerUrl, { type: 'module' });
           DESKTOP.modelLoading = true;
           DESKTOP.worker.onmessage = onWhisperMessage;
           DESKTOP.worker.onerror = (e) => {
-            // Same graceful, silent fallback as the worker 'error' message:
-            // the mic path still works, so don't show an alarming banner/toast.
-            // Tear down the now-useless capture graph (share + AudioContext +
-            // worker) instead of just clearing the status — otherwise a headless
-            // computer-audio tap keeps running idle for the rest of the session
-            // (this is the expected path under the MV3 CSP, which blocks the
-            // worker's remote model import).
+            // Graceful, silent fallback: the mic path still works, so don't
+            // show an alarming banner/toast. Tear down the now-useless capture
+            // graph (share + AudioContext + worker) instead of just clearing
+            // the status — otherwise a headless computer-audio tap keeps running
+            // idle for the rest of the session.
             console.warn('desktop transcriber failed to load — using mic only:', (e && e.message) || '');
             stopDesktopCapture();
           };
