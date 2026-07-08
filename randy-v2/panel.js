@@ -491,6 +491,10 @@
         // The "How should Randy listen?" chooser shown when turning Randy on.
         audioChooserOpen: false,
         settingsUnlocked: false,
+        // While the Settings sheet is open we pause listening (see
+        // pauseListenForSettings); this remembers the capture mode to resume
+        // in when Settings closes. false = nothing to resume.
+        settingsResumeListen: false,
         slots: [makeSlot()]
       };
 
@@ -2740,6 +2744,31 @@
         stopDesktopCapture();
         if (!silent && wasOn) showToast('Randy stopped listening');
         render();
+      }
+
+      // Opening Settings while Randy is listening used to glitch the sheet: the
+      // live-transcript pipeline calls render() constantly, and render()
+      // rebuilds the Settings sheet (it lives inside #app), so inputs lost
+      // focus and the page jumped. Pause listening on the way in and remember
+      // the mode so we can resume it on the way out. No-op when Randy is
+      // already off — which is exactly why the glitch never happened from the
+      // "Randy is off" state. Silent so the user doesn't get a "stopped
+      // listening" toast just for opening Settings.
+      function pauseListenForSettings() {
+        const slot = STATE.slots[0];
+        if (!slot.listenOn) { STATE.settingsResumeListen = false; return; }
+        STATE.settingsResumeListen = slot.audioMode === 'two-way' ? 'two-way' : 'one-way';
+        stopListening({ silent: true });
+      }
+
+      // Leaving Settings — resume the listening paused on the way in, in the
+      // same mode. Runs inside the closing click so two-way's screen-share
+      // picker still has the user activation it needs. No-op if we weren't
+      // listening when Settings opened.
+      function resumeListenAfterSettings() {
+        const mode = STATE.settingsResumeListen;
+        STATE.settingsResumeListen = false;
+        if (mode) startListening(mode);
       }
 
       /* ================================================================
@@ -5681,15 +5710,21 @@
               break;
             }
             case 'switch-tab': {
+              const enteringSettings = STATE.activeTab !== 'settings' && act.dataset.tab === 'settings';
+              const leavingSettings = STATE.activeTab === 'settings' && act.dataset.tab !== 'settings';
               // Leaving Settings ends any running mic test (the meter loop also
               // self-terminates, but stop it up front so the capture closes the
               // instant the user navigates).
               if (act.dataset.tab !== 'settings' && MICTEST.active) stopMicTest();
+              // Pause listening while Settings is open so its constant
+              // re-renders can't glitch the sheet; resume on the way out.
+              if (enteringSettings) pauseListenForSettings();
               STATE.activeTab = act.dataset.tab;
               render();
               // Opening Settings is a good moment to refresh the mic list so
               // the picker shows current devices (labels appear once granted).
               if (act.dataset.tab === 'settings') { try { refreshMicDevices(); } catch {} }
+              if (leavingSettings) resumeListenAfterSettings();
               break;
             }
             case 'close-settings-bg': {
@@ -5697,6 +5732,8 @@
               if (MICTEST.active) stopMicTest();
               STATE.activeTab = 'home';
               render();
+              // Resume the listening paused when Settings opened.
+              resumeListenAfterSettings();
               break;
             }
             case 'toggle-history': {
@@ -5757,6 +5794,11 @@
               if (s.audioMode === m && (m === 'one-way' || DESKTOP.on)) { break; }
               s.audioMode = m;
               saveSettings();
+              // Listening is only paused because Settings is open — don't spin
+              // up a live capture inside the sheet (that's the glitch we're
+              // avoiding). Just record the new mode so we resume in it when
+              // Settings closes.
+              if (STATE.settingsResumeListen) { STATE.settingsResumeListen = m; render(); break; }
               // Apply immediately. Two-way's screen-share picker rides this
               // click's user activation. Restart so the mic's echo-cancellation
               // matches the mode (off for two-way, on for one-way).
