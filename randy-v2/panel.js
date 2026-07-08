@@ -1394,6 +1394,44 @@
         try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
       }
 
+      // Turn a source URL into a readable, distinguishing chip label derived
+      // purely from the URL string (no network). Falls back to hostnameOf on
+      // any parse failure so behavior degrades to the old site-name label.
+      function sourceLabelOf(url) {
+        let u;
+        try { u = new URL(url); } catch { return hostnameOf(url); }
+
+        const host = u.hostname.replace(/^www\./, '');
+        let category;
+        switch (host) {
+          case 'docs.recastsoftware.com': category = 'Recast Docs'; break;
+          case 'recastsoftware.com':      category = 'Recast'; break;
+          case 'docs.liquit.com':         category = 'Liquit Docs'; break;
+          case 'learn.microsoft.com':     category = 'Microsoft Learn'; break;
+          default:                        category = hostnameOf(url);
+        }
+
+        // Build a page name from the path's last meaningful segment.
+        const segs = u.pathname.split('/').filter(Boolean);
+        let seg = segs.pop() || '';
+        if (!seg || /^(index|#)/i.test(seg)) seg = segs.pop() || '';
+        seg = seg.replace(/\.(html?|aspx)$/i, '');
+
+        let pageName = '';
+        try { pageName = decodeURIComponent(seg); } catch { pageName = seg; }
+        pageName = pageName
+          .replace(/[-_]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+
+        if (pageName) {
+          const label = `${category} · ${pageName}`;
+          return label.length > 80 ? label.slice(0, 80) : label;
+        }
+        return category;
+      }
+
       // Only http(s) URLs are safe in an href. Source URLs arrive from the model/
       // proxy (web_search results), so a stray javascript:/data: scheme could in
       // theory become a clickable source chip that runs script in the panel.
@@ -4545,7 +4583,7 @@
             ${mdToHtml(m.content)}
             ${srcs.length ? `<div class="src-chips">${srcs.map(u => `
               <a href="${escAttr(safeHref(u))}" target="_blank" rel="noopener noreferrer" title="${escAttr(u)}">
-                <i data-lucide="link" class="w-3 h-3"></i>${escHtml(hostnameOf(u))}
+                <i data-lucide="link" class="w-3 h-3"></i>${escHtml(sourceLabelOf(u))}
               </a>`).join('')}</div>` : ''}
           </div>${copyBtnHtml(slotIdx, mi)}${speakerBtnHtml(slotIdx, mi)}</div>`;
       }
@@ -5505,7 +5543,7 @@
             badge +
             mdToHtml(m.content) +
             (srcs.length ? '<div class="pip-src">' + srcs.map(u =>
-              '<a href="' + escAttr(safeHref(u)) + '" target="_blank" rel="noopener noreferrer" title="' + escAttr(u) + '">' + escHtml(hostnameOf(u)) + '</a>').join('') + '</div>' : '') +
+              '<a href="' + escAttr(safeHref(u)) + '" target="_blank" rel="noopener noreferrer" title="' + escAttr(u) + '">' + escHtml(sourceLabelOf(u)) + '</a>').join('') + '</div>' : '') +
             '</div></div>';
         });
         if (slot.loading) {
