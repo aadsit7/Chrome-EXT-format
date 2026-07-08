@@ -3635,15 +3635,33 @@
             save: false
           };
           let data;
-          try {
-            data = await postChat(Object.assign({ tools: [tool] }, baseBody), controller.signal);
-          } catch (err) {
-            if (err && err.name === 'AbortError') throw err;
-            // Web search failed (tool rejected, timeout, transient error) —
-            // answer from knowledge rather than staying silent. Same fallback
-            // the voice path uses.
-            console.error('search-enabled answer failed, retrying without tools:', err);
-            data = await postChat(baseBody, controller.signal);
+          // Preferred path: stream the typed/highlight answer through the edge
+          // proxy when one is configured, exactly as the voice path does — the
+          // reply fills the panel live instead of appearing only once fully
+          // generated. Any transport failure (not a user cancel) falls through
+          // to the non-streaming Apps Script path below, so configuring
+          // STREAM_WEBHOOK can never make Randy worse. perfMark tolerates a null
+          // perf, so no timeline is needed here.
+          if (STREAM_WEBHOOK) {
+            try {
+              const r = await streamAssistReply(Object.assign({ tools: [tool] }, baseBody), controller.signal, idx, assistantMsgIdx, null);
+              data = { reply: r.reply, sources: r.sources, usage: r.usage };
+            } catch (err) {
+              if (err && err.name === 'AbortError') throw err;
+              console.warn('streaming answer failed — falling back to non-streaming proxy:', err);
+            }
+          }
+          if (!data) {
+            try {
+              data = await postChat(Object.assign({ tools: [tool] }, baseBody), controller.signal);
+            } catch (err) {
+              if (err && err.name === 'AbortError') throw err;
+              // Web search failed (tool rejected, timeout, transient error) —
+              // answer from knowledge rather than staying silent. Same fallback
+              // the voice path uses.
+              console.error('search-enabled answer failed, retrying without tools:', err);
+              data = await postChat(baseBody, controller.signal);
+            }
           }
 
           // Parse exactly like the voice path: strip any false-start preamble,
