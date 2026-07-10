@@ -12,7 +12,9 @@
          handshake off the first overheard question. -->
     <link rel="preconnect" href="https://script.google.com" crossorigin>
     <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <!-- The display fonts are injected from panel.js (loadDisplayFonts) so a
+         slow fonts fetch can never block the panel's first paint; the
+         preconnects above still warm the connection. -->
     <!-- Tailwind: a static local build (Preflight + the utilities this app uses).
          The cdn.tailwindcss.com runtime can't run under the Manifest V3 CSP. -->
     <link href="tailwind.css" rel="stylesheet">
