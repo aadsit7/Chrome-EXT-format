@@ -524,6 +524,9 @@
         recognition: null,        // shared SpeechRecognition instance
         wantRunning: false,       // should the recognizer be running?
         permissionDenied: false,
+        starting: false,          // a manual mic start is in flight — drives the
+                                  // instant "Starting…" orb feedback and blocks
+                                  // a double-click from racing two mic captures
         toastTimeoutId: null,
         toastMessage: '',
         playingMsg: null,         // {slot, msg} of the message currently being spoken
@@ -2615,7 +2618,7 @@
 
       async function startListening(mode, { auto = false } = {}) {
         const slot = STATE.slots[0];
-        if (slot.listenOn) return 'ok';
+        if (slot.listenOn || VOICE.starting) return 'ok';
         const r = ensureRecognition();
         if (!r) { if (!auto) showToast('Randy needs Chrome or Edge to listen'); return 'unsupported'; }
 
@@ -2633,6 +2636,13 @@
           saveSettings();
         }
         const twoWay = audioMode === 'two-way';
+
+        // Manual starts show feedback INSTANTLY. The mic/share prompts below
+        // can take from hundreds of milliseconds to several seconds, and with
+        // no state change until they resolve, the orb looked dead ("sticky")
+        // for that whole window. The auto path stays silent — its retry loop
+        // would flicker the orb on every attempt.
+        if (!auto) { VOICE.starting = true; render(); }
 
         // TWO-WAY ONLY: offer the digital computer-audio tap FIRST, while the
         // click's transient activation is still fresh — getDisplayMedia
@@ -2689,6 +2699,7 @@
         // acquireMicStream handles a pinned-but-unplugged device by falling back
         // to the default, so a stale choice can never strand listening.
         const micStatus = await acquireMicStream(twoWay);
+        VOICE.starting = false;   // both exits below re-render with the real state
         if (micStatus !== 'ok') {
           if (micStatus === 'denied') {
             // A genuine denial — stop auto-retrying and tell the user how to
@@ -3857,7 +3868,14 @@
           const m = slot.messages[msgIdx];
           if (m && m.role === 'assistant') m.content = sanitizeAssistAnswer(visible) || '';
           const now = performance.now();
-          if (now - lastRender > 110) { lastRender = now; if (!isComposerFocused()) render(); }
+          if (now - lastRender > 110) {
+            lastRender = now;
+            // Patch the streaming card in place — no full-app rebuild per
+            // chunk, and the text keeps flowing even while the composer is
+            // focused (the patch never touches the caret). Full render only
+            // when the card isn't in the DOM (e.g. the saved view is open).
+            if (!patchStreamMessage(slot, msgIdx, idx) && !isComposerFocused()) render();
+          }
           // Feed finished spoken sentences to the TTS queue as they land.
           if (speakOn && spokenStart !== -1) {
             const ready = reply.slice(spokenStart + spokenEmitted);
@@ -4251,6 +4269,14 @@
           statusText: 'Thinking…', statusClass: '',
           pill: 'think', pillLabel: 'Thinking…', pillIcon: '<i data-lucide="loader-circle" class="w-4 h-4 vp-spin"></i>'
         };
+        // A manual mic start is in flight (see startListening): show it the
+        // instant the user clicks, before the mic/share prompts resolve.
+        if (VOICE.starting) return {
+          orbClass: 'thinking', orbInner: '<span class="orb-dots"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></span>',
+          action: 'noop', title: 'Starting the microphone…', disabled: false, live: false,
+          statusText: 'Starting…', statusClass: 'listening',
+          pill: 'think', pillLabel: 'Starting…', pillIcon: '<i data-lucide="loader-circle" class="w-4 h-4 vp-spin"></i>'
+        };
         if (on) return {
           orbClass: 'monitor', orbInner: '<i data-lucide="mic" class="w-8 h-8"></i>',
           action: 'toggle-listen', title: 'Randy is on — click to turn him off', disabled: false, live: true,
@@ -4443,6 +4469,7 @@
           const researching = lastUser && lastUser.kind === 'assist-q';
           return { stageKey: 'researching', orbLabel: researching ? 'Researching' : 'Answering', icon: 'search', label: researching ? 'Researching the support docs' : 'Writing the answer', sub: researching ? 'Checking Recast & Microsoft documentation' : 'Putting the answer together', mode: 'question', text: lastUser ? lastUser.content : '' };
         }
+        if (VOICE.starting) return { stageKey: 'listening', orbLabel: 'Starting', icon: 'mic', label: 'Turning the microphone on…', sub: 'Opening the mic — one moment', mode: 'question', text: '' };
         if (TECH.pending) return { stageKey: 'analyzing', orbLabel: 'Analyzing', icon: 'scan-search', label: 'Analyzing the question', sub: 'Deciding whether this needs an answer', mode: 'question', text: TECH.activeText || VOICE.interimText || '' };
         if (slot.listenOn) return { stageKey: 'listening', orbLabel: 'Listening', icon: 'ear', label: 'Listening for questions', sub: 'Randy is on the call — speak naturally', mode: 'transcript', text: VOICE.interimText || '' };
         return { stageKey: 'off', orbLabel: 'Off', icon: 'mic', label: 'Randy is off', sub: 'Tap the mic to start listening', mode: 'prompt', text: 'Turn Randy on and he listens to your call, spots the technical questions, and answers them right here — or just type below anytime.' };
@@ -4634,31 +4661,50 @@
         </div>`;
       }
 
-      function renderBotMessage(slot, m, mi, slotIdx) {
-        const av = `<div class="msg-av">${escHtml(slot.label.charAt(0))}</div>`;
-        // One render path for every Randy answer — typed or overheard — so the
-        // format and sources are identical. The "Technical assist" badge is the
-        // only thing unique to overheard questions.
-        const srcs = Array.isArray(m.sources) ? m.sources : [];
+      // The inner HTML of a bot message's msg-wrap: badge + "Writing…" pill
+      // while the answer is empty, badge + answer card once text exists. One
+      // renderer shared by renderBotMessage (full render) and
+      // patchStreamMessage (the in-place streaming path) so the two can never
+      // drift apart. The "Technical assist" badge is the only thing unique to
+      // overheard questions.
+      function botMessageInnerHtml(slot, m, mi, slotIdx) {
         const badge = m.kind === 'assist'
           ? `<div class="assist-badge"><i data-lucide="ear" class="w-3 h-3"></i>Technical assist</div>`
           : '';
-        // While the answer is still arriving the placeholder has no content
-        // yet: show the compact "Writing…" pill beside the single "R" avatar.
-        // The first streamed chunk replaces it in place with the answer card.
-        if (!m.content) {
-          return `${av}
-            <div class="msg-wrap ans-wrap">${badge}${typingPillHtml()}</div>`;
-        }
+        if (!m.content) return `${badge}${typingPillHtml()}`;
+        const srcs = Array.isArray(m.sources) ? m.sources : [];
+        return `${badge}${answerCardHtml(m.content, srcs, {
+          expanded: !!m.showAllBullets,
+          moreAttrs: `data-action="show-more-bullets" data-slot="${slotIdx}" data-msg="${mi}"`,
+          actionsHtml: speakerBtnHtml(slotIdx, mi) + copyBtnHtml(slotIdx, mi)
+        })}`;
+      }
+
+      function renderBotMessage(slot, m, mi, slotIdx) {
+        const av = `<div class="msg-av">${escHtml(slot.label.charAt(0))}</div>`;
+        // While this answer is still in flight its wrap carries a stable id so
+        // each arriving chunk patches JUST this node (patchStreamMessage)
+        // instead of rebuilding the whole app. The id is unique: one slot, one
+        // in-flight answer, and it disappears with the final full render.
+        const streamId = (slot.loading && mi === slot.messages.length - 1) ? ' id="stream-msg"' : '';
         return `${av}
-          <div class="msg-wrap ans-wrap">
-            ${badge}
-            ${answerCardHtml(m.content, srcs, {
-              expanded: !!m.showAllBullets,
-              moreAttrs: `data-action="show-more-bullets" data-slot="${slotIdx}" data-msg="${mi}"`,
-              actionsHtml: speakerBtnHtml(slotIdx, mi) + copyBtnHtml(slotIdx, mi)
-            })}
-          </div>`;
+          <div class="msg-wrap ans-wrap"${streamId}>${botMessageInnerHtml(slot, m, mi, slotIdx)}</div>`;
+      }
+
+      // In-place update for the one streaming answer. A full render() per
+      // chunk rebuilt the entire app up to ~9×/sec, which swallowed clicks
+      // that straddled a rebuild (mousedown target replaced before mouseup)
+      // and made every button feel sticky while Randy writes. Returns false
+      // when the node isn't on screen (saved view open, first paint pending)
+      // so the caller can fall back to a full render.
+      function patchStreamMessage(slot, msgIdx, slotIdx) {
+        const wrap = document.getElementById('stream-msg');
+        if (!wrap) return false;
+        const m = slot.messages[msgIdx];
+        if (!m || m.role !== 'assistant') return false;
+        wrap.innerHTML = botMessageInnerHtml(slot, m, msgIdx, slotIdx);
+        if (window.lucide?.createIcons) try { window.lucide.createIcons({ root: wrap }); } catch {}
+        return true;
       }
 
       function renderUserMessage(m) {
@@ -6247,7 +6293,24 @@
         setTimeout(() => { try { autoArmSelectionCapture(); } catch {} }, 600);
       }
 
+      // The display fonts (Poppins/Figtree/JetBrains Mono) load OFF the render
+      // path. As a <link rel="stylesheet"> in panel.html they were
+      // render-blocking: on a slow or filtered network the panel stayed blank
+      // until the fonts CSS resolved (or timed out). Injected here instead,
+      // the panel paints instantly with the system-font fallbacks and the
+      // brand fonts swap in the moment they arrive — the URL is unchanged, so
+      // a warm cache still gives first-paint brand fonts.
+      function loadDisplayFonts() {
+        try {
+          const l = document.createElement('link');
+          l.rel = 'stylesheet';
+          l.href = 'https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap';
+          document.head.appendChild(l);
+        } catch {}
+      }
+
       function boot() {
+        loadDisplayFonts();
         // Fast path: a synchronous localStorage hint says this install already
         // finished onboarding, so render the normal tool and start listening
         // IMMEDIATELY — identical to the original boot, with no wait on the async
