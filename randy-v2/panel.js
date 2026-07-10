@@ -4546,6 +4546,33 @@
 
       /* ---------- message rendering ---------- */
 
+      // Find the index just past the first REAL sentence break in a line, or
+      // -1 when there is none. The short-answer strip quotes this fragment as
+      // the card's headline, so a false break actively misstates the answer.
+      // A candidate break is rejected when it is:
+      //   - an abbreviation or single-letter initial ("e.g.", "vs.", "ver.",
+      //     "approx.", "U."), which would truncate mid-thought;
+      //   - inside an unclosed **bold** or `code` span, which would strand
+      //     the markers as literal text on both sides of the split;
+      //   - not followed by something that starts like a new sentence.
+      // When every candidate is rejected the caller falls back to the whole
+      // first line — conservative, but never a misquote.
+      function firstSentenceEnd(line) {
+        const re = /[.!?](?=["')\]]*(?:\s|$))/g;
+        let m;
+        while ((m = re.exec(line))) {
+          const end = m.index + 1;
+          const before = line.slice(0, end);
+          if (/(?:^|[\s(])(?:e\.g|i\.e|etc|vs|cf|al|ca|approx|ver|rev|no|nos|fig|sec|min|max|dept|inc|corp|dr|mr|mrs|ms|st|jr|sr|[A-Za-z])\.$/i.test(before)) continue;
+          if ((before.match(/\*\*/g) || []).length % 2) continue;
+          if ((before.match(/`/g) || []).length % 2) continue;
+          const after = line.slice(end).replace(/^["')\]]*\s*/, '');
+          if (after && !/^[A-Z0-9*`_("'\[-]/.test(after)) continue;
+          return end;
+        }
+        return -1;
+      }
+
       // The backend sends one text blob (there is no separate short_answer
       // field), so the card's "Short answer" strip is carved off client-side:
       // the first sentence of the first line, or the whole first line when no
@@ -4560,10 +4587,10 @@
         const restLines = lines.slice(i + 1).join('\n');
         const block = line.match(/^(?:[-*•]\s+|\d+[.)]\s+|#{1,4}\s+)(.*)$/);
         if (block) return { short: block[1], rest: restLines };
-        const sentence = line.match(/^[\s\S]*?[.!?](?=["')\]]*(?:\s|$))/);
-        if (sentence && sentence[0].length < line.length) {
-          const tail = line.slice(sentence[0].length).trim();
-          return { short: sentence[0].trim(), rest: (tail ? tail + '\n' : '') + restLines };
+        const end = firstSentenceEnd(line);
+        if (end !== -1 && end < line.length) {
+          const tail = line.slice(end).trim();
+          return { short: line.slice(0, end).trim(), rest: (tail ? tail + '\n' : '') + restLines };
         }
         return { short: line, rest: restLines };
       }
