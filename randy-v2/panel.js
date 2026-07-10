@@ -4367,22 +4367,16 @@
       }
 
       function renderChatHeader(slot, idx, vm) {
-        const on = !!slot.listenOn;
-        const sub = slot.isSpeaking ? 'Talking…'
-          : slot.loading ? 'Thinking…'
-          : vm.live && vm.statusClass === 'listening' && vm.pill === 'live' ? 'Listening to you…'
-          : on ? 'Listening for tech questions'
-          : 'Online · Recast product expert';
+        // The brand cluster (avatar + title/status) is intentionally gone from
+        // the MAIN chat header only — the saved-view and Settings headers keep
+        // theirs. The flex spacer stands in for the removed title block so the
+        // Settings button stays pinned to the right.
         return `
           <header class="chat-head">
             <button class="icon-btn sb-toggle" data-action="toggle-history" title="Conversations" aria-label="Open conversations">
               <i data-lucide="panel-left" class="w-5 h-5"></i>
             </button>
-            <div class="chat-avatar ${on ? '' : 'muted'}">${escHtml(slot.label.charAt(0))}<span class="status-dot"></span></div>
-            <div class="head-titles">
-              <div class="conv-title">${escHtml(slot.label)}</div>
-              <div class="conv-sub">${sub}</div>
-            </div>
+            <div style="flex:1"></div>
             <div class="head-actions">
               <button class="icon-btn" data-action="switch-tab" data-tab="settings" title="Settings" aria-label="Settings">
                 <i data-lucide="more-horizontal" class="w-5 h-5"></i>
@@ -4524,7 +4518,7 @@
                   `).join('') + (slot.loading && !placeholderPending ? `
                     <div class="msg-row">
                       <div class="msg-av">${escHtml(slot.label.charAt(0))}</div>
-                      <div class="chat-bubble chat-bot typing"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>
+                      <div class="msg-wrap ans-wrap">${typingPillHtml()}</div>
                     </div>
                   ` : '') : renderHomeEmpty(slot)}
                 </div>
@@ -4552,6 +4546,67 @@
 
       /* ---------- message rendering ---------- */
 
+      // The backend sends one text blob (there is no separate short_answer
+      // field), so the card's "Short answer" strip is carved off client-side:
+      // the first sentence of the first line, or the whole first line when no
+      // clean sentence break exists. Nothing is dropped or reordered — the
+      // remainder renders below in the detail zone.
+      function splitShortAnswer(raw) {
+        const lines = String(raw || '').split('\n');
+        let i = 0;
+        while (i < lines.length && !lines[i].trim()) i++;
+        if (i >= lines.length) return { short: '', rest: '' };
+        const line = lines[i].trim();
+        const restLines = lines.slice(i + 1).join('\n');
+        const block = line.match(/^(?:[-*•]\s+|\d+[.)]\s+|#{1,4}\s+)(.*)$/);
+        if (block) return { short: block[1], rest: restLines };
+        const sentence = line.match(/^[\s\S]*?[.!?](?=["')\]]*(?:\s|$))/);
+        if (sentence && sentence[0].length < line.length) {
+          const tail = line.slice(sentence[0].length).trim();
+          return { short: sentence[0].trim(), rest: (tail ? tail + '\n' : '') + restLines };
+        }
+        return { short: line, rest: restLines };
+      }
+
+      // One card renderer shared by the live chat and the read-only saved view
+      // so both draw answers identically. `moreAttrs` (a data-* attribute
+      // string) enables the >5-bullet clamp with its "Show more" button; the
+      // saved view passes none and always shows everything.
+      function answerCardHtml(content, srcs, opts) {
+        opts = opts || {};
+        const split = splitShortAnswer(content);
+        let liCount = 0;
+        const bodyHtml = mdToHtml(split.rest)
+          .replace(/<li>/g, () => (++liCount > 5 ? '<li class="ans-li-extra">' : '<li>'));
+        const clamp = !!opts.moreAttrs && !opts.expanded && liCount > 5;
+        return `
+          <div class="ans-card">
+            <div class="ans-short">
+              <div class="ans-eyebrow">Short answer</div>
+              <div class="ans-short-text">${mdInline(escHtml(split.short))}</div>
+            </div>
+            ${bodyHtml ? `<div class="ans-body${clamp ? ' clamped' : ''}">
+              ${bodyHtml}
+              ${clamp ? `<button class="ans-more" ${opts.moreAttrs}>Show more</button>` : ''}
+            </div>` : ''}
+            ${(srcs && srcs.length) ? `<div class="ans-sources">
+              <div class="ans-eyebrow muted">Sources</div>
+              <div class="ans-src-chips">${srcs.map(u => `
+                <a class="ans-chip" href="${escAttr(safeHref(u))}" target="_blank" rel="noopener noreferrer" title="${escAttr(u)}"><i data-lucide="book-open"></i>${escHtml(sourceLabelOf(u))}</a>`).join('')}</div>
+            </div>` : ''}
+            ${opts.actionsHtml ? `<div class="ans-foot">${opts.actionsHtml}</div>` : ''}
+          </div>`;
+      }
+
+      // Compact in-thread indicator shown while Randy is generating; the same
+      // slot swaps to the answer card in place once streamed text arrives.
+      function typingPillHtml() {
+        return `<div class="ans-typing" role="status" aria-live="polite" aria-label="Randy is writing">
+          <span class="ans-tdots" aria-hidden="true"><span class="ans-tdot"></span><span class="ans-tdot"></span><span class="ans-tdot"></span></span>
+          <span class="ans-ttext">Writing…</span>
+        </div>`;
+      }
+
       function renderBotMessage(slot, m, mi, slotIdx) {
         const av = `<div class="msg-av">${escHtml(slot.label.charAt(0))}</div>`;
         // One render path for every Randy answer — typed or overheard — so the
@@ -4561,31 +4616,22 @@
         const badge = m.kind === 'assist'
           ? `<div class="assist-badge"><i data-lucide="ear" class="w-3 h-3"></i>Technical assist</div>`
           : '';
-        // While the answer is still arriving the placeholder has no content yet.
-        // Show the typing dots inside this single bubble (keeping the badge) so
-        // there's only ever one "R" avatar while Randy is working — instead of
-        // this empty bubble PLUS a second avatar row of dots (renderChat used to
-        // append that, which read as two Randys for every action in flight).
+        // While the answer is still arriving the placeholder has no content
+        // yet: show the compact "Writing…" pill beside the single "R" avatar.
+        // The first streamed chunk replaces it in place with the answer card.
         if (!m.content) {
-          const dots = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
-          return badge
-            ? `${av}
-              <div class="msg-wrap"><div class="chat-bubble chat-bot" style="white-space:normal">
-                ${badge}
-                <span class="bubble-dots">${dots}</span>
-              </div></div>`
-            : `${av}
-              <div class="msg-wrap"><div class="chat-bubble chat-bot typing">${dots}</div></div>`;
+          return `${av}
+            <div class="msg-wrap ans-wrap">${badge}${typingPillHtml()}</div>`;
         }
         return `${av}
-          <div class="msg-wrap"><div class="chat-bubble chat-bot chat-md" style="padding-right:38px;white-space:normal">
+          <div class="msg-wrap ans-wrap">
             ${badge}
-            ${mdToHtml(m.content)}
-            ${srcs.length ? `<div class="src-chips">${srcs.map(u => `
-              <a href="${escAttr(safeHref(u))}" target="_blank" rel="noopener noreferrer" title="${escAttr(u)}">
-                <i data-lucide="link" class="w-3 h-3"></i>${escHtml(sourceLabelOf(u))}
-              </a>`).join('')}</div>` : ''}
-          </div>${copyBtnHtml(slotIdx, mi)}${speakerBtnHtml(slotIdx, mi)}</div>`;
+            ${answerCardHtml(m.content, srcs, {
+              expanded: !!m.showAllBullets,
+              moreAttrs: `data-action="show-more-bullets" data-slot="${slotIdx}" data-msg="${mi}"`,
+              actionsHtml: speakerBtnHtml(slotIdx, mi) + copyBtnHtml(slotIdx, mi)
+            })}
+          </div>`;
       }
 
       function renderUserMessage(m) {
@@ -4596,15 +4642,14 @@
       }
 
       function copyBtnHtml(slotIdx, msgIdx) {
-        return `<button class="msg-copy" title="Copy answer" aria-label="Copy answer" data-action="copy-msg" data-slot="${slotIdx}" data-msg="${msgIdx}"><i data-lucide="copy" class="w-3 h-3"></i></button>`;
+        return `<button class="ans-act" title="Copy answer" aria-label="Copy answer" data-action="copy-msg" data-slot="${slotIdx}" data-msg="${msgIdx}"><i data-lucide="copy"></i></button>`;
       }
 
       function speakerBtnHtml(slotIdx, msgIdx) {
         if (!VOICE.ttsSupported) return '';
         const isPlayingThis = !!(VOICE.playingMsg && VOICE.playingMsg.slot === slotIdx && VOICE.playingMsg.msg === msgIdx);
         const icon = isPlayingThis ? 'volume-x' : 'volume-2';
-        const title = isPlayingThis ? 'Stop' : 'Speak';
-        return `<button class="tts-btn ${isPlayingThis ? 'playing' : ''}" title="${title}" aria-label="${title}" data-action="tts-speak" data-slot="${slotIdx}" data-msg="${msgIdx}"><i data-lucide="${icon}" class="w-3 h-3"></i></button>`;
+        return `<button class="ans-act ${isPlayingThis ? 'playing' : ''}" title="${isPlayingThis ? 'Stop' : 'Read aloud'}" aria-label="Read answer aloud" data-action="tts-speak" data-slot="${slotIdx}" data-msg="${msgIdx}"><i data-lucide="${icon}"></i></button>`;
       }
 
       /* ---------- saved conversation (read-only, opens in place) ---------- */
@@ -4647,11 +4692,10 @@
                   <div class="msg-row me"><div class="chat-bubble chat-user">${escHtml(p.question)}</div></div>
                   <div class="msg-row">
                     <div class="msg-av">R</div>
-                    <div class="popout-answer">
-                      <div class="chat-bubble chat-bot chat-md" style="white-space:normal">${mdToHtml(p.answer)}</div>
-                      <button class="popout-copy" data-action="copy-answer" data-id="${escAttr(entry.id)}" data-pair="${i}" title="Copy answer" aria-label="Copy answer">
-                        <i data-lucide="copy" class="w-3.5 h-3.5"></i>
-                      </button>
+                    <div class="msg-wrap ans-wrap">
+                      ${answerCardHtml(p.answer, [], {
+                        actionsHtml: `<button class="ans-act" data-action="copy-answer" data-id="${escAttr(entry.id)}" data-pair="${i}" title="Copy answer" aria-label="Copy answer"><i data-lucide="copy"></i></button>`
+                      })}
                     </div>
                   </div>
                 `).join('')}
@@ -6005,6 +6049,16 @@
               // Plain text, not markdown source — pastes cleanly into
               // chat/email mid-call.
               copyTextToClipboard(stripMarkdown(m.content), act);
+              break;
+            }
+            case 'show-more-bullets': {
+              // Reveal the clamped bullets on this answer card — pure
+              // re-render from state, nothing is re-fetched.
+              const slot = STATE.slots[parseInt(act.dataset.slot, 10)];
+              const m = slot && slot.messages[parseInt(act.dataset.msg, 10)];
+              if (!m) break;
+              m.showAllBullets = true;
+              render();
               break;
             }
             case 'noop': break;

@@ -314,6 +314,54 @@ textarea { resize: vertical; min-height: 80px; }
 .tts-btn:hover { color: var(--gray-600); background: var(--gray-100); }
 .tts-btn.playing { color: var(--blue-600); }
 
+/* ================================================================
+ * ASSISTANT ANSWER CARD — short-answer strip, detail bullets,
+ * sources chips, action footer. Shared by live chat + saved view.
+ * ================================================================ */
+.msg-wrap.ans-wrap { max-width: 85%; }
+.ans-card { background: #fff; border: 1px solid var(--gray-150); border-radius: 16px; overflow: hidden; box-shadow: none; font-family: var(--font-sans); }
+.ans-eyebrow { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--blue-600); margin-bottom: 4px; }
+.ans-eyebrow.muted { color: var(--gray-500); }
+.ans-short { background: var(--blue-50); padding: 12px 14px; }
+.ans-short-text { font-size: 14px; line-height: 1.5; font-weight: 500; color: var(--navy-deep); overflow-wrap: break-word; }
+.ans-short-text strong { font-weight: 700; color: var(--navy-deep); }
+.ans-body { padding: 12px 14px; font-size: 13.5px; line-height: 1.5; color: var(--gray-900); overflow-wrap: break-word; }
+.ans-body > * { margin: 0 0 10px; }
+.ans-body > *:last-child { margin-bottom: 0; }
+.ans-body strong { font-weight: 600; color: var(--navy-deep); }
+.ans-body code { background: var(--gray-100); padding: 2px 5px; border-radius: 4px; font-size: 12px; font-family: var(--font-mono); }
+.ans-body a { color: var(--blue-600); text-decoration: underline; text-underline-offset: 3px; }
+/* No headings inside the card — md headers render as plain bold lines. */
+.ans-body .md-h { font-size: 13.5px; font-weight: 600; color: var(--navy-deep); }
+.ans-body ul { list-style: none; padding: 0; }
+.ans-body ul li { position: relative; padding-left: 17px; line-height: 1.5; }
+.ans-body ul li + li, .ans-body ol li + li { margin-top: 10px; }
+.ans-body ul li::before { content: ''; position: absolute; left: 0; top: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--blue-300); }
+.ans-body ol { padding-left: 20px; }
+.ans-body.clamped .ans-li-extra { display: none; }
+.ans-more { display: inline-block; background: none; border: none; padding: 0; margin-top: 2px; font-size: 12px; font-weight: 600; color: var(--blue-600); cursor: pointer; font-family: inherit; }
+.ans-more:hover { text-decoration: underline; }
+.ans-sources { padding: 0 14px 12px; }
+.ans-src-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ans-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 500; color: var(--gray-600); background: var(--gray-100); border-radius: 999px; padding: 4px 10px; text-decoration: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: background 0.12s, color 0.12s; }
+.ans-chip:hover { background: var(--blue-50); color: var(--blue-600); }
+.ans-chip svg, .ans-chip i { width: 12px; height: 12px; flex-shrink: 0; }
+.ans-foot { display: flex; align-items: center; justify-content: flex-start; gap: 2px; border-top: 1px solid var(--gray-150); padding: 6px 8px; }
+.ans-act { width: 28px; height: 28px; display: grid; place-items: center; background: transparent; border: none; border-radius: 8px; padding: 0; color: var(--gray-600); cursor: pointer; transition: background 0.12s, color 0.12s; line-height: 0; }
+.ans-act:hover { background: var(--gray-100); }
+.ans-act svg, .ans-act i { width: 15px; height: 15px; }
+.ans-act.playing { color: var(--blue-600); }
+.ans-act.copied { color: var(--green-600); background: var(--green-50); }
+
+/* Compact "Writing…" pill shown inline in the thread while generating. */
+.ans-typing { display: inline-flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--gray-150); border-radius: 999px; padding: 7px 14px; }
+.ans-tdots { display: inline-flex; align-items: center; gap: 4px; }
+.ans-tdot { width: 6px; height: 6px; border-radius: 50%; background: var(--gray-500); animation: ansBounce 1.2s ease-in-out infinite; }
+.ans-tdot:nth-child(2) { animation-delay: 0.18s; }
+.ans-tdot:nth-child(3) { animation-delay: 0.36s; }
+@keyframes ansBounce { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-4px); } }
+.ans-ttext { font-size: 12px; color: var(--gray-500); }
+
 /* ===== Empty-state hero (mic) ===== */
 .hero { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 9vh 20px 24px; }
 .orb-wrap { position: relative; width: 116px; height: 116px; margin-bottom: 18px; display: grid; place-items: center; }
@@ -621,7 +669,7 @@ textarea { resize: vertical; min-height: 80px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .orb-wrap .orb-ring, .sound-wave-bar, .typing-dot, .vp .vp-dot, .chat-avatar .status-dot, .interim-caret, .voice-toast, .vp-spin, .comp-mic.live { animation: none !important; }
+  .orb-wrap .orb-ring, .sound-wave-bar, .typing-dot, .ans-tdot, .vp .vp-dot, .chat-avatar .status-dot, .interim-caret, .voice-toast, .vp-spin, .comp-mic.live { animation: none !important; }
   .orb-wrap .orb-ring { display: none; }
   .ac-scrim, .ac-modal, .sheet { animation: none !important; }
   .ac-seg-thumb, .seg2-thumb { transition: none !important; }
