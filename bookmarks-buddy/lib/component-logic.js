@@ -1917,6 +1917,9 @@ class Component extends DCLogic {
       // ----- Pages manager (opened from Settings) -----
       pagesOpen: s.pagesOpen,
       openPages: () => this.setState({ settingsOpen: false, pagesOpen: true }),
+      // Rearrange lives in Settings now (dock button removed): close the sheet
+      // and drop straight into edit mode so the springboard is already wiggling.
+      openRearrange: () => this.setState({ settingsOpen: false, editMode: true }),
       closePages: () => this.setState({ pagesOpen: false }),
       pagesManager: s.pages.map((pg, i) => {
         const ids = [];
