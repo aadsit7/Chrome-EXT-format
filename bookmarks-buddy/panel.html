@@ -288,7 +288,6 @@
     <!-- dock — microphone on the left-hand side, plus (add site) on the right -->
     <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:0 18px 18px; padding:11px 16px; border-radius:24px; background:var(--bb-glass); border:1px solid var(--bb-glass-bd); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px); box-shadow:var(--bb-glass-sh);">
       <button onclick="{{ toggleMic }}" aria-label="{{ micLabel }}" style="position:relative; width:62px; height:62px; border-radius:50%; border:none; cursor:pointer; display:grid; place-items:center; margin-top:-14px; {{ micBtnStyle }} {{ micBtnAnim }}"><span class="bb-mic-ring" style="{{ micRingStyle }}"></span><span style="{{ micIconOnStyle }}"><i data-lucide="mic" style="width:27px;height:27px;"></i></span><span style="{{ micIconOffStyle }}"><i data-lucide="mic-off" style="width:27px;height:27px;"></i></span></button>
-      <button onclick="{{ toggleEdit }}" aria-label="Rearrange" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="layout-grid" style="width:22px;height:22px;"></i></button>
       <button onclick="{{ toggleList }}" aria-label="List view" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh); {{ listBtnStyle }}"><i data-lucide="list" style="width:22px;height:22px;"></i></button>
       <button onclick="{{ openSettings }}" aria-label="Settings" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="settings-2" style="width:22px;height:22px;"></i></button>
       <button onclick="{{ openAdd }}" aria-label="Add site" style="width:46px; height:46px; border-radius:15px; border:none; cursor:pointer; display:grid; place-items:center; background:var(--bb-ctl); color:var(--bb-fg); box-shadow:var(--bb-tile-sh);"><i data-lucide="plus" style="width:23px;height:23px;"></i></button>
@@ -416,6 +415,15 @@
           <div style="flex:1; min-width:0;">
             <div style="font-size:14px; font-weight:700; color:var(--bb-fg);">Edit pages</div>
             <div style="font-size:12px; font-weight:500; color:var(--bb-fg-soft); margin-top:1px;">See every page and drag to reorder</div>
+          </div>
+          <i data-lucide="chevron-right" style="width:20px;height:20px;color:var(--bb-fg-soft);flex-shrink:0;"></i>
+        </button>
+
+        <button onclick="{{ openRearrange }}" style="display:flex; align-items:center; gap:13px; width:100%; text-align:left; padding:14px 0; border:none; border-top:1px solid var(--bb-input-bd); background:transparent; cursor:pointer; font-family:inherit;">
+          <div style="width:40px;height:40px;border-radius:11px;display:grid;place-items:center;background:var(--bb-input-bg);color:var(--bb-accent);flex-shrink:0;"><i data-lucide="layout-grid" style="width:20px;height:20px;"></i></div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:14px; font-weight:700; color:var(--bb-fg);">Rearrange sites</div>
+            <div style="font-size:12px; font-weight:500; color:var(--bb-fg-soft); margin-top:1px;">Move tiles, make folders, or remove sites</div>
           </div>
           <i data-lucide="chevron-right" style="width:20px;height:20px;color:var(--bb-fg-soft);flex-shrink:0;"></i>
         </button>
