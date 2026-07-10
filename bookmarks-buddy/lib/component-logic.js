@@ -24,6 +24,7 @@ class Component extends DCLogic {
     ];
     this.state = {
       bookmarks: [], pages: [], pageNames: [], currentPage: 0,
+      view: 'grid',                  // springboard style: 'grid' (tiles) or 'list' (A→Z App Library)
       search: '', adding: false, settingsOpen: false, pagesOpen: false, folderOpen: null, folderEdit: false,
       editMode: false, voiceOpen: false, listening: false, interim: '', heard: '',
       draftName: '', draftUrl: '', dark: false, speak: false,
@@ -54,6 +55,7 @@ class Component extends DCLogic {
     try { settings = JSON.parse(localStorage.getItem(this.LS_S) || 'null'); } catch {}
     if (settings && typeof settings === 'object') {
       this.state.dark = !!settings.dark; this.state.speak = !!settings.speak;
+      if (settings.view === 'list' || settings.view === 'grid') this.state.view = settings.view;
     }
   }
   // Try to honor the user's existing springboard organization from the live app.
@@ -102,7 +104,7 @@ class Component extends DCLogic {
     // has baselined us, and a no-op when no token is configured).
     try { this.sheetSync(); } catch {}
   }
-  saveSettings() { try { localStorage.setItem(this.LS_S, JSON.stringify({ dark: this.state.dark, speak: this.state.speak })); } catch {} }
+  saveSettings() { try { localStorage.setItem(this.LS_S, JSON.stringify({ dark: this.state.dark, speak: this.state.speak, view: this.state.view })); } catch {} }
 
   /* ================================================================
    * Google Sheet backend — ported from the web app (index_26) so the
@@ -1866,11 +1868,51 @@ class Component extends DCLogic {
     const transcript = s.interim || s.heard || (s.listening ? 'Listening… try “open ' + fname + '”' : 'Tap the mic, then say “open ' + fname + '”');
     const folder = s.folderOpen;
 
+    // ----- List view: one flat, deduped, A→Z sectioned list of every site -----
+    // Folders are dissolved here — every bookmark is its own row, exactly like
+    // the iPhone App Library list. Rows reuse the search-result open behaviour.
+    const seenIds = new Set();
+    const flat = [];
+    s.pages.forEach(pg => pg.forEach(c => {
+      if (!c) return;
+      (c.type === 'folder' ? c.items : [c.id]).forEach(id => {
+        if (seenIds.has(id)) return; seenIds.add(id);
+        const bm = byId(id); if (bm) flat.push(bm);
+      });
+    }));
+    // Any bookmark the layout hasn't placed still belongs in "all sites".
+    s.bookmarks.forEach(bm => { if (!seenIds.has(bm.id)) { seenIds.add(bm.id); flat.push(bm); } });
+    const dispName = bm => bm.name || this.hostCore(bm.url);
+    flat.sort((a, b) => dispName(a).toLowerCase().localeCompare(dispName(b).toLowerCase()));
+    const secMap = Object.create(null);
+    flat.forEach(bm => {
+      let L = (dispName(bm).trim()[0] || '#').toUpperCase();
+      if (L < 'A' || L > 'Z') L = '#';
+      (secMap[L] = secMap[L] || []).push({
+        id: bm.id, name: dispName(bm), host: this.hostOf(bm.url),
+        icon: this.iconFor(bm), letter: this.letterOf(bm),
+        onTap: () => this.openBookmark(bm, false)
+      });
+    });
+    const sectionLetters = Object.keys(secMap).filter(L => L !== '#').sort();
+    if (secMap['#']) sectionLetters.push('#');       // "#" section always last
+    const listSections = sectionLetters.map(letter => ({ letter, rows: secMap[letter] }));
+    const scrollToLetter = (L) => { const el = document.getElementById('bb-sec-' + L); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    // Bindings are property paths (no call expressions), so each rail entry
+    // carries its own pre-bound handler — same pattern as the page dots' d.go.
+    const azIndex = sectionLetters.map(letter => ({ letter, go: () => scrollToLetter(letter) }));
+
     return {
       greeting, subtitle: s.bookmarks.length + ' sites · swipe to browse',
       search: s.search, hasSearch: !!s.search, onSearch: e => this.setState({ search: e.target.value }), clearSearch: () => this.setState({ search: '' }),
-      showResults, showBoard: !showResults, noResults: showResults && results.length === 0, results,
-      pages, dots, showDots: s.pages.length > 1 && !s.editMode, editMode: s.editMode,
+      showResults, showBoard: !showResults && s.view !== 'list', noResults: showResults && results.length === 0, results,
+      pages, dots, showDots: s.pages.length > 1 && !s.editMode && s.view !== 'list', editMode: s.editMode,
+      // ----- List view (A→Z, App Library style) -----
+      showList: !showResults && s.view === 'list',
+      listSections, azIndex, listEmpty: flat.length === 0,
+      scrollToLetter,
+      toggleList: () => this.setState({ view: s.view === 'list' ? 'grid' : 'list', search: '' }, () => this.saveSettings()),
+      listBtnStyle: s.view === 'list' ? 'background:var(--bb-accent); color:#fff; box-shadow:0 4px 14px rgba(3,114,255,.4);' : '',
       openSettings: () => this.setState({ settingsOpen: true }), closeSettings: () => this.setState({ settingsOpen: false }),
       // ----- Pages manager (opened from Settings) -----
       pagesOpen: s.pagesOpen,
