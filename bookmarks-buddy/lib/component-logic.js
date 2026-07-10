@@ -1086,7 +1086,11 @@ class Component extends DCLogic {
   applyTheme() { const root = document.querySelector('.bb-root'); if (!root) return; const v = this.themeVars(); for (const k in v) root.style.setProperty(k, v[k]); const orb = root.querySelector('.bb-vring'); }
   applyTransform(animate) {
     const track = document.querySelector('.bb-track'); if (!track) return;
-    track.style.transition = animate === false ? 'none' : 'transform .34s cubic-bezier(.16,1,.3,1)';
+    // A freshly (re)mounted track — returning from search or the list view —
+    // must land on the current page instantly; animating in from page 0 every
+    // time read as lag. Only real page changes animate.
+    const fresh = !track.style.transform;
+    track.style.transition = (animate === false || fresh) ? 'none' : 'transform .26s cubic-bezier(.16,1,.3,1)';
     track.style.transform = 'translateX(' + (-this.state.currentPage * 100) + '%)';
   }
   applyEdit() {
@@ -1101,7 +1105,15 @@ class Component extends DCLogic {
     document.querySelectorAll('.bb-root .bb-vring').forEach(el => { el.style.animation = this.state.listening ? 'bbRing 1.9s ease-out infinite' : ''; el.style.animationDelay = el.style.animationDelay; });
   }
   refreshIcons() {
-    if (window.lucide && window.lucide.createIcons) { try { window.lucide.createIcons(); } catch {} this._iconTries = 0; return; }
+    if (window.lucide && window.lucide.createIcons) {
+      // createIcons() rebuilds EVERY [data-lucide] element in the document —
+      // including the <svg>s it already created (they keep the attribute) — so
+      // calling it unconditionally re-created every icon on every render and
+      // made each tap/toggle feel sticky. Only run it when an unconverted
+      // <i data-lucide> actually exists, i.e. React just mounted new markup.
+      try { if (document.querySelector('i[data-lucide]')) window.lucide.createIcons(); } catch {}
+      this._iconTries = 0; return;
+    }
     if ((this._iconTries = (this._iconTries || 0) + 1) < 50) { clearTimeout(this._iconT); this._iconT = setTimeout(() => this.refreshIcons(), 150); }
   }
   handleIcons() {
@@ -1229,7 +1241,7 @@ class Component extends DCLogic {
         const w = vp.offsetWidth || 1; let to = this.state.currentPage;
         if (dx < -w * 0.22) to++; else if (dx > w * 0.22) to--;
         to = Math.max(0, Math.min(this.state.pages.length - 1, to));
-        const t = track(); if (t) t.style.transition = 'transform .34s cubic-bezier(.16,1,.3,1)';
+        const t = track(); if (t) t.style.transition = 'transform .26s cubic-bezier(.16,1,.3,1)';
         if (to !== this.state.currentPage) this.setState({ currentPage: to }); else this.applyTransform(true);
       } else if (mode === 'pendingswipe' && cell && Math.abs(dx) < 8 && Math.abs(dy) < 8 && Date.now() - downAt < 500) {
         this.tapCell(cell);
