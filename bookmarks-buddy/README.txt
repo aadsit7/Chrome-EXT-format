@@ -41,9 +41,11 @@ WHAT IT DOES
 - Open bookmarks in new browser tabs/windows by voice or by tapping a tile.
 - Springboard home screen with named pages, folders, and a rearrange
   ("jiggle") edit mode. Press and hold a tile to lift it straight into a
-  drag; neighbours flow out of the way in real time, drag a tile across the
-  page edges to move it between pages, and drop one onto another (it swells
-  with a ring) to make or join a folder — the same fluid feel as iOS.
+  drag; neighbours flow out of the way in real time. To move a tile between
+  pages, two left/right arrows fade in at the edges of the board while you
+  drag — carry the tile onto an arrow and it fills, then flips to that page
+  (keep resting on it to keep advancing). Drop one tile onto another (it
+  swells with a ring) to make or join a folder — the same fluid feel as iOS.
 - localStorage is kept as an instant, offline mirror.
 - Site icons are fetched as images from Google's public favicon service; this
   is an ordinary <img> load and needs no special permission.

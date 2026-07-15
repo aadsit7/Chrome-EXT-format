@@ -1260,6 +1260,7 @@ class Component extends DCLogic {
   // edge-flip, recompute the drop target, and flow the neighbours.
   dragMove(x, y, vp) {
     const d = this._drag; if (!d) return;
+    d.lastX = x; d.lastY = y; d.vp = vp;   // remembered so a flip can re-check the arrow
     this.moveGhost(x, y);
     if (d.flipping) return;
     if (!d.board || d.board.page !== this.state.currentPage) { const b = this.measureBoard(); if (b) { d.board = b; this.prepBoardCells(b); } }
@@ -1303,6 +1304,7 @@ class Component extends DCLogic {
     document.body.appendChild(g);
     this._drag = { board, srcIdx: idx, srcKind: cell.dataset.kind, fromPage: this.state.currentPage, ghost: g, grabX: x - rect.left, grabY: y - rect.top, insertIdx: idx, mode: 'reorder', folderIdx: -1, flipping: false };
     this.prepBoardCells(board);
+    this.showNavArrows();
     // Lift on the next frame so the scale + shadow transition actually plays.
     requestAnimationFrame(() => {
       const d = this._drag; if (!d || !d.ghost) return;
@@ -1396,35 +1398,41 @@ class Component extends DCLogic {
       slot++;
     }
   }
-  // While dragging near the left/right edge of the board, flip to the adjacent
-  // page after a short hover so tiles can be moved across pages.
+  // Carry the tile onto a left/right nav arrow to flip to the adjacent page.
+  // The arrow arms while the pointer is over it and flips after a short dwell;
+  // moving off it before the dwell elapses cancels harmlessly.
   edgeFlip(x, y, vp) {
-    if (!vp) return;
-    const r = vp.getBoundingClientRect(), edge = 42;
-    if (x < r.left + edge && this.state.currentPage > 0) this.scheduleFlip(-1);
-    else if (x > r.right - edge && this.state.currentPage < this.state.pages.length - 1) this.scheduleFlip(1);
+    const dir = this.hitNavArrow(x, y);
+    if (dir === -1 && this.state.currentPage > 0) this.scheduleFlip(-1);
+    else if (dir === 1 && this.state.currentPage < this.state.pages.length - 1) this.scheduleFlip(1);
     else this.cancelFlip();
   }
   scheduleFlip(dir) {
-    if (this._flipDir === dir && this._flipT) return;
+    if (this._flipDir === dir && this._flipT) return;   // already arming this arrow — let it fill
     this.cancelFlip(); this._flipDir = dir;
+    this.armNavArrow(dir, true);
     this._flipT = setTimeout(() => {
-      this._flipT = null; this._flipDir = 0;
+      this._flipT = null;
       const to = this.state.currentPage + dir;
-      if (to < 0 || to >= this.state.pages.length) return;
+      if (to < 0 || to >= this.state.pages.length) { this._flipDir = 0; this.armNavArrow(dir, false); return; }
       const d = this._drag;
       // Pause reflow and clear the old page's transforms while the track slides,
       // then re-measure the new page and pick the drag back up there.
       if (d) { d.flipping = true; this.clearBoardTransforms(d.board); }
       this.goPage(to);
       setTimeout(() => {
-        const dd = this._drag; if (!dd) return;
+        const dd = this._drag; if (!dd) { this._flipDir = 0; return; }
         const b = this.measureBoard(); if (b) { dd.board = b; this.prepBoardCells(b); }
         dd.flipping = false;
+        this._flipDir = 0;
+        this.updateNavArrows();          // the reachable directions changed with the page
+        this.armNavArrow(dir, false);    // reset the fill on the arrow we just used
+        // Still resting on the arrow with another page beyond? Keep advancing.
+        this.edgeFlip(dd.lastX, dd.lastY, dd.vp);
       }, 380);
-    }, 600);
+    }, this.NAV_DWELL());
   }
-  cancelFlip() { if (this._flipT) { clearTimeout(this._flipT); this._flipT = null; } this._flipDir = 0; }
+  cancelFlip() { if (this._flipT) { clearTimeout(this._flipT); this._flipT = null; } if (this._flipDir) this.armNavArrow(this._flipDir, false); this._flipDir = 0; }
   clearBoardTransforms(board) {
     if (!board) return;
     board.cells.forEach(c => { c.style.transform = ''; c.style.transition = ''; c.style.visibility = ''; });
@@ -1440,7 +1448,118 @@ class Component extends DCLogic {
     const d = this._drag; if (!d) return;
     this._drag = null;
     if (d.ghost) { try { d.ghost.remove(); } catch {} }
+    this.hideNavArrows();
     this.clearReflow();
+  }
+
+  /* ---------- drag page-nav arrows ----------
+   * While a tile is lifted in edit mode, two on-brand arrows fade in at the
+   * left and right edges of the springboard. Carrying the tile onto an arrow
+   * arms it (an accent fill sweeps in) and, after a short dwell, flips to the
+   * adjacent page — a clearer, far more forgiving way to move a bookmark across
+   * pages than nudging it into the invisible screen edge. Like the drag ghost,
+   * the arrows are pinned to <body>, so a mid-drag page re-render can't disturb
+   * them, and they carry literal theme colours (custom properties set on
+   * .bb-root don't inherit up to <body>). */
+  NAV_DWELL() { return 360; }        // ms the tile must dwell on an arrow to flip
+  navColors() {
+    const root = document.querySelector('.bb-root');
+    const cs = root ? getComputedStyle(root) : null;
+    const pick = (n, fb) => { const v = cs && cs.getPropertyValue(n).trim(); return v || fb; };
+    return {
+      accent: pick('--bb-accent', '#0372FF'),
+      accent2: pick('--bb-accent2', '#31D1FF'),
+      glass: pick('--bb-glass', 'rgba(255,255,255,.65)'),
+      glassBd: pick('--bb-glass-bd', 'rgba(255,255,255,.75)')
+    };
+  }
+  buildNavArrow(dir, col) {
+    const size = 54;
+    const el = document.createElement('div');
+    el.className = 'bb-navarrow';
+    el.style.cssText = 'position:fixed; z-index:9990; width:' + size + 'px; height:' + size + 'px; border-radius:50%; display:grid; place-items:center; overflow:hidden; pointer-events:none; opacity:0; transform:scale(.6); background:' + col.glass + '; border:1.5px solid ' + col.glassBd + '; box-shadow:0 0 0 1.5px rgba(3,114,255,.16), 0 10px 26px rgba(22,31,91,.20); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); transition:opacity .2s ease, transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .18s ease;';
+    const fill = document.createElement('span');
+    fill.style.cssText = 'position:absolute; inset:0; border-radius:50%; background:linear-gradient(140deg,' + col.accent + ',' + col.accent2 + '); transform:scale(0); transform-origin:50% 50%; will-change:transform;';
+    const path = dir < 0 ? 'm15 18-6-6 6-6' : 'm9 18 6-6-6-6';
+    const icon = document.createElement('span');
+    icon.style.cssText = 'position:relative; z-index:1; display:grid; place-items:center; color:' + col.accent + '; transition:color .18s ease;';
+    icon.innerHTML = '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="' + path + '"/></svg>';
+    el.appendChild(fill); el.appendChild(icon);
+    el.__fill = fill; el.__icon = icon;
+    return el;
+  }
+  showNavArrows() {
+    this.hideNavArrows();
+    const vp = document.querySelector('.bb-viewport'); if (!vp) return;
+    const col = this._navCol = this.navColors();
+    const left = this.buildNavArrow(-1, col);
+    const right = this.buildNavArrow(1, col);
+    document.body.appendChild(left); document.body.appendChild(right);
+    this._nav = { left, right, hitR: 42 };
+    this.positionNavArrows();
+    // Reveal on the next frame so the fade/scale-in transition actually plays.
+    requestAnimationFrame(() => {
+      const nav = this._nav; if (!nav) return;
+      [nav.left, nav.right].forEach(a => { if (a) a.style.transform = 'scale(1)'; });
+      this.updateNavArrows();
+    });
+  }
+  // Anchor each arrow to the vertical middle of the springboard's left/right edge.
+  positionNavArrows() {
+    const nav = this._nav; if (!nav) return;
+    const vp = document.querySelector('.bb-viewport'); if (!vp) return;
+    const r = vp.getBoundingClientRect(), size = 54, margin = 12, cy = r.top + r.height / 2;
+    const place = (el, cx) => { if (!el) return; el.style.left = (cx - size / 2) + 'px'; el.style.top = (cy - size / 2) + 'px'; el.__cx = cx; el.__cy = cy; };
+    place(nav.left, r.left + margin + size / 2);
+    place(nav.right, r.right - margin - size / 2);
+  }
+  // Only surface the arrow for a direction that actually has a page to reach.
+  updateNavArrows() {
+    const nav = this._nav; if (!nav) return;
+    const cp = this.state.currentPage, n = this.state.pages.length;
+    const set = (el, on) => { if (!el) return; el.dataset.enabled = on ? '1' : '0'; el.style.opacity = on ? '1' : '0'; };
+    set(nav.left, cp > 0);
+    set(nav.right, cp < n - 1);
+  }
+  // Which enabled arrow (‑1 left / 1 right / 0 none) the pointer is currently over.
+  hitNavArrow(x, y) {
+    const nav = this._nav; if (!nav) return 0;
+    const R = nav.hitR || 42, within = el => { if (!el || el.dataset.enabled !== '1') return false; const dx = x - el.__cx, dy = y - el.__cy; return dx * dx + dy * dy <= R * R; };
+    if (within(nav.left)) return -1;
+    if (within(nav.right)) return 1;
+    return 0;
+  }
+  // Light up (or release) an arrow. When armed, its accent fill sweeps in over
+  // the dwell so the impending flip is visible; releasing retracts it.
+  armNavArrow(dir, on) {
+    const nav = this._nav; if (!nav) return;
+    const el = dir < 0 ? nav.left : nav.right; if (!el) return;
+    const col = this._navCol || (this._navCol = this.navColors());
+    if (on) {
+      el.style.transform = 'scale(1.14)';
+      el.style.boxShadow = '0 0 0 2px ' + col.accent2 + ', 0 16px 34px rgba(3,114,255,.5)';
+      if (el.__fill) {
+        // Snap the fill empty (no transition) and force a reflow so it always
+        // sweeps in from zero — including on a second flip while still resting
+        // on the arrow, where a synchronous 0→1 would otherwise be coalesced.
+        el.__fill.style.transition = 'none';
+        el.__fill.style.transform = 'scale(0)';
+        void el.__fill.offsetWidth;
+        el.__fill.style.transition = 'transform ' + this.NAV_DWELL() + 'ms linear';
+        el.__fill.style.transform = 'scale(1)';
+      }
+      if (el.__icon) { el.__icon.style.transition = 'color ' + Math.round(this.NAV_DWELL() * 0.7) + 'ms linear'; el.__icon.style.color = '#fff'; }
+    } else {
+      el.style.transform = 'scale(1)';
+      el.style.boxShadow = '0 0 0 1.5px rgba(3,114,255,.16), 0 10px 26px rgba(22,31,91,.20)';
+      if (el.__fill) { el.__fill.style.transition = 'transform .18s ease'; el.__fill.style.transform = 'scale(0)'; }
+      if (el.__icon) { el.__icon.style.transition = 'color .18s ease'; el.__icon.style.color = col.accent; }
+    }
+  }
+  hideNavArrows() {
+    const nav = this._nav; this._nav = null; this._navCol = null;
+    if (!nav) return;
+    [nav.left, nav.right].forEach(a => { if (a) { try { a.remove(); } catch {} } });
   }
   // Release: commit the move, then settle the lifted ghost into its landing slot
   // and fade it over the freshly rendered tile. Because the neighbours were
@@ -1448,6 +1567,7 @@ class Component extends DCLogic {
   dropDrag() {
     const d = this._drag; if (!d) return;
     this.cancelFlip();
+    this.hideNavArrows();
     const ghost = d.ghost; d.ghost = null;
     const b = d.board;
     let center = null;
