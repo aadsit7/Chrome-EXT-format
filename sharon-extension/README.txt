@@ -1,4 +1,4 @@
-Sharon — a voice assistant for your browser side panel  (v7.1.0)
+Sharon — a voice assistant for your browser side panel  (v7.2.0)
 ================================================================
 
 Sharon is a hands-free voice assistant that lives in Chrome/Edge's side panel.
@@ -131,6 +131,11 @@ picker, and Sharon records the screen video together with its sound and your
 microphone voice, up to 30 minutes. When you stop, the finished .webm
 downloads straight to your computer — screen recordings stay on your device
 and are NOT sent to Drive or your Sheet.
+
+After a screen recording stops, Sharon shows a preview with an iPhone-Photos-
+style trim slider: drag the start and end handles to keep just part of the
+clip, then Save — or Save without moving them to keep the whole clip. Trimming
+is optional, and either way the video downloads to your computer.
 
 
 Troubleshooting
