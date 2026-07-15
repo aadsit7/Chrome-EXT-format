@@ -1,4 +1,4 @@
-Sharon — a voice assistant for your browser side panel  (v7.2.0)
+Sharon — a voice assistant for your browser side panel  (v7.3.0)
 ================================================================
 
 Sharon is a hands-free voice assistant that lives in Chrome/Edge's side panel.
@@ -127,10 +127,16 @@ edits here write straight back to the database.
 Record your screen (the monitor button in the mode bar)
 -------------------------------------------------------
 Tap the "Record your screen" button, pick a screen/window/tab in Chrome's own
-picker, and Sharon records the screen video together with its sound and your
-microphone voice, up to 30 minutes. When you stop, the finished .webm
-downloads straight to your computer — screen recordings stay on your device
-and are NOT sent to Drive or your Sheet.
+picker, and Sharon records the current desktop — the screen video and its own
+system/desktop audio, up to 30 minutes. It records STRICTLY the desktop: it
+never opens your microphone, so other apps keep full, undisrupted mic access
+while you record. When you stop, the finished .webm downloads straight to your
+computer — screen recordings stay on your device and are NOT sent to Drive or
+your Sheet.
+
+The recording runs in the background, so you can collapse the side panel and it
+keeps going — a red dot appears on Sharon's toolbar icon while it records.
+Click the icon to reopen the panel and stop it whenever you like.
 
 After a screen recording stops, Sharon shows a preview with an iPhone-Photos-
 style trim slider: drag the start and end handles to keep just part of the
