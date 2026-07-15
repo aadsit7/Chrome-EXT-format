@@ -108,6 +108,10 @@ export const els = {
   voicePreview: document.getElementById("voicePreview"),
   shortcutValue: document.getElementById("shortcutValue"),
   changeShortcut: document.getElementById("changeShortcut"),
+  screenRecShortcutValue: document.getElementById("screenRecShortcutValue"),
+  changeScreenRecShortcut: document.getElementById("changeScreenRecShortcut"),
+  screenPauseShortcutValue: document.getElementById("screenPauseShortcutValue"),
+  changeScreenPauseShortcut: document.getElementById("changeScreenPauseShortcut"),
 };
 
 // The user lives in Lake Tapps, WA — every date and time on screen is shown
@@ -425,12 +429,21 @@ export function showScreenRecorder() {
 }
 export function hideScreenRecorder() {
   els.html.removeAttribute("data-screenrec");
-  if (els.screenRecCard) els.screenRecCard.classList.add("hidden");
+  if (els.screenRecCard) {
+    els.screenRecCard.classList.add("hidden");
+    els.screenRecCard.removeAttribute("data-paused");
+  }
+  if (els.screenRecLabel) els.screenRecLabel.textContent = "Recording your screen";
   if (els.screenRecBtn)
     els.screenRecBtn.setAttribute("aria-label", "Record your screen — up to 30 minutes");
 }
 export function setScreenRecTimer(text) {
   if (els.screenRecTimer) els.screenRecTimer.textContent = text;
+}
+// Reflect the paused state on the live card (label + a data hook for the dot).
+export function setScreenRecPaused(paused) {
+  if (els.screenRecCard) els.screenRecCard.setAttribute("data-paused", paused ? "true" : "false");
+  if (els.screenRecLabel) els.screenRecLabel.textContent = paused ? "Paused" : "Recording your screen";
 }
 
 /* ------------------------------------------------------------------ *

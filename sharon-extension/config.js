@@ -26,4 +26,4 @@ export const PAGE_EXCERPT_CHARS = 16000;
 // actually hold a conversation ("what did I just ask you?", follow-ups, "it").
 export const HISTORY_TURNS = 12;
 
-export const EXTENSION_VERSION = "7.3.0";
+export const EXTENSION_VERSION = "7.4.0";
