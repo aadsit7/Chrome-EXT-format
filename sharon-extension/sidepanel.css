@@ -136,6 +136,8 @@ html[data-phase="speaking"] .st-eq{display:inline-flex}
 html[data-mic="muted"] .status{color:var(--tertiary)}
 html[data-mic="muted"] .st-dot{background:var(--placeholder);box-shadow:none;animation:none}
 /* mode-owned phases (after the muted rules on purpose — the mode's word wins) */
+html[data-phase="screen_rec"] .status{color:var(--coral-deep)}
+html[data-phase="screen_rec"] .st-dot{background:var(--coral);box-shadow:0 0 0 4px var(--coral-halo);animation:blink 1.1s infinite}
 html[data-phase="screen"] .status{color:var(--teal)}
 html[data-phase="screen"] .st-dot{background:var(--teal);box-shadow:0 0 0 4px rgba(10,143,130,.16);animation:none}
 html[data-phase="searching"] .status{color:var(--blue-deep)}
@@ -287,6 +289,22 @@ html[data-view="memory"] .rec-card{display:none}
 .rc-transcript::-webkit-scrollbar{width:0}
 .rc-transcript .interim{color:var(--placeholder)}
 .rc-hint{margin-top:8px;font-size:11.5px;color:var(--tertiary);line-height:1.4}
+
+/* ================= Screen-recorder card ================= */
+/* A SEPARATE live card from the voice recorder, so the two never interfere.
+   Same shape and coral "recording" cue; teal border to read as screen. */
+.screenrec-card{
+  flex:none;margin:10px 14px 0;padding:12px 14px;
+  background:#fff;border:1px solid var(--green-border);border-radius:var(--r-card);
+  box-shadow:0 4px 18px rgba(10,143,130,.08);
+}
+html[data-screenrec="on"] .live-card{display:none}
+html[data-view="memory"] .screenrec-card{display:none}
+.screenrec-card .rc-label{color:var(--teal)}
+
+/* the finished-video download card's action row */
+.src-actions{display:flex;gap:8px;margin-top:12px}
+.src-actions .pill-btn svg{width:14px;height:14px;margin-right:5px}
 
 /* ================= Thread ================= */
 .thread{
@@ -584,6 +602,7 @@ html[data-mode="listening"][data-phase="hearing"] #micBtn{background:var(--coral
 html[data-mode="listening"][data-mic="muted"] #micBtn{background:var(--placeholder);color:#fff;box-shadow:none}
 html[data-mode="recording"] #recordBtn{background:var(--coral);color:#fff;animation:recPulse 1.8s var(--ease) infinite}
 @keyframes recPulse{0%,100%{box-shadow:0 0 0 0 var(--coral-halo)}50%{box-shadow:0 0 0 7px rgba(239,78,91,0)}}
+html[data-mode="screen_rec"] #screenRecBtn{background:var(--coral);color:#fff;animation:recPulse 1.8s var(--ease) infinite}
 html[data-mode="screen"] #screenBtn{background:var(--teal);color:#fff;box-shadow:0 0 0 4px rgba(10,143,130,.16)}
 html[data-mode="searching"] #searchIcon{background:var(--blue);color:#fff;animation:searchGlow 1.6s var(--ease) infinite}
 @keyframes searchGlow{0%,100%{box-shadow:0 0 0 0 var(--blue-halo)}50%{box-shadow:0 0 0 8px rgba(47,107,255,0)}}

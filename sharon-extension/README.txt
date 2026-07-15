@@ -1,4 +1,4 @@
-Sharon — a voice assistant for your browser side panel  (v7.0.0)
+Sharon — a voice assistant for your browser side panel  (v7.1.0)
 ================================================================
 
 Sharon is a hands-free voice assistant that lives in Chrome/Edge's side panel.
@@ -122,6 +122,15 @@ Notes (the notebook in the dock)
 Browse and search everything she's saved. Tasks show a Done/Reopen button,
 and anything can be deleted. It's the same memory_log tab in your Sheet —
 edits here write straight back to the database.
+
+
+Record your screen (the monitor button in the mode bar)
+-------------------------------------------------------
+Tap the "Record your screen" button, pick a screen/window/tab in Chrome's own
+picker, and Sharon records the screen video together with its sound and your
+microphone voice, up to 30 minutes. When you stop, the finished .webm
+downloads straight to your computer — screen recordings stay on your device
+and are NOT sent to Drive or your Sheet.
 
 
 Troubleshooting

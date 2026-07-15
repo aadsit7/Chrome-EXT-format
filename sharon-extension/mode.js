@@ -5,6 +5,10 @@
 //   RECORDING  — the recorder owns the ears; command listening, TTS, assist
 //                and page context are all off until the whole flow (record →
 //                upload → organize) is done.
+//   SCREEN_REC — the screen recorder owns the capture: getDisplayMedia video +
+//                merged audio records up to 30 minutes, then downloads straight
+//                to the user's computer (never the backend). Spoken input is
+//                dropped until it ends, exactly like RECORDING.
 //   SCREEN     — one look at the current tab; the next message is answered
 //                with that snapshot attached, then the mode ends itself.
 //   SEARCHING  — automatic: lit while an assist call is out running a web
@@ -22,6 +26,7 @@
 export const MODES = {
   LISTENING: "listening",
   RECORDING: "recording",
+  SCREEN_REC: "screen_rec",
   SCREEN: "screen",
   SEARCHING: "searching",
 };
