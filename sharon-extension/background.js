@@ -45,6 +45,8 @@ async function activateSharon() {
 if (chrome.commands && chrome.commands.onCommand) {
   chrome.commands.onCommand.addListener((command) => {
     if (command === "activate-sharon") activateSharon();
+    else if (command === "toggle-screen-recording") toggleScreenRecFromCommand();
+    else if (command === "pause-screen-recording") pauseScreenRecFromCommand();
   });
 }
 
@@ -95,21 +97,65 @@ async function closeOffscreen() {
   }
 }
 
-// The red "recording" dot on the toolbar icon.
-function setRecBadge(on) {
+// The recording dot on the toolbar icon: red "●" while recording, amber "❚❚"
+// while paused, cleared when idle. (true is accepted as "recording" for the
+// existing call sites.)
+function setRecBadge(state) {
   if (!chrome.action) return;
+  if (state === true) state = "recording";
   try {
-    if (on) {
+    if (state === "recording") {
       chrome.action.setBadgeBackgroundColor({ color: "#E5484D" });
       if (chrome.action.setBadgeTextColor) chrome.action.setBadgeTextColor({ color: "#FFFFFF" });
       chrome.action.setBadgeText({ text: "●" });
       chrome.action.setTitle({ title: "Sharon — recording your screen" });
+    } else if (state === "paused") {
+      chrome.action.setBadgeBackgroundColor({ color: "#B7791F" });
+      if (chrome.action.setBadgeTextColor) chrome.action.setBadgeTextColor({ color: "#FFFFFF" });
+      chrome.action.setBadgeText({ text: "❚❚" });
+      chrome.action.setTitle({ title: "Sharon — screen recording paused" });
     } else {
       chrome.action.setBadgeText({ text: "" });
       chrome.action.setTitle({ title: "Sharon" });
     }
   } catch (_) {
     /* ignore */
+  }
+}
+
+// Query the offscreen recorder's current state (for the keyboard commands,
+// which run with no side panel open).
+async function queryOffscreenState() {
+  try {
+    if (chrome.offscreen && (await chrome.offscreen.hasDocument())) {
+      const st = await chrome.runtime.sendMessage({ t: "sr:off", cmd: "query" });
+      if (st && st.phase) return st;
+    }
+  } catch (_) {
+    /* no offscreen / no response */
+  }
+  return { phase: "idle" };
+}
+
+// Keyboard shortcut: start (if idle) or stop (if recording), even with the
+// side panel closed. If a finished clip is waiting (phase "ready") or the
+// picker is open ("starting"), do nothing — the pending clip is protected.
+async function toggleScreenRecFromCommand() {
+  const st = await queryOffscreenState();
+  if (st.phase === "recording") {
+    chrome.runtime.sendMessage({ t: "sr:off", cmd: "stop" }).catch(() => {});
+  } else if (st.phase === "idle") {
+    const ok = await ensureOffscreen();
+    if (ok) chrome.runtime.sendMessage({ t: "sr:off", cmd: "start" }).catch(() => {});
+  }
+}
+
+// Keyboard shortcut: pause ↔ resume the current recording, with the side panel
+// closed. Only meaningful while recording.
+async function pauseScreenRecFromCommand() {
+  const st = await queryOffscreenState();
+  if (st.phase === "recording") {
+    chrome.runtime.sendMessage({ t: "sr:off", cmd: "togglepause" }).catch(() => {});
   }
 }
 
@@ -156,7 +202,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Events from the offscreen recorder → keep the badge in step. (The side
   // panel listens for these too, for its own UI.)
   if (msg.t === "sr:evt") {
-    if (msg.event === "started") setRecBadge(true);
+    if (msg.event === "started" || msg.event === "resumed") setRecBadge("recording");
+    else if (msg.event === "paused") setRecBadge("paused");
     else if (msg.event === "stopped" || msg.event === "error" || msg.event === "cancelled") {
       setRecBadge(false);
     }

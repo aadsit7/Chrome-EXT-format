@@ -89,7 +89,7 @@
           <span class="rc-timer" id="screenRecTimer">00:00 / 30:00</span>
           <button class="pill-btn danger" id="screenRecStop" type="button">Stop</button>
         </div>
-        <div class="rc-hint">Closing the panel or Chrome's “Stop sharing” bar ends the recording.</div>
+        <div class="rc-hint">Keeps recording if you collapse the panel — stop or pause with your keyboard shortcut (Settings) or the toolbar icon.</div>
       </div>
 
       <!-- ================= Thread ================= -->
@@ -296,6 +296,14 @@
             <div class="pref-row">
               <div class="pref-name">Launch Sharon</div>
               <button class="keycap" id="changeShortcut" type="button" aria-label="Change the keyboard shortcut"><span id="shortcutValue">…</span></button>
+            </div>
+            <div class="pref-row">
+              <div class="pref-name">Start / stop screen recording</div>
+              <button class="keycap" id="changeScreenRecShortcut" type="button" aria-label="Change the start/stop screen-recording shortcut"><span id="screenRecShortcutValue">…</span></button>
+            </div>
+            <div class="pref-row">
+              <div class="pref-name">Pause / resume screen recording</div>
+              <button class="keycap" id="changeScreenPauseShortcut" type="button" aria-label="Change the pause/resume screen-recording shortcut"><span id="screenPauseShortcutValue">…</span></button>
             </div>
           </div>
           <button class="txt-link center" id="replaySetup" type="button">Replay the first-run setup</button>

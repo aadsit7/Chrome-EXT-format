@@ -301,6 +301,9 @@ html[data-view="memory"] .rec-card{display:none}
 html[data-screenrec="on"] .live-card{display:none}
 html[data-view="memory"] .screenrec-card{display:none}
 .screenrec-card .rc-label{color:var(--teal)}
+/* paused (via the keyboard shortcut): amber, steady dot instead of blinking coral */
+.screenrec-card[data-paused="true"] .rc-dot{background:#B7791F;animation:none}
+.screenrec-card[data-paused="true"] .rc-label{color:#B7791F}
 
 /* the review/save card's action row */
 .src-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}

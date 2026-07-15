@@ -1828,7 +1828,8 @@ async function finishRecording(mimeType, durationSeconds, transcript, segments) 
  *   SW  → panel: { t:"sr:evt", event:"started"|"stopped"|"cancelled"|"error", … }
  * ------------------------------------------------------------------ */
 let screenRecPhase = "idle"; // panel-local: idle | recording | reviewing | trimming
-let screenRecStartAtEpoch = 0; // when the background recording began (from the SW)
+let screenRecPaused = false; // whether the in-progress recording is paused
+let screenRecStartAtEpoch = 0; // virtual start (now − this === recorded ms), from the SW
 let screenRecTimerInt = null; // the local MM:SS display timer
 
 // Review/trim step — inserted BETWEEN "recording finished" and "download".
@@ -1989,19 +1990,52 @@ function stopScreenRecordingCmd() {
 // A recording actually started — enter SCREEN_REC, show the live card, and run
 // a local MM:SS display timer off the shared start time. The 30-minute cap and
 // the real auto-stop live in the offscreen document; this is display only.
-function onScreenStarted(startAtEpoch) {
-  if (recActive()) return; // the voice recorder owns everything
-  if (screenRecPhase !== "idle") return; // already recording/reviewing (live event + reconnect race)
-  if (!screenRecActive()) enterMode(MODES.SCREEN_REC);
-  screenRecPhase = "recording";
-  screenRecStartAtEpoch = Number(startAtEpoch) || Date.now();
-  ui.setScreenRecTimer("00:00 / " + fmtClock(RECORD_MAX_MS));
-  ui.showScreenRecorder();
+// Run the local MM:SS display timer off the shared (virtual) start time.
+function startScreenRecDisplayTimer() {
   if (screenRecTimerInt) clearInterval(screenRecTimerInt);
   screenRecTimerInt = setInterval(() => {
     const elapsed = Date.now() - screenRecStartAtEpoch;
     ui.setScreenRecTimer(fmtClock(Math.min(elapsed, RECORD_MAX_MS)) + " / " + fmtClock(RECORD_MAX_MS));
   }, REC_TIMER_TICK_MS);
+}
+
+function onScreenStarted(startAtEpoch) {
+  if (recActive()) return; // the voice recorder owns everything
+  if (screenRecPhase !== "idle") return; // already recording/reviewing (live event + reconnect race)
+  if (!screenRecActive()) enterMode(MODES.SCREEN_REC);
+  screenRecPhase = "recording";
+  screenRecPaused = false;
+  screenRecStartAtEpoch = Number(startAtEpoch) || Date.now();
+  ui.setScreenRecTimer("00:00 / " + fmtClock(RECORD_MAX_MS));
+  ui.showScreenRecorder();
+  ui.setScreenRecPaused(false);
+  startScreenRecDisplayTimer();
+  updateStatus();
+}
+
+// Paused via the keyboard shortcut — freeze the display timer at the recorded
+// time and show the paused state. (The 30-minute budget is frozen too.)
+function onScreenPaused(recordedMs) {
+  if (screenRecPhase !== "recording") return;
+  screenRecPaused = true;
+  if (screenRecTimerInt) {
+    clearInterval(screenRecTimerInt);
+    screenRecTimerInt = null;
+  }
+  const ms = Math.max(0, Number(recordedMs) || 0);
+  ui.setScreenRecTimer(fmtClock(Math.min(ms, RECORD_MAX_MS)) + " / " + fmtClock(RECORD_MAX_MS));
+  ui.setScreenRecPaused(true);
+  updateStatus();
+}
+
+// Resumed via the keyboard shortcut — restart the display timer off the new
+// virtual start time.
+function onScreenResumed(startAtEpoch) {
+  if (screenRecPhase !== "recording") return;
+  screenRecPaused = false;
+  screenRecStartAtEpoch = Number(startAtEpoch) || Date.now();
+  ui.setScreenRecPaused(false);
+  startScreenRecDisplayTimer();
   updateStatus();
 }
 
@@ -2079,8 +2113,10 @@ async function reconnectScreenRec() {
     st = null;
   }
   if (!st || !st.phase) return;
-  if (st.phase === "recording") onScreenStarted(st.startAtEpoch);
-  else if (st.phase === "ready") {
+  if (st.phase === "recording") {
+    onScreenStarted(st.startAtEpoch);
+    if (st.paused) onScreenPaused(st.recordedMs); // reconnect to a paused recording
+  } else if (st.phase === "ready") {
     onScreenStopped({
       blobUrl: st.blobUrl,
       size: st.size,
@@ -2177,6 +2213,7 @@ function forceScreenRecIdle() {
     clearInterval(screenRecTimerInt);
     screenRecTimerInt = null;
   }
+  screenRecPaused = false;
   teardownScreenReview();
   if (screenRecPhase !== "idle") {
     screenRecPhase = "idle";
@@ -2852,17 +2889,21 @@ function populateVoiceSelect() {
 }
 
 async function refreshShortcut() {
-  let label = "Not set";
+  const byName = {};
   try {
     if (chrome.commands && chrome.commands.getAll) {
       const cmds = await chrome.commands.getAll();
-      const cmd = (cmds || []).find((c) => c.name === "activate-sharon");
-      if (cmd && cmd.shortcut) label = cmd.shortcut;
+      for (const c of cmds || []) byName[c.name] = c.shortcut || "";
     }
   } catch (_) {
-    /* leave "Not set" */
+    /* leave everything "Not set" */
   }
-  if (ui.els.shortcutValue) ui.els.shortcutValue.textContent = label;
+  const set = (el, name) => {
+    if (el) el.textContent = byName[name] || "Not set";
+  };
+  set(ui.els.shortcutValue, "activate-sharon");
+  set(ui.els.screenRecShortcutValue, "toggle-screen-recording");
+  set(ui.els.screenPauseShortcutValue, "pause-screen-recording");
 }
 
 function wireControls() {
@@ -3100,14 +3141,18 @@ function wireControls() {
       saveSettings();
     });
   if (e.voicePreview) e.voicePreview.addEventListener("click", () => speech.previewVoice());
-  if (e.changeShortcut)
-    e.changeShortcut.addEventListener("click", () => {
-      try {
-        chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
-      } catch (_) {
-        /* fail quietly */
-      }
-    });
+  // All three shortcut keycaps open Chrome's own shortcuts page, where the user
+  // rebinds any of Sharon's commands (Chrome doesn't let extensions set keys).
+  const openShortcuts = () => {
+    try {
+      chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
+    } catch (_) {
+      /* fail quietly */
+    }
+  };
+  if (e.changeShortcut) e.changeShortcut.addEventListener("click", openShortcuts);
+  if (e.changeScreenRecShortcut) e.changeScreenRecShortcut.addEventListener("click", openShortcuts);
+  if (e.changeScreenPauseShortcut) e.changeScreenPauseShortcut.addEventListener("click", openShortcuts);
 
   // Setup rows in Settings + the welcome steps share the same real actions.
   if (e.suMicBtn)
@@ -3163,6 +3208,8 @@ function wireControls() {
       if (msg.t === "sr:evt") {
         if (msg.event === "started") onScreenStarted(msg.startAtEpoch);
         else if (msg.event === "stopped") onScreenStopped(msg);
+        else if (msg.event === "paused") onScreenPaused(msg.recordedMs);
+        else if (msg.event === "resumed") onScreenResumed(msg.startAtEpoch);
         else if (msg.event === "cancelled") onScreenCancelled();
         else if (msg.event === "error") onScreenError(msg);
       }

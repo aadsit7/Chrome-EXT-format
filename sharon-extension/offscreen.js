@@ -24,10 +24,24 @@ let stream = null;
 let chunks = [];
 let capTimer = null;
 
+// Pause bookkeeping. `pausedAccumMs` is recorded time banked before the current
+// running segment; `segStart` is when the current running segment began (0
+// while paused). This lets the recorded elapsed time exclude paused stretches,
+// and lets `st.startAtEpoch` stay a "virtual start" (now − startAtEpoch ===
+// recorded elapsed) so the side panel's timer needs no pause math.
+let pausedAccumMs = 0;
+let segStart = 0;
+
 // The authoritative recording state (the side panel reconnects by querying it).
 let st = freshState();
 function freshState() {
-  return { phase: "idle", startAtEpoch: 0, blobUrl: "", size: 0, durationSeconds: 0, mime: "", error: "" };
+  return { phase: "idle", startAtEpoch: 0, paused: false, blobUrl: "", size: 0, durationSeconds: 0, mime: "", error: "" };
+}
+
+// Recorded time so far, excluding any paused stretches.
+function recordedElapsedMs() {
+  if (st.phase !== "recording") return 0;
+  return st.paused ? pausedAccumMs : pausedAccumMs + (Date.now() - segStart);
 }
 
 function pickMime() {
@@ -49,13 +63,14 @@ function emit(event, extra) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.t !== "string" || msg.t !== "sr:off") return; // not for us
   if (msg.cmd === "query") {
-    sendResponse(Object.assign({}, st));
+    sendResponse(Object.assign({}, st, { recordedMs: recordedElapsedMs() }));
     return; // synchronous response
   }
   if (msg.cmd === "start") startRec();
   else if (msg.cmd === "stop") stopRec();
+  else if (msg.cmd === "togglepause") togglePause();
   else if (msg.cmd === "clear") clearRec();
-  // no response needed for start/stop/clear
+  // no response needed for start/stop/togglepause/clear
 });
 
 async function startRec() {
@@ -112,15 +127,45 @@ async function startRec() {
   if (vt) vt.addEventListener("ended", () => stopRec(), { once: true });
 
   st.mime = mime;
-  st.startAtEpoch = Date.now();
+  pausedAccumMs = 0;
+  segStart = Date.now();
+  st.startAtEpoch = segStart;
+  st.paused = false;
   st.phase = "recording";
   mediaRecorder.start(1000); // 1s chunks — a crash loses at most a second
   emit("started", { startAtEpoch: st.startAtEpoch, mime });
 
-  // 30-minute hard cap — auto-stops at exactly 30:00.
+  // 30-minute hard cap — on RECORDED time, so pausing doesn't burn the budget.
   capTimer = setInterval(() => {
-    if (Date.now() - st.startAtEpoch >= RECORD_MAX_MS) stopRec();
+    if (recordedElapsedMs() >= RECORD_MAX_MS) stopRec();
   }, 1000);
+}
+
+// Pause ↔ resume the recording. Keeps the MediaRecorder and our recorded-time
+// bookkeeping in step; emits an event so the badge + panel reflect it.
+function togglePause() {
+  if (st.phase !== "recording") return;
+  if (!st.paused) {
+    try {
+      if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.pause();
+    } catch (_) {
+      /* ignore */
+    }
+    pausedAccumMs += Date.now() - segStart;
+    segStart = 0;
+    st.paused = true;
+    emit("paused", { recordedMs: pausedAccumMs });
+  } else {
+    try {
+      if (mediaRecorder && mediaRecorder.state === "paused") mediaRecorder.resume();
+    } catch (_) {
+      /* ignore */
+    }
+    segStart = Date.now();
+    st.paused = false;
+    st.startAtEpoch = segStart - pausedAccumMs; // virtual start: now − this === recorded ms
+    emit("resumed", { startAtEpoch: st.startAtEpoch });
+  }
 }
 
 function stopRec() {
@@ -143,7 +188,7 @@ function onRecStop() {
     return;
   }
   const durationSeconds = Math.min(
-    Math.round((Date.now() - st.startAtEpoch) / 1000),
+    Math.round(recordedElapsedMs() / 1000),
     Math.round(RECORD_MAX_MS / 1000)
   );
   const mime = st.mime || "video/webm";
@@ -191,6 +236,8 @@ function clearRec() {
   }
   stopTracks();
   chunks = [];
+  pausedAccumMs = 0;
+  segStart = 0;
   try {
     if (st.blobUrl) URL.revokeObjectURL(st.blobUrl);
   } catch (_) {
