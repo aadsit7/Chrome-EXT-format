@@ -14,6 +14,7 @@ class Component extends DCLogic {
     this.LS_B = 'bookmarksBuddy.sidepanel.bookmarks.v1';
     this.LS_L = 'bookmarksBuddy.sidepanel.layout.v1';
     this.LS_S = 'bookmarksBuddy.sidepanel.settings.v1';
+    this.LS_USE = 'bookmarksBuddy.sidepanel.usage.v1';   // local-only open counts (voice-match tie-breaker)
     this.STARTERS = [
       { name: 'Gmail', url: 'gmail.com' }, { name: 'Calendar', url: 'calendar.google.com' },
       { name: 'Drive', url: 'drive.google.com' }, { name: 'YouTube', url: 'youtube.com' },
@@ -676,9 +677,35 @@ class Component extends DCLogic {
     if (cs > best) best = cs;
     return best;
   }
-  // Rank every bookmark for a prepared query, best first.
+  /* ---------- on-device usage signal (voice-match tie-breaker) ----------
+   * A small, LOCAL-ONLY tally of how often / how recently each bookmark is
+   * opened. It is used purely to break ties between equally-scored matches so
+   * the site the user actually reaches for wins (e.g. "google" -> the Google
+   * app they open daily, not a stale one). It never changes a clear winner and
+   * never touches the Google Sheet — it only personalises ordering. */
+  loadUsage() {
+    if (this._usage) return this._usage;
+    let m = null; try { m = JSON.parse(localStorage.getItem(this.LS_USE) || 'null'); } catch {}
+    this._usage = (m && typeof m === 'object') ? m : Object.create(null);
+    return this._usage;
+  }
+  // A single comparable number: open-count dominates, recency (0–90, higher =
+  // more recent) breaks equal counts. Unopened bookmarks score 0.
+  usageScore(id) {
+    const u = this.loadUsage()[id]; if (!u) return 0;
+    const n = +u.n || 0, t = +u.t || 0;
+    return n * 1000 + (t ? Math.max(0, 90 - Math.min(90, (Date.now() - t) / 86400000)) : 0);
+  }
+  bumpUsage(id) {
+    if (!id) return;
+    try { const m = this.loadUsage(); const u = m[id] || { n: 0, t: 0 }; m[id] = { n: (+u.n || 0) + 1, t: Date.now() }; localStorage.setItem(this.LS_USE, JSON.stringify(m)); }
+    catch {}
+  }
+  // Rank every bookmark for a prepared query, best first. Ties (identical
+  // scores) fall back to the on-device usage signal so the more-used site wins.
   rankBookmarks(prep) {
-    return this.state.bookmarks.map(bm => ({ bm, s: this.scoreBookmark(prep, bm) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s);
+    return this.state.bookmarks.map(bm => ({ bm, s: this.scoreBookmark(prep, bm) })).filter(x => x.s > 0)
+      .sort((a, b) => (b.s - a.s) || (this.usageScore(b.bm.id) - this.usageScore(a.bm.id)));
   }
   matchBookmark(q, th) { const prep = typeof q === 'string' ? this.prepQuery(q) : q; let best = null; for (const bm of this.state.bookmarks) { const s = this.scoreBookmark(prep, bm); if (s >= th && (!best || s > best.s)) best = { bm, s }; } return best; }
   allFolders() { const out = []; for (const pg of this.state.pages) for (const c of pg) if (c && c.type === 'folder') out.push(c); return out; }
@@ -702,8 +729,15 @@ class Component extends DCLogic {
     if (/\b(stop listening|quit listening|turn (it |yourself )?off|go to sleep|stop now)\b/.test(t)) return { kind: 'stop' };
     if (/\bclose\b/.test(t) && /\b(tabs?|windows?|them|those|these|everything|all|it|that)\b/.test(t)) return { kind: 'close' };
     if (/\b(what can you do|help me out|show help|list (my )?bookmarks|what bookmarks)\b/.test(t)) return { kind: 'help' };
-    const addM = (' ' + String(raw).toLowerCase().replace(/[^a-z0-9\s.\-]/g, ' ').replace(/\s+/g, ' ').trim() + ' ').match(/\b(add a bookmark for|new bookmark for|add a bookmark|new bookmark|bookmark|add|save|remember)\b/);
-    if (addM) { const rawQ = addM.input.slice(addM.index + addM[0].length).replace(/\b(a|an|the|please|for me|to my (bookmarks|favorites))\b/g, ' ').replace(/\s+/g, ' ').trim(); return { kind: 'add', query: this.normalize(rawQ), rawQuery: rawQ }; }
+    // Adding a bookmark must be asked for EXPLICITLY: an add-intent verb tied
+    // directly to the word "bookmark" ("add bookmark", "add a new bookmark",
+    // "save this bookmark", "new bookmark for …"). Bare "add" / "save" /
+    // "remember" / a stray "bookmark" no longer trigger an add, so ordinary
+    // speech ("save me a seat", "remember to call mum", "that's a good
+    // bookmark") can never accidentally create a site.
+    const cleaned = ' ' + String(raw).toLowerCase().replace(/[^a-z0-9\s.\-]/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+    const addM = cleaned.match(/\b(?:add|save|create|make|store|new)\s+(?:(?:a|an|the|another|new|this)\s+){0,2}bookmarks?\b(?:\s+(?:for|of|to|called|named|as)\b)?/);
+    if (addM) { const rawQ = cleaned.slice(addM.index + addM[0].length).replace(/\b(a|an|the|my|please|for me|to my (bookmarks|favorites))\b/g, ' ').replace(/\s+/g, ' ').trim(); return { kind: 'add', query: this.normalize(rawQ), rawQuery: rawQ }; }
     const m = t.match(/\b(open up|open|launch|go to|goto|pull up|bring up|navigate to|take me to|show me|load up|load|start up|start|fire up|jump to|switch to|visit|head to|get me)\b/);
     let query, explicit;
     if (m) { query = t.slice(m.index + m[0].length); explicit = true; } else { query = t; explicit = false; }
@@ -765,8 +799,8 @@ class Component extends DCLogic {
     const cmd = this.parseCommand(text);
     if (cmd.kind === 'stop') { this.stopListen(); return; }
     if (cmd.kind === 'close') { this.closeOpened(); return; }
-    if (cmd.kind === 'help') { this.toast('Say “open” + a site, “next page”, or “add Notion”', 'sparkles'); return; }
-    if (cmd.kind === 'add') { if (cmd.rawQuery) this.addByVoice(cmd.rawQuery); else this.toast('Say a site to add, e.g. “add Notion”', 'mic'); return; }
+    if (cmd.kind === 'help') { this.toast('Say “open” + a site, “next page”, or “add bookmark Notion”', 'sparkles'); return; }
+    if (cmd.kind === 'add') { if (cmd.rawQuery) this.addByVoice(cmd.rawQuery); else this.toast('Say “add bookmark” + a site, e.g. “add bookmark Notion”', 'mic'); return; }
     if (cmd.kind === 'maybe') {
       // No explicit "open" verb — this may just be ambient speech, so only act on
       // a near-perfect, unambiguous match (never guess from a bare phrase).
@@ -892,6 +926,7 @@ class Component extends DCLogic {
     if (!bm) return; const url = this.ensureScheme(bm.url);
     if (!url) { this.toast('That site has no address', 'triangle-alert'); return; }
     if (this.state.choosing) this.setState({ choosing: null, choiceQuery: '' });
+    this.bumpUsage(bm.id);   // remember this open to sharpen future voice matches
     this.openUrl(url);
     this.toast('Opening ' + (bm.name || this.hostCore(bm.url)), 'external-link');
     this.speakIf('Opening ' + (bm.name || this.hostCore(bm.url)));
@@ -1987,7 +2022,7 @@ class Component extends DCLogic {
           return { b, sub, sc: this.scoreBookmark(prep, b) };
         })
         .filter(x => x.sub || x.sc >= 0.55)
-        .sort((a, b) => b.sc - a.sc || (a.sub === b.sub ? 0 : a.sub ? -1 : 1))
+        .sort((a, b) => b.sc - a.sc || (a.sub === b.sub ? 0 : a.sub ? -1 : 1) || (this.usageScore(b.b.id) - this.usageScore(a.b.id)))
         .map(({ b }) => ({ id: b.id, name: b.name || this.hostCore(b.url), host: this.hostOf(b.url), icon: this.iconFor(b), letter: this.letterOf(b), onTap: () => this.openBookmark(b, false) }));
     }
 
@@ -2136,7 +2171,7 @@ class Component extends DCLogic {
       transcript: s.interim || s.heard || (s.listening ? 'Listening… try “open ' + fname + '”' : 'Tap the mic, then say “open ' + fname + '”'),
       transcriptColor: (s.interim || s.heard) ? 'var(--bb-fg)' : 'var(--bb-fg-soft)',
       caretStyle: s.listening && !s.heard ? 'display:inline-block;width:3px;height:1em;background:var(--bb-accent2);margin-left:3px;vertical-align:text-bottom;animation:bbCaret 1s step-end infinite;' : 'display:none;',
-      voiceExamples: ['open ' + fname, 'next page', 'add Notion'],
+      voiceExamples: ['open ' + fname, 'next page', 'add bookmark Notion'],
       folderOpen: !!folder, folderName: folder ? folder.name : '', folderCount: folder ? folder.items.length : 0,
       folderEditing: s.folderEdit, folderNotEditing: !s.folderEdit, folderEditLabel: s.folderEdit ? 'Done' : 'Edit', toggleFolderEdit: () => this.toggleFolderEdit(), onFolderName: e => this.renameFolder(e.target.value),
       folderApps: folder ? folder.items.map(id => { const bm = byId(id) || { id, name: '?', url: '' }; return { id, name: bm.name || this.hostCore(bm.url), icon: this.iconFor(bm), letter: this.letterOf(bm), grad: this.grad(bm.name || bm.url), tileClass: '', onTap: () => { if (s.folderEdit) this.openEdit(id); else this.openBookmark(bm, false); }, onRemove: () => this.removeFromFolder(folder, id) }; }) : [],
