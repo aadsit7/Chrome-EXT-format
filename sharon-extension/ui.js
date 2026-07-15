@@ -51,6 +51,7 @@ export const els = {
   micBtn: document.getElementById("micBtn"),
   recordBtn: document.getElementById("recordBtn"),
   screenBtn: document.getElementById("screenBtn"),
+  screenRecBtn: document.getElementById("screenRecBtn"),
   searchIcon: document.getElementById("searchIcon"),
   memNavBtn: document.getElementById("memNavBtn"),
   memNavBadge: document.getElementById("memNavBadge"),
@@ -61,6 +62,10 @@ export const els = {
   recTranscriptEl: document.getElementById("recTranscript"),
   recText: document.getElementById("recText"),
   recHint: document.getElementById("recHint"),
+  screenRecCard: document.getElementById("screenRecCard"),
+  screenRecLabel: document.getElementById("screenRecLabel"),
+  screenRecTimer: document.getElementById("screenRecTimer"),
+  screenRecStop: document.getElementById("screenRecStop"),
   playerBar: document.getElementById("playerBar"),
   plToggle: document.getElementById("plToggle"),
   plLabel: document.getElementById("plLabel"),
@@ -139,6 +144,8 @@ const I_TASKS = '<path d="m9 11 3 3 8-8"/><path d="M21 12v6a2 2 0 0 1-2 2H5a2 2 
 const I_GLOBE = '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>';
 const I_VOLUME = '<path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>';
 const I_X = '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>';
+const I_MONITOR = '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>';
+const I_DOWNLOAD = '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>';
 
 /* ------------------------------------------------------------------ *
  * Header: status line, indicators, page-awareness pill
@@ -150,6 +157,7 @@ const STATUS_TEXT = {
   speaking: "Speaking — tap to stop",
   muted: "Muted",
   recording: "Recording — I'll stay quiet",
+  screen_rec: "Recording your screen — I'll stay quiet",
   screen: "Looking at your screen…",
   searching: "Searching the web…",
 };
@@ -201,7 +209,12 @@ export function setTabAwareness(seeing) {
 // tappable icons; the aria-live status line announces the mode change.
 export function setMode(m) {
   els.html.setAttribute("data-mode", m);
-  const pressed = { listening: els.micBtn, recording: els.recordBtn, screen: els.screenBtn };
+  const pressed = {
+    listening: els.micBtn,
+    recording: els.recordBtn,
+    screen_rec: els.screenRecBtn,
+    screen: els.screenBtn,
+  };
   for (const [name, btn] of Object.entries(pressed)) {
     if (btn) btn.setAttribute("aria-pressed", m === name ? "true" : "false");
   }
@@ -211,6 +224,13 @@ export function setMode(m) {
       m === "screen"
         ? "Looking at this tab — tap to stop"
         : "Look at this tab — I'll answer one question about it"
+    );
+  if (els.screenRecBtn)
+    els.screenRecBtn.setAttribute(
+      "aria-label",
+      m === "screen_rec"
+        ? "Recording your screen — tap to stop"
+        : "Record your screen — up to 30 minutes"
     );
   if (els.searchIcon)
     els.searchIcon.setAttribute(
@@ -387,6 +407,26 @@ export function recTranscript(committed, interim) {
     els.recText.appendChild(ghost);
   }
   els.recTranscriptEl.scrollTop = els.recTranscriptEl.scrollHeight;
+}
+
+/* ------------------------------------------------------------------ *
+ * Screen-recorder card — a SEPARATE live card from the voice recorder
+ * above, driven by the SCREEN_REC mode. It only ever shows a timer + Stop;
+ * the finished video is offered as a download card in the thread below.
+ * ------------------------------------------------------------------ */
+export function showScreenRecorder() {
+  els.html.setAttribute("data-screenrec", "on");
+  if (els.screenRecCard) els.screenRecCard.classList.remove("hidden");
+  if (els.screenRecBtn) els.screenRecBtn.setAttribute("aria-label", "Recording your screen — tap to stop");
+}
+export function hideScreenRecorder() {
+  els.html.removeAttribute("data-screenrec");
+  if (els.screenRecCard) els.screenRecCard.classList.add("hidden");
+  if (els.screenRecBtn)
+    els.screenRecBtn.setAttribute("aria-label", "Record your screen — up to 30 minutes");
+}
+export function setScreenRecTimer(text) {
+  if (els.screenRecTimer) els.screenRecTimer.textContent = text;
 }
 
 /* ------------------------------------------------------------------ *
@@ -798,6 +838,48 @@ export function addRecordingCard({ driveUrl, recordingId, durationLabel, notes, 
     card.appendChild(a);
   } else {
     cardFoot(card, "Synced with your Google Sheet", { synced: true });
+  }
+  return appendToThread(card);
+}
+
+// SCREEN RECORDING READY — the finished screen video, saved by DIRECT
+// DOWNLOAD only (it never touches the backend or Drive — screen videos are
+// too large for that path). Download saves it to the computer; Dismiss frees
+// the object URL. Mirrors addRecordingCard's shape.
+export function addScreenRecordingCard({ durationLabel, filename, onDownload, onDismiss } = {}) {
+  const card = cardShell(I_MONITOR, "Screen recording ready", durationLabel || "");
+  const p = document.createElement("p");
+  p.className = "ac-body";
+  p.textContent =
+    "Your screen recording is ready. Download it to your computer — it stays on this device and isn't sent to Drive.";
+  card.appendChild(p);
+
+  const row = document.createElement("div");
+  row.className = "src-actions";
+  const dl = document.createElement("button");
+  dl.type = "button";
+  dl.className = "pill-btn primary";
+  dl.appendChild(svgOf(I_DOWNLOAD));
+  dl.appendChild(document.createTextNode("Download"));
+  dl.addEventListener("click", () => onDownload && onDownload());
+  row.appendChild(dl);
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "pill-btn";
+  dismiss.textContent = "Dismiss";
+  dismiss.addEventListener("click", () => {
+    if (onDismiss) onDismiss();
+    removeCard(card);
+  });
+  row.appendChild(dismiss);
+  card.appendChild(row);
+
+  if (filename) {
+    const f = document.createElement("div");
+    f.className = "ac-foot";
+    f.appendChild(svgOf(I_MONITOR));
+    f.appendChild(document.createTextNode("Saves as " + filename + " · stays on your computer"));
+    card.appendChild(f);
   }
   return appendToThread(card);
 }

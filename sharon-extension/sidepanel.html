@@ -78,6 +78,20 @@
         <div class="rc-hint" id="recHint">Closing the panel ends the recording.</div>
       </div>
 
+      <!-- ================= Screen-recorder card =================
+           A SEPARATE live card from the voice recorder above, so the two
+           never interfere. Downloads straight to the computer — nothing here
+           touches the backend or Drive. -->
+      <div class="screenrec-card hidden" id="screenRecCard">
+        <div class="rc-row">
+          <span class="rc-dot" aria-hidden="true"></span>
+          <span class="rc-label" id="screenRecLabel">Recording your screen</span>
+          <span class="rc-timer" id="screenRecTimer">00:00 / 30:00</span>
+          <button class="pill-btn danger" id="screenRecStop" type="button">Stop</button>
+        </div>
+        <div class="rc-hint">Closing the panel or Chrome's “Stop sharing” bar ends the recording.</div>
+      </div>
+
       <!-- ================= Thread ================= -->
       <div class="thread" id="thread">
         <div class="empty-state" id="emptyState">Nothing here yet — I'm listening. Ask about this page, save a thought, or find an old note.</div>
@@ -173,6 +187,9 @@
         </button>
         <button class="mode-btn" id="screenBtn" type="button" aria-label="Look at this tab — I'll answer one question about it" aria-pressed="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+        </button>
+        <button class="mode-btn" id="screenRecBtn" type="button" aria-label="Record your screen — up to 30 minutes" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="2.5" fill="currentColor" stroke="none"/></svg>
         </button>
         <span class="mode-sep" aria-hidden="true"></span>
         <button class="mode-btn" id="memNavBtn" type="button" aria-label="Sharon's memory — notes, tasks and recordings" aria-pressed="false">
