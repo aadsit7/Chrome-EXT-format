@@ -1433,11 +1433,14 @@ class Component extends DCLogic {
       slot++;
     }
   }
-  // Carry the tile onto a left/right nav arrow to flip to the adjacent page.
-  // The arrow arms while the pointer is over it and flips after a short dwell;
-  // moving off it before the dwell elapses cancels harmlessly.
+  // Carry the tile into a left/right nav arrow to flip to the adjacent page.
+  // The arrow arms while the pointer is in its edge band and flips after a short
+  // dwell; moving out before the dwell elapses cancels harmlessly.
   edgeFlip(x, y, vp) {
-    const dir = this.hitNavArrow(x, y);
+    // Hysteresis: once a flip is arming, keep it armed until the pointer leaves a
+    // wider band, so a shaky hand at the boundary can't repeatedly cancel it.
+    if (this._flipDir && this._flipT && this.hitNavArrow(x, y, 40) === this._flipDir) return;
+    const dir = this.hitNavArrow(x, y, 0);
     if (dir === -1 && this.state.currentPage > 0) this.scheduleFlip(-1);
     else if (dir === 1 && this.state.currentPage < this.state.pages.length - 1) this.scheduleFlip(1);
     else this.cancelFlip();
@@ -1509,16 +1512,18 @@ class Component extends DCLogic {
     };
   }
   buildNavArrow(dir, col) {
-    const size = 54;
+    // A tall glass "edge zone" (not a small dot): reachable when dragging a tile
+    // at ANY row height, with a single centred chevron as the direction cue.
+    const w = 50;
     const el = document.createElement('div');
     el.className = 'bb-navarrow';
-    el.style.cssText = 'position:fixed; z-index:9990; width:' + size + 'px; height:' + size + 'px; border-radius:50%; display:grid; place-items:center; overflow:hidden; pointer-events:none; opacity:0; transform:scale(.6); background:' + col.glass + '; border:1.5px solid ' + col.glassBd + '; box-shadow:0 0 0 1.5px rgba(3,114,255,.16), 0 10px 26px rgba(22,31,91,.20); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); transition:opacity .2s ease, transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .18s ease;';
+    el.style.cssText = 'position:fixed; z-index:9990; width:' + w + 'px; border-radius:25px; display:grid; place-items:center; overflow:hidden; pointer-events:none; opacity:0; transform:scale(.92); background:' + col.glass + '; border:1.5px solid ' + col.glassBd + '; box-shadow:0 0 0 1.5px rgba(3,114,255,.14), 0 10px 30px rgba(22,31,91,.20); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); transition:opacity .2s ease, transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .2s ease;';
     const fill = document.createElement('span');
-    fill.style.cssText = 'position:absolute; inset:0; border-radius:50%; background:linear-gradient(140deg,' + col.accent + ',' + col.accent2 + '); transform:scale(0); transform-origin:50% 50%; will-change:transform;';
+    fill.style.cssText = 'position:absolute; inset:0; border-radius:25px; background:linear-gradient(160deg,' + col.accent + ',' + col.accent2 + '); transform:scaleY(0); transform-origin:50% 50%; will-change:transform;';
     const path = dir < 0 ? 'm15 18-6-6 6-6' : 'm9 18 6-6-6-6';
     const icon = document.createElement('span');
-    icon.style.cssText = 'position:relative; z-index:1; display:grid; place-items:center; color:' + col.accent + '; transition:color .18s ease;';
-    icon.innerHTML = '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="' + path + '"/></svg>';
+    icon.style.cssText = 'position:relative; z-index:1; display:grid; place-items:center; color:' + col.accent + '; transition:color .2s ease;';
+    icon.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="' + path + '"/></svg>';
     el.appendChild(fill); el.appendChild(icon);
     el.__fill = fill; el.__icon = icon;
     return el;
@@ -1530,7 +1535,7 @@ class Component extends DCLogic {
     const left = this.buildNavArrow(-1, col);
     const right = this.buildNavArrow(1, col);
     document.body.appendChild(left); document.body.appendChild(right);
-    this._nav = { left, right, hitR: 42 };
+    this._nav = { left, right };
     this.positionNavArrows();
     // Reveal on the next frame so the fade/scale-in transition actually plays.
     requestAnimationFrame(() => {
@@ -1539,14 +1544,22 @@ class Component extends DCLogic {
       this.updateNavArrows();
     });
   }
-  // Anchor each arrow to the vertical middle of the springboard's left/right edge.
+  // Run each arrow down most of the springboard's left/right edge and record the
+  // hit geometry: a tall band along each edge so a tile can be carried into it
+  // from any row, not just the vertical middle.
   positionNavArrows() {
     const nav = this._nav; if (!nav) return;
     const vp = document.querySelector('.bb-viewport'); if (!vp) return;
-    const r = vp.getBoundingClientRect(), size = 54, margin = 12, cy = r.top + r.height / 2;
-    const place = (el, cx) => { if (!el) return; el.style.left = (cx - size / 2) + 'px'; el.style.top = (cy - size / 2) + 'px'; el.__cx = cx; el.__cy = cy; };
-    place(nav.left, r.left + margin + size / 2);
-    place(nav.right, r.right - margin - size / 2);
+    const r = vp.getBoundingClientRect();
+    const w = 50, inset = 10, vMargin = 16;
+    const h = Math.max(140, r.height - vMargin * 2);
+    const top = r.top + (r.height - h) / 2;
+    const place = (el, x) => { if (!el) return; el.style.left = x + 'px'; el.style.top = top + 'px'; el.style.height = h + 'px'; };
+    place(nav.left, r.left + inset);
+    place(nav.right, r.right - inset - w);
+    nav.leftEdge = r.left; nav.rightEdge = r.right;
+    nav.vpTop = r.top; nav.vpBottom = r.top + r.height;
+    nav.band = w + inset + 14;   // horizontal reach from the edge (~74px): covers the whole pill
   }
   // Only surface the arrow for a direction that actually has a page to reach.
   updateNavArrows() {
@@ -1556,39 +1569,43 @@ class Component extends DCLogic {
     set(nav.left, cp > 0);
     set(nav.right, cp < n - 1);
   }
-  // Which enabled arrow (‑1 left / 1 right / 0 none) the pointer is currently over.
-  hitNavArrow(x, y) {
+  // Which enabled arrow (‑1 left / 1 right / 0 none) the pointer is in — a tall
+  // edge band spanning the whole board height. `pad` widens the band for the
+  // hysteresis check so a shaky hand at the boundary doesn't flicker.
+  hitNavArrow(x, y, pad) {
     const nav = this._nav; if (!nav) return 0;
-    const R = nav.hitR || 42, within = el => { if (!el || el.dataset.enabled !== '1') return false; const dx = x - el.__cx, dy = y - el.__cy; return dx * dx + dy * dy <= R * R; };
-    if (within(nav.left)) return -1;
-    if (within(nav.right)) return 1;
+    pad = pad || 0;
+    if (y < nav.vpTop - pad || y > nav.vpBottom + pad) return 0;
+    const band = (nav.band || 74) + pad;
+    if (nav.left && nav.left.dataset.enabled === '1' && x <= nav.leftEdge + band) return -1;
+    if (nav.right && nav.right.dataset.enabled === '1' && x >= nav.rightEdge - band) return 1;
     return 0;
   }
-  // Light up (or release) an arrow. When armed, its accent fill sweeps in over
+  // Light up (or release) an arrow. When armed, its accent fill sweeps up over
   // the dwell so the impending flip is visible; releasing retracts it.
   armNavArrow(dir, on) {
     const nav = this._nav; if (!nav) return;
     const el = dir < 0 ? nav.left : nav.right; if (!el) return;
     const col = this._navCol || (this._navCol = this.navColors());
     if (on) {
-      el.style.transform = 'scale(1.14)';
-      el.style.boxShadow = '0 0 0 2px ' + col.accent2 + ', 0 16px 34px rgba(3,114,255,.5)';
+      el.style.transform = 'scale(1.06)';
+      el.style.boxShadow = '0 0 0 2px ' + col.accent2 + ', 0 16px 38px rgba(3,114,255,.5)';
       if (el.__fill) {
         // Snap the fill empty (no transition) and force a reflow so it always
         // sweeps in from zero — including on a second flip while still resting
         // on the arrow, where a synchronous 0→1 would otherwise be coalesced.
         el.__fill.style.transition = 'none';
-        el.__fill.style.transform = 'scale(0)';
+        el.__fill.style.transform = 'scaleY(0)';
         void el.__fill.offsetWidth;
         el.__fill.style.transition = 'transform ' + this.NAV_DWELL() + 'ms linear';
-        el.__fill.style.transform = 'scale(1)';
+        el.__fill.style.transform = 'scaleY(1)';
       }
       if (el.__icon) { el.__icon.style.transition = 'color ' + Math.round(this.NAV_DWELL() * 0.7) + 'ms linear'; el.__icon.style.color = '#fff'; }
     } else {
       el.style.transform = 'scale(1)';
-      el.style.boxShadow = '0 0 0 1.5px rgba(3,114,255,.16), 0 10px 26px rgba(22,31,91,.20)';
-      if (el.__fill) { el.__fill.style.transition = 'transform .18s ease'; el.__fill.style.transform = 'scale(0)'; }
-      if (el.__icon) { el.__icon.style.transition = 'color .18s ease'; el.__icon.style.color = col.accent; }
+      el.style.boxShadow = '0 0 0 1.5px rgba(3,114,255,.14), 0 10px 30px rgba(22,31,91,.20)';
+      if (el.__fill) { el.__fill.style.transition = 'transform .2s ease'; el.__fill.style.transform = 'scaleY(0)'; }
+      if (el.__icon) { el.__icon.style.transition = 'color .2s ease'; el.__icon.style.color = col.accent; }
     }
   }
   hideNavArrows() {
