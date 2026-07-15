@@ -241,7 +241,14 @@ function updateStatus() {
   // The header follows the mode manager first — the status text and the
   // mode bar must never disagree about what Sharon is doing.
   if (recActive()) ui.setPhase("recording");
-  else if (screenRecActive()) ui.setPhase("screen_rec");
+  else if (screenRecActive())
+    ui.setPhase(
+      screenRecState === "trimming"
+        ? "screen_trim"
+        : screenRecState === "reviewing"
+        ? "screen_review"
+        : "screen_rec"
+    );
   else if (inMode(MODES.SEARCHING)) ui.setPhase("searching");
   else if (thinking || busy) ui.setPhase("thinking");
   else if (inMode(MODES.SCREEN)) ui.setPhase("screen");
@@ -1821,6 +1828,18 @@ let screenAudioCtx = null; // merges display audio + mic into one track
 let screenVideoTrack = null; // the display video track — its "ended" is Chrome's Stop sharing
 let preparedScreenRec = null; // handoff from startScreenRecording into the enter routine
 
+// Review/trim step — inserted BETWEEN "recording stopped" and "download".
+// After a recording stops we stay in SCREEN_REC and show a preview + trimmer;
+// nothing else runs until the user saves or discards.
+let screenReviewBlob = null; // the original recorded blob (trim source + untouched save)
+let screenReviewUrl = null; // preview object URL — revoked on review teardown
+let screenReviewCard = null; // the ui controller for the review card
+let screenReviewFilename = ""; // the filename both save paths use
+let screenTrimVideo = null; // off-screen <video> replaying the kept region
+let screenTrimRecorder = null; // MediaRecorder re-recording the kept region in real time
+let screenTrimTimer = null; // drives the stop check + progress label while trimming
+let screenTrimStartWall = 0; // wall clock — a stall fallback so trimming always ends
+
 // The one test for "the screen recorder flow is live": the mode manager's word.
 function screenRecActive() {
   return inMode(MODES.SCREEN_REC);
@@ -1867,10 +1886,28 @@ function screenRecFilename() {
 // Save the finished video to the computer. Preferred: chrome.downloads (the
 // only new permission), which offers a Save-As dialog. If it's unavailable,
 // fall back to a temporary <a download> click — no permission needed.
+//
+// The caller hands ownership of `url` to this function: it revokes the object
+// URL once the download has SETTLED (Chrome has read the blob, or the user
+// cancelled the Save dialog), never before — revoking a blob: URL mid-download
+// would break it. Callers therefore create a dedicated URL per download and
+// never revoke it themselves.
 function downloadScreenRecording(url, filename) {
+  const revoke = () => {
+    try {
+      URL.revokeObjectURL(url);
+    } catch (_) {
+      /* ignore */
+    }
+  };
   try {
     if (chrome.downloads && chrome.downloads.download) {
-      chrome.downloads.download({ url, filename, saveAs: true });
+      chrome.downloads.download({ url, filename, saveAs: true }, () => {
+        // Reading lastError suppresses the "unchecked runtime.lastError" log
+        // when the user cancels the Save dialog; either way it's now safe.
+        void chrome.runtime.lastError;
+        revoke();
+      });
       return;
     }
   } catch (_) {
@@ -1886,6 +1923,9 @@ function downloadScreenRecording(url, filename) {
   } catch (_) {
     /* nothing more we can do */
   }
+  // The anchor read the blob synchronously on click; revoke after a grace
+  // window so a slow save still has the data.
+  setTimeout(revoke, 30000);
 }
 
 // Build the recorder BEFORE any mode change, so a failure leaves Sharon
@@ -2043,12 +2083,10 @@ function enterScreenRecMode() {
   updateStatus();
 }
 
-// SCREEN_REC's exit routine — idempotent, and safe to call twice. Force-stops
-// the recorder if running, stops EVERY captured track, closes the audio graph,
-// clears the timer, and hides the live card. The normal stop path has usually
-// wound most of this down already, so this is the safety net for any other way
-// out (panel close, a rescued failed transition).
-function forceScreenRecIdle() {
+// Release the CAPTURE hardware — the recorder, the screen/mic tracks, and the
+// audio graph. Idempotent; used both when a recording stops (capture is done
+// but the review step lives on) and inside the full teardown below.
+function teardownScreenCapture() {
   if (screenRecTimerInt) {
     clearInterval(screenRecTimerInt);
     screenRecTimerInt = null;
@@ -2075,6 +2113,73 @@ function forceScreenRecIdle() {
     screenAudioCtx = null;
   }
   screenChunks = [];
+}
+
+// Release the REVIEW/TRIM resources — the trim re-record, the off-screen
+// video, the preview object URL, and the review card. Idempotent and safe to
+// call twice; the download's own dedicated URL is revoked by the download
+// path, never here.
+function teardownScreenReview() {
+  if (screenTrimTimer) {
+    clearInterval(screenTrimTimer);
+    screenTrimTimer = null;
+  }
+  if (screenTrimRecorder) {
+    try {
+      if (screenTrimRecorder.state !== "inactive") screenTrimRecorder.stop();
+    } catch (_) {
+      /* ignore */
+    }
+    screenTrimRecorder = null;
+  }
+  if (screenTrimVideo) {
+    try {
+      screenTrimVideo.pause();
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      screenTrimVideo.removeAttribute("src");
+      screenTrimVideo.load();
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      if (screenTrimVideo.parentNode) screenTrimVideo.parentNode.removeChild(screenTrimVideo);
+    } catch (_) {
+      /* ignore */
+    }
+    screenTrimVideo = null;
+  }
+  if (screenReviewCard) {
+    try {
+      screenReviewCard.remove();
+    } catch (_) {
+      /* ignore */
+    }
+    screenReviewCard = null;
+  }
+  if (screenReviewUrl) {
+    try {
+      URL.revokeObjectURL(screenReviewUrl);
+    } catch (_) {
+      /* ignore */
+    }
+    screenReviewUrl = null;
+  }
+  screenReviewBlob = null;
+  screenReviewFilename = "";
+  screenTrimStartWall = 0;
+}
+
+// SCREEN_REC's exit routine — idempotent, and safe to call twice. Tears down
+// both the capture hardware and the review/trim resources, then clears the
+// live card. The normal paths have usually wound most of this down already,
+// so this is the safety net for any other way out (panel close, discard, a
+// rescued failed transition).
+function forceScreenRecIdle() {
+  teardownScreenCapture();
+  teardownScreenReview();
   if (screenRecState !== "idle") {
     screenRecState = "idle";
     ui.hideScreenRecorder();
@@ -2110,20 +2215,20 @@ function stopScreenRecording() {
   }
 }
 
-// Assemble the recorded chunks into one Blob, hand the mode back to LISTENING
-// (its exit routine stops every track and frees the audio graph), and offer
-// the file as a direct download. No base64, no api.* — the bytes never leave
-// the computer except when the user clicks Download.
+// Assemble the recorded chunks into one Blob. The CAPTURE is done, so free the
+// screen/mic hardware now — but STAY in SCREEN_REC and show the review/trim
+// card, so nothing else runs until the user saves or discards. No download
+// happens here anymore; that's the review card's job.
 function finishScreenRecording(mimeType, durationSeconds) {
   const type = mimeType || "video/webm";
   const blob = new Blob(screenChunks, { type });
 
-  // Hand the mode back — SCREEN_REC's exit (forceScreenRecIdle) stops the
-  // display/mic tracks, closes the AudioContext, clears the timer, and hides
-  // the live card. (It also clears screenChunks, but the Blob is already made.)
-  enterMode(MODES.LISTENING);
+  // Capture hardware only — NOT the review resources, and NOT the mode.
+  teardownScreenCapture();
 
   if (!blob.size) {
+    // Nothing to review — hand the mode back and say so.
+    enterMode(MODES.LISTENING);
     reportProblem(
       "the screen recording came out empty, so there was nothing to save.",
       "Tap the screen-record button and try again."
@@ -2132,24 +2237,200 @@ function finishScreenRecording(mimeType, durationSeconds) {
     return;
   }
 
-  const url = URL.createObjectURL(blob);
-  const filename = screenRecFilename();
-  const minutes = Math.max(1, Math.round(durationSeconds / 60));
-  ui.addScreenRecordingCard({
-    durationLabel: minutes + " min",
-    filename,
-    onDownload: () => downloadScreenRecording(url, filename),
-    // Free the object URL when the card is dismissed so the video isn't pinned
-    // in memory forever.
-    onDismiss: () => {
-      try {
-        URL.revokeObjectURL(url);
-      } catch (_) {
-        /* ignore */
-      }
-    },
+  screenReviewBlob = blob;
+  screenReviewFilename = screenRecFilename();
+  screenReviewUrl = URL.createObjectURL(blob);
+  screenRecState = "reviewing";
+  screenReviewCard = ui.addScreenReviewCard({
+    url: screenReviewUrl,
+    onSave: (start, end, dur) => saveScreenReview(start, end, dur),
+    onDiscard: () => discardScreenReview(),
   });
   updateStatus();
+}
+
+// Discard — nothing is saved. Leaving the mode runs forceScreenRecIdle, which
+// revokes the preview URL and removes the card.
+function discardScreenReview() {
+  if (!screenRecActive()) return;
+  enterMode(MODES.LISTENING);
+  updateStatus();
+}
+
+// Save the chosen region. If the handles are effectively untouched (start ≈ 0
+// AND end ≈ full duration, within ~0.3s), skip re-encoding and download the
+// ORIGINAL blob as-is — instant and lossless. Otherwise trim for real.
+function saveScreenReview(startSec, endSec, durationSec) {
+  if (screenRecState !== "reviewing") return;
+  const TOL = 0.3;
+  const untouched =
+    !isFinite(durationSec) ||
+    durationSec <= 0 ||
+    (startSec <= TOL && endSec >= durationSec - TOL);
+
+  const filename = screenReviewFilename || screenRecFilename();
+  if (untouched) {
+    // A dedicated download URL (the download path revokes it when it settles);
+    // the preview URL is revoked separately by the mode-exit teardown.
+    if (screenReviewBlob) {
+      downloadScreenRecording(URL.createObjectURL(screenReviewBlob), filename);
+    }
+    enterMode(MODES.LISTENING);
+    updateStatus();
+    return;
+  }
+  trimAndDownload(startSec, endSec, filename);
+}
+
+// A real trim: replay ONLY the kept region into a fresh MediaRecorder via
+// video.captureStream() (which carries the audio track), in real time, then
+// download the result. Runs inside SCREEN_REC; the card shows progress and its
+// buttons stay disabled until it finishes.
+async function trimAndDownload(startSec, endSec, filename) {
+  const mime = pickScreenRecorderMime();
+  const sourceBlob = screenReviewBlob;
+
+  // Save the whole clip instead of losing it if we can't trim here.
+  const saveWholeInstead = () => {
+    if (sourceBlob) downloadScreenRecording(URL.createObjectURL(sourceBlob), filename);
+    enterMode(MODES.LISTENING);
+    updateStatus();
+  };
+  if (!mime || !sourceBlob) {
+    saveWholeInstead();
+    return;
+  }
+
+  screenRecState = "trimming";
+  const total = Math.max(0, endSec - startSec);
+  if (screenReviewCard)
+    screenReviewCard.setTrimming(
+      "Trimming… this takes about as long as the kept clip — " + fmtClock(total * 1000) + " left"
+    );
+  updateStatus();
+
+  // Off-screen but RENDERED video (display:none stops frame output to
+  // captureStream, so it's positioned off-screen instead). Muted so it makes
+  // no sound in the room; captureStream still carries the audio track.
+  const v = document.createElement("video");
+  v.className = "srv-offscreen";
+  v.src = screenReviewUrl; // same blob as the preview
+  v.muted = true;
+  v.playsInline = true;
+  document.body.appendChild(v);
+  screenTrimVideo = v;
+
+  try {
+    await new Promise((res, rej) => {
+      v.addEventListener("loadedmetadata", () => res(), { once: true });
+      v.addEventListener("error", () => rej(new Error("load")), { once: true });
+    });
+  } catch (_) {
+    saveWholeInstead();
+    return;
+  }
+  if (screenRecState !== "trimming") return; // torn down while we waited
+
+  // Seek to the start point before we start capturing.
+  try {
+    await new Promise((res) => {
+      v.addEventListener("seeked", () => res(), { once: true });
+      try {
+        v.currentTime = startSec;
+      } catch (_) {
+        res();
+      }
+    });
+  } catch (_) {
+    /* proceed from wherever it landed */
+  }
+  if (screenRecState !== "trimming") return;
+
+  const capture = v.captureStream
+    ? v.captureStream.bind(v)
+    : v.mozCaptureStream
+    ? v.mozCaptureStream.bind(v)
+    : null;
+  if (!capture) {
+    saveWholeInstead();
+    return;
+  }
+  let stream;
+  let recorder;
+  try {
+    stream = capture();
+    recorder = new MediaRecorder(stream, { mimeType: mime });
+  } catch (_) {
+    saveWholeInstead();
+    return;
+  }
+  screenTrimRecorder = recorder;
+  const chunks = [];
+  recorder.addEventListener("dataavailable", (e) => {
+    if (e.data && e.data.size) chunks.push(e.data);
+  });
+
+  let stopped = false;
+  const stopTrim = () => {
+    if (stopped) return;
+    stopped = true;
+    if (screenTrimTimer) {
+      clearInterval(screenTrimTimer);
+      screenTrimTimer = null;
+    }
+    try {
+      v.pause();
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      if (recorder.state !== "inactive") recorder.stop();
+    } catch (_) {
+      /* ignore */
+    }
+  };
+
+  recorder.addEventListener(
+    "stop",
+    () => {
+      const trimmed = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
+      // Hand a dedicated URL to the download path (it revokes on settle); the
+      // preview URL + off-screen video are freed by the mode-exit teardown.
+      if (trimmed.size) {
+        downloadScreenRecording(URL.createObjectURL(trimmed), filename);
+      } else if (sourceBlob) {
+        downloadScreenRecording(URL.createObjectURL(sourceBlob), filename);
+      }
+      enterMode(MODES.LISTENING);
+      updateStatus();
+    },
+    { once: true }
+  );
+
+  screenTrimStartWall = Date.now();
+  try {
+    recorder.start(1000);
+  } catch (_) {
+    saveWholeInstead();
+    return;
+  }
+  try {
+    await v.play();
+  } catch (_) {
+    /* play() may reject; the timer below still drives the stop */
+  }
+
+  // Stop when playback reaches the end handle (or the clip ends), with a
+  // wall-clock stall fallback so trimming can never hang forever.
+  screenTrimTimer = setInterval(() => {
+    const cur = v.currentTime;
+    const left = Math.max(0, endSec - cur);
+    if (screenReviewCard) screenReviewCard.updateTrimming("Trimming… " + fmtClock(left * 1000) + " left");
+    const elapsedWall = Date.now() - screenTrimStartWall;
+    if (cur >= endSec - 0.03 || v.ended || elapsedWall > total * 1000 + 4000) {
+      stopTrim();
+    }
+  }, 100);
 }
 
 /* ------------------------------------------------------------------ *
@@ -2691,6 +2972,10 @@ function wireControls() {
       runModeAction(async () => {
         if (screenRecState === "recording") {
           stopScreenRecording();
+        } else if (screenRecState === "reviewing") {
+          hint("Choose Save or Discard on your recording below.");
+        } else if (screenRecState === "trimming") {
+          hint("Trimming your clip — one moment.");
         } else if (screenRecActive()) {
           // Mid-finish (blob is being assembled) — starting again would race it.
           hint("Just a moment — finishing your screen recording.");
@@ -2713,28 +2998,12 @@ function wireControls() {
         /* ignore */
       }
     }
-    // Screen recording is in-memory too: stop the recorder and free EVERY
-    // captured track so closing the panel never leaves the screen share live.
-    if (
-      screenRecState === "recording" &&
-      screenMediaRecorder &&
-      screenMediaRecorder.state !== "inactive"
-    ) {
-      try {
-        screenMediaRecorder.stop();
-      } catch (_) {
-        /* ignore */
-      }
-    }
-    stopStreamTracks(screenDisplayStream);
-    stopStreamTracks(screenMicStream);
-    if (screenAudioCtx) {
-      try {
-        screenAudioCtx.close();
-      } catch (_) {
-        /* ignore */
-      }
-    }
+    // Screen recording is in-memory too. Release EVERYTHING so closing the
+    // panel never leaves the screen share live, a trim re-record running, or
+    // an object URL pinned: the capture hardware AND the review/trim resources
+    // (off-screen video, trim recorder, preview URL). Both are idempotent.
+    teardownScreenCapture();
+    teardownScreenReview();
   });
 
   // In-panel player: play/pause, seek, close. (The Drive link is a plain <a>.)

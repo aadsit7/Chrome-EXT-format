@@ -146,6 +146,8 @@ const I_VOLUME = '<path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1
 const I_X = '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>';
 const I_MONITOR = '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>';
 const I_DOWNLOAD = '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>';
+const I_PLAY = '<polygon points="6 3 20 12 6 21 6 3"/>';
+const I_PAUSE = '<path d="M9 4v16"/><path d="M15 4v16"/>';
 
 /* ------------------------------------------------------------------ *
  * Header: status line, indicators, page-awareness pill
@@ -158,6 +160,8 @@ const STATUS_TEXT = {
   muted: "Muted",
   recording: "Recording — I'll stay quiet",
   screen_rec: "Recording your screen — I'll stay quiet",
+  screen_review: "Review your recording",
+  screen_trim: "Trimming your clip…",
   screen: "Looking at your screen…",
   searching: "Searching the web…",
 };
@@ -842,46 +846,293 @@ export function addRecordingCard({ driveUrl, recordingId, durationLabel, notes, 
   return appendToThread(card);
 }
 
-// SCREEN RECORDING READY — the finished screen video, saved by DIRECT
-// DOWNLOAD only (it never touches the backend or Drive — screen videos are
-// too large for that path). Download saves it to the computer; Dismiss frees
-// the object URL. Mirrors addRecordingCard's shape.
-export function addScreenRecordingCard({ durationLabel, filename, onDownload, onDismiss } = {}) {
-  const card = cardShell(I_MONITOR, "Screen recording ready", durationLabel || "");
-  const p = document.createElement("p");
-  p.className = "ac-body";
-  p.textContent =
-    "Your screen recording is ready. Download it to your computer — it stays on this device and isn't sent to Drive.";
-  card.appendChild(p);
+// REVIEW YOUR RECORDING — shown after a screen recording stops, BEFORE it
+// saves. A preview of the clip plus an iPhone-Photos-style two-handle trimmer:
+// drag the start/end handles to keep only part of the clip, or leave them at
+// the ends to keep the whole thing. This is pure UI — the orchestrator owns
+// the Blob and the trim re-record; the chosen region comes back through
+// onSave(startSeconds, endSeconds, durationSeconds) / onDiscard(). Returns a
+// controller the orchestrator drives during trimming and teardown.
+export function addScreenReviewCard({ url, onSave, onDiscard } = {}) {
+  // The live timer card is done; hide it, but keep data-screenrec on so the
+  // live-presence card stays hidden while the review card is up.
+  if (els.screenRecCard) els.screenRecCard.classList.add("hidden");
 
+  const card = cardShell(I_MONITOR, "Review your recording", "");
+  const hint = document.createElement("p");
+  hint.className = "ac-q";
+  hint.textContent = "Drag the handles to trim, or just Save to keep the whole clip.";
+  card.appendChild(hint);
+
+  // --- preview video + centered play/pause overlay ---
+  const stage = document.createElement("div");
+  stage.className = "srv-stage";
+  stage.setAttribute("data-playing", "false");
+  const video = document.createElement("video");
+  video.className = "srv-video";
+  video.src = url;
+  video.playsInline = true;
+  video.preload = "auto";
+  stage.appendChild(video);
+  const playBtn = document.createElement("button");
+  playBtn.type = "button";
+  playBtn.className = "srv-play";
+  playBtn.setAttribute("aria-label", "Play the recording");
+  playBtn.appendChild(svgOf(I_PLAY, "i-play"));
+  playBtn.appendChild(svgOf(I_PAUSE, "i-pause"));
+  stage.appendChild(playBtn);
+  card.appendChild(stage);
+
+  // --- trim timeline: track, kept-region highlight, playhead, two handles ---
+  const tl = document.createElement("div");
+  tl.className = "srv-tl";
+  const track = document.createElement("div");
+  track.className = "srv-track";
+  const range = document.createElement("div");
+  range.className = "srv-range";
+  const playhead = document.createElement("div");
+  playhead.className = "srv-playhead";
+  const hStart = document.createElement("button");
+  hStart.type = "button";
+  hStart.className = "srv-h srv-h-start";
+  hStart.setAttribute("aria-label", "Trim start");
+  const hEnd = document.createElement("button");
+  hEnd.type = "button";
+  hEnd.className = "srv-h srv-h-end";
+  hEnd.setAttribute("aria-label", "Trim end");
+  track.append(range, playhead, hStart, hEnd);
+  tl.appendChild(track);
+  card.appendChild(tl);
+
+  // --- live labels ---
+  const labels = document.createElement("div");
+  labels.className = "srv-labels";
+  labels.innerHTML =
+    'Start <b class="srv-ls">0:00</b> · End <b class="srv-le">0:00</b> · Length <b class="srv-ll">…</b>';
+  card.appendChild(labels);
+  const lblStart = labels.querySelector(".srv-ls");
+  const lblEnd = labels.querySelector(".srv-le");
+  const lblLen = labels.querySelector(".srv-ll");
+
+  // --- trimming progress (hidden until a real trim runs) ---
+  const progress = document.createElement("div");
+  progress.className = "srv-progress hidden";
+  card.appendChild(progress);
+
+  // --- actions ---
   const row = document.createElement("div");
   row.className = "src-actions";
-  const dl = document.createElement("button");
-  dl.type = "button";
-  dl.className = "pill-btn primary";
-  dl.appendChild(svgOf(I_DOWNLOAD));
-  dl.appendChild(document.createTextNode("Download"));
-  dl.addEventListener("click", () => onDownload && onDownload());
-  row.appendChild(dl);
-  const dismiss = document.createElement("button");
-  dismiss.type = "button";
-  dismiss.className = "pill-btn";
-  dismiss.textContent = "Dismiss";
-  dismiss.addEventListener("click", () => {
-    if (onDismiss) onDismiss();
-    removeCard(card);
-  });
-  row.appendChild(dismiss);
+  const playSelBtn = document.createElement("button");
+  playSelBtn.type = "button";
+  playSelBtn.className = "pill-btn";
+  playSelBtn.textContent = "Play selection";
+  const discardBtn = document.createElement("button");
+  discardBtn.type = "button";
+  discardBtn.className = "pill-btn";
+  discardBtn.textContent = "Discard";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "pill-btn primary";
+  saveBtn.appendChild(svgOf(I_DOWNLOAD));
+  saveBtn.appendChild(document.createTextNode("Save"));
+  saveBtn.disabled = true; // enabled once the duration resolves
+  row.append(playSelBtn, discardBtn, saveBtn);
   card.appendChild(row);
 
-  if (filename) {
-    const f = document.createElement("div");
-    f.className = "ac-foot";
-    f.appendChild(svgOf(I_MONITOR));
-    f.appendChild(document.createTextNode("Saves as " + filename + " · stays on your computer"));
-    card.appendChild(f);
+  // ---- state + interaction ----
+  let dur = 0;
+  let startT = 0;
+  let endT = 0;
+  let ready = false; // duration resolved, slider live
+  let busy = false; // trimming in progress — freeze the controls
+  let playingSelection = false;
+
+  const minGap = () => Math.min(0.3, dur * 0.05); // keep at least a sliver
+
+  function layout() {
+    const sP = dur > 0 ? startT / dur : 0;
+    const eP = dur > 0 ? endT / dur : 1;
+    hStart.style.left = sP * 100 + "%";
+    hEnd.style.left = eP * 100 + "%";
+    range.style.left = sP * 100 + "%";
+    range.style.right = (1 - eP) * 100 + "%";
+    lblStart.textContent = fmtSecs(startT);
+    lblEnd.textContent = fmtSecs(endT);
+    lblLen.textContent = fmtSecs(Math.max(0, endT - startT));
   }
-  return appendToThread(card);
+  function setPlayhead(t) {
+    const p = dur > 0 ? Math.max(0, Math.min(1, t / dur)) : 0;
+    playhead.style.left = p * 100 + "%";
+  }
+  function seekPreview(t) {
+    playingSelection = false;
+    try {
+      video.currentTime = t;
+    } catch (_) {
+      /* ignore */
+    }
+    setPlayhead(t);
+  }
+  function trackFrac(clientX) {
+    const r = track.getBoundingClientRect();
+    if (r.width <= 0) return 0;
+    return Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+  }
+  function beginDrag(handle, downEv) {
+    if (busy || !ready) return;
+    downEv.preventDefault();
+    try {
+      handle.setPointerCapture(downEv.pointerId);
+    } catch (_) {
+      /* ignore */
+    }
+    handle.setAttribute("data-drag", "on");
+    const gap = minGap();
+    const onMove = (e) => {
+      const t = trackFrac(e.clientX) * dur;
+      if (handle === hStart) startT = Math.max(0, Math.min(t, endT - gap));
+      else endT = Math.min(dur, Math.max(t, startT + gap));
+      layout();
+      seekPreview(handle === hStart ? startT : endT);
+    };
+    const onUp = () => {
+      try {
+        handle.releasePointerCapture(downEv.pointerId);
+      } catch (_) {
+        /* ignore */
+      }
+      handle.removeAttribute("data-drag");
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  }
+  hStart.addEventListener("pointerdown", (e) => beginDrag(hStart, e));
+  hEnd.addEventListener("pointerdown", (e) => beginDrag(hEnd, e));
+
+  function togglePlay() {
+    if (busy || !ready) return;
+    if (video.paused) {
+      playingSelection = false;
+      video.play().catch(() => {});
+    } else {
+      video.pause();
+    }
+  }
+  playBtn.addEventListener("click", togglePlay);
+  video.addEventListener("click", togglePlay);
+  video.addEventListener("play", () => stage.setAttribute("data-playing", "true"));
+  video.addEventListener("pause", () => stage.setAttribute("data-playing", "false"));
+  video.addEventListener("timeupdate", () => {
+    setPlayhead(video.currentTime);
+    // "Play selection" stops the moment it reaches the end handle.
+    if (playingSelection && video.currentTime >= endT - 0.02) {
+      video.pause();
+      playingSelection = false;
+    }
+  });
+  video.addEventListener("ended", () => {
+    playingSelection = false;
+  });
+
+  playSelBtn.addEventListener("click", () => {
+    if (busy || !ready) return;
+    playingSelection = true;
+    try {
+      video.currentTime = startT;
+    } catch (_) {
+      /* ignore */
+    }
+    video.play().catch(() => {});
+  });
+  discardBtn.addEventListener("click", () => {
+    if (!busy) onDiscard && onDiscard();
+  });
+  saveBtn.addEventListener("click", () => {
+    if (!busy && ready) onSave && onSave(startT, endT, dur);
+  });
+
+  // ---- webm duration quirk: MediaRecorder .webm reports Infinity/NaN until
+  // seeked. Force a real duration (seek far past the end → durationchange),
+  // then reset to 0 and build the slider from that finite value. ----
+  function onDurationReady(d) {
+    if (ready) return;
+    dur = d > 0 && isFinite(d) ? d : 0;
+    startT = 0;
+    endT = dur;
+    ready = true;
+    try {
+      video.currentTime = 0;
+    } catch (_) {
+      /* ignore */
+    }
+    setPlayhead(0);
+    layout();
+    saveBtn.disabled = false;
+  }
+  video.addEventListener(
+    "loadedmetadata",
+    () => {
+      if (isFinite(video.duration) && video.duration > 0) {
+        onDurationReady(video.duration);
+        return;
+      }
+      const onDur = () => {
+        if (!isFinite(video.duration) || video.duration <= 0) return;
+        video.removeEventListener("durationchange", onDur);
+        onDurationReady(video.duration);
+      };
+      video.addEventListener("durationchange", onDur);
+      try {
+        video.currentTime = 1e7;
+      } catch (_) {
+        onDurationReady(0);
+      }
+    },
+    { once: true }
+  );
+
+  appendToThread(card);
+
+  return {
+    el: card,
+    video,
+    // Freeze the controls and show real-time trim progress.
+    setTrimming(text) {
+      busy = true;
+      try {
+        video.pause();
+      } catch (_) {
+        /* ignore */
+      }
+      progress.classList.remove("hidden");
+      progress.textContent = text || "Trimming…";
+      saveBtn.disabled = true;
+      discardBtn.disabled = true;
+      playSelBtn.disabled = true;
+    },
+    updateTrimming(text) {
+      progress.textContent = text;
+    },
+    // Release the preview video and remove the card (teardown / after save).
+    remove() {
+      try {
+        video.pause();
+      } catch (_) {
+        /* ignore */
+      }
+      try {
+        video.removeAttribute("src");
+        video.load();
+      } catch (_) {
+        /* ignore */
+      }
+      removeCard(card);
+    },
+  };
 }
 
 // YOUR RECORDINGS — the browse-all list surfaced by voice ("show me my
