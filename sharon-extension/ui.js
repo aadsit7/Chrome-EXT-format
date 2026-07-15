@@ -854,8 +854,11 @@ export function addRecordingCard({ driveUrl, recordingId, durationLabel, notes, 
 // onSave(startSeconds, endSeconds, durationSeconds) / onDiscard(). Returns a
 // controller the orchestrator drives during trimming and teardown.
 export function addScreenReviewCard({ url, onSave, onDiscard } = {}) {
-  // The live timer card is done; hide it, but keep data-screenrec on so the
-  // live-presence card stays hidden while the review card is up.
+  // The live timer card is done; hide it, and keep the panel in screen-record
+  // context (data-screenrec on) so the live-presence card stays hidden while
+  // the review card is up — including when reconnecting to a finished clip
+  // after the panel was reopened (where the timer card was never shown).
+  els.html.setAttribute("data-screenrec", "on");
   if (els.screenRecCard) els.screenRecCard.classList.add("hidden");
 
   const card = cardShell(I_MONITOR, "Review your recording", "");

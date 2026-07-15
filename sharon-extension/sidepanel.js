@@ -243,9 +243,9 @@ function updateStatus() {
   if (recActive()) ui.setPhase("recording");
   else if (screenRecActive())
     ui.setPhase(
-      screenRecState === "trimming"
+      screenRecPhase === "trimming"
         ? "screen_trim"
-        : screenRecState === "reviewing"
+        : screenRecPhase === "reviewing"
         ? "screen_review"
         : "screen_rec"
     );
@@ -1808,45 +1808,51 @@ async function finishRecording(mimeType, durationSeconds, transcript, segments) 
 }
 
 /* ------------------------------------------------------------------ *
- * Screen recorder — a SEPARATE feature alongside the voice recorder above.
- * Tap the screen-record button, pick a screen/window/tab in Chrome's own
- * picker, and Sharon records the screen video with its sound AND your mic
- * voice merged into one track, up to 30 minutes. On stop the finished .webm
- * is offered as a DIRECT DOWNLOAD to your computer — it never touches the
- * backend or Drive (screen videos are far too large for that path). It lives
- * in its own SCREEN_REC mode so it can never run at the same time as the
- * voice recorder; the mode manager enforces that one-at-a-time rule.
+ * Screen recorder — records the CURRENT DESKTOP (screen video + its system/
+ * desktop audio, NEVER the microphone, so other apps keep full mic access) up
+ * to 30 minutes, then lets the user trim and download the clip.
+ *
+ * The recording itself runs in a BACKGROUND offscreen document (background.js
+ * + offscreen.js), NOT here — so the user can collapse the side panel and the
+ * recording keeps going, with only a red dot on Sharon's toolbar icon. This
+ * side-panel code is the CONTROLLER: it starts/stops the background recorder,
+ * mirrors its live state, reconnects to an in-progress recording when the
+ * panel is reopened, and — once a recording is finished — pulls the clip back
+ * (a same-extension blob: URL) for the review/trim step and the download. It
+ * lives in its own SCREEN_REC mode so Sharon stays quiet (mic input dropped)
+ * while a recording or its review owns the panel; the mode manager keeps that
+ * exclusive with the voice recorder.
+ *
+ * Messages (JSON only) — see background.js + offscreen.js:
+ *   panel → SW:  { t:"sr:cmd", cmd:"start"|"stop"|"query"|"clear" }
+ *   SW  → panel: { t:"sr:evt", event:"started"|"stopped"|"cancelled"|"error", … }
  * ------------------------------------------------------------------ */
-let screenRecState = "idle"; // the stage WITHIN SCREEN_REC: idle | recording | finishing
-let screenMediaRecorder = null;
-let screenChunks = [];
-let screenRecStartAt = 0;
-let screenRecTimerInt = null;
-let screenDisplayStream = null; // the getDisplayMedia stream (screen video + its audio)
-let screenMicStream = null; // the getUserMedia mic stream (may be null if denied)
-let screenAudioCtx = null; // merges display audio + mic into one track
-let screenVideoTrack = null; // the display video track — its "ended" is Chrome's Stop sharing
-let preparedScreenRec = null; // handoff from startScreenRecording into the enter routine
+let screenRecPhase = "idle"; // panel-local: idle | recording | reviewing | trimming
+let screenRecStartAtEpoch = 0; // when the background recording began (from the SW)
+let screenRecTimerInt = null; // the local MM:SS display timer
 
-// Review/trim step — inserted BETWEEN "recording stopped" and "download".
-// After a recording stops we stay in SCREEN_REC and show a preview + trimmer;
-// nothing else runs until the user saves or discards.
-let screenReviewBlob = null; // the original recorded blob (trim source + untouched save)
+// Review/trim step — inserted BETWEEN "recording finished" and "download".
+// The finished clip is pulled back from the background recorder as a Blob;
+// then we stay in SCREEN_REC and show a preview + trimmer until the user saves
+// or discards.
+let screenReviewBlob = null; // the recorded blob (trim source + untouched save)
 let screenReviewUrl = null; // preview object URL — revoked on review teardown
 let screenReviewCard = null; // the ui controller for the review card
 let screenReviewFilename = ""; // the filename both save paths use
 let screenTrimVideo = null; // off-screen <video> replaying the kept region
+let screenTrimStream = null; // the captureStream() feeding the trim recorder
 let screenTrimRecorder = null; // MediaRecorder re-recording the kept region in real time
 let screenTrimTimer = null; // drives the stop check + progress label while trimming
 let screenTrimStartWall = 0; // wall clock — a stall fallback so trimming always ends
 
-// The one test for "the screen recorder flow is live": the mode manager's word.
+// The one test for "the screen recorder flow owns the panel": the mode word.
 function screenRecActive() {
   return inMode(MODES.SCREEN_REC);
 }
 
 // Video codecs in order of preference — vp9 is best, vp8 the fallback, plain
-// webm the floor. Every one carries Opus audio.
+// webm the floor. Used by the trim re-record here; the background recorder
+// picks from the same list in offscreen.js.
 function pickScreenRecorderMime() {
   if (!window.MediaRecorder) return null;
   for (const m of ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]) {
@@ -1928,120 +1934,167 @@ function downloadScreenRecording(url, filename) {
   setTimeout(revoke, 30000);
 }
 
-// Build the recorder BEFORE any mode change, so a failure leaves Sharon
-// exactly where she was. getDisplayMedia MUST run from the button click (a
-// user gesture) — nothing awaits before it, so the gesture is still live.
-async function startScreenRecording() {
-  if (screenRecActive()) return;
+// --- talking to the background recorder (background.js) ---
+function srSend(cmd) {
+  try {
+    return chrome.runtime.sendMessage({ t: "sr:cmd", cmd });
+  } catch (_) {
+    return Promise.resolve(null);
+  }
+}
+// Tell the background recorder to release its copy of the finished clip and
+// close the offscreen document. Called once the panel is done with it.
+function srClear() {
+  srSend("clear");
+}
+
+// The screen-record button: start the BACKGROUND recorder. Its getDisplayMedia
+// opens Chrome's own screen picker. We enter SCREEN_REC + show the live card
+// only once the "started" event confirms a real recording — so a cancelled
+// picker leaves Sharon exactly where she was.
+async function startScreenRecordingCmd() {
+  if (screenRecActive() || screenRecPhase !== "idle") return;
   if (recActive()) {
     // The voice recorder owns the mic until it's done.
     hint("I'm recording your voice right now — tap the round button to stop.");
     return;
   }
-  const mime = pickScreenRecorderMime();
-  if (!mime) {
+  if (!(chrome.runtime && chrome.runtime.sendMessage)) {
     reportProblem(
-      "screen recording isn't supported in this browser.",
-      "Chrome should support it — try updating Chrome, then reload me."
+      "screen recording isn't available in this browser.",
+      "Try updating Chrome, then reload me."
     );
     return;
   }
-
-  // Chrome shows its own screen-picker dialog here — expected and normal.
-  let displayStream;
   try {
-    displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    await srSend("start");
   } catch (_) {
-    // The user dismissed the picker (or capture was blocked) — do nothing.
-    return;
-  }
-
-  // Your mic voice rides along by DEFAULT. If the mic is unavailable, don't
-  // fail — record whatever audio the screen share carries and continue.
-  let micStream = null;
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (_) {
-    micStream = null;
-  }
-
-  // Merge the display audio track and the mic track into ONE track via an
-  // AudioContext + MediaStreamDestination, then record the screen video
-  // alongside that single merged audio track. Any missing source is simply
-  // not connected — whatever audio exists still gets recorded.
-  let audioCtx = null;
-  let recordStream = displayStream; // fallback: record the display stream as-is
-  try {
-    const displayAudio = displayStream.getAudioTracks();
-    const micAudio = micStream ? micStream.getAudioTracks() : [];
-    if (displayAudio.length || micAudio.length) {
-      audioCtx = new AudioContext();
-      try {
-        audioCtx.resume();
-      } catch (_) {
-        /* a user-gesture context is already running; ignore */
-      }
-      const dest = audioCtx.createMediaStreamDestination();
-      if (displayAudio.length) {
-        audioCtx.createMediaStreamSource(new MediaStream(displayAudio)).connect(dest);
-      }
-      if (micAudio.length) {
-        audioCtx.createMediaStreamSource(new MediaStream(micAudio)).connect(dest);
-      }
-      recordStream = new MediaStream();
-      displayStream.getVideoTracks().forEach((t) => recordStream.addTrack(t));
-      dest.stream.getAudioTracks().forEach((t) => recordStream.addTrack(t));
-    }
-  } catch (_) {
-    // Any merge failure → record the screen stream as-is; never fail the whole
-    // recording over the audio graph.
-    if (audioCtx) {
-      try {
-        audioCtx.close();
-      } catch (_) {
-        /* ignore */
-      }
-    }
-    audioCtx = null;
-    recordStream = displayStream;
-  }
-
-  let recorder;
-  try {
-    recorder = new MediaRecorder(recordStream, { mimeType: mime });
-  } catch (_) {
-    stopStreamTracks(displayStream);
-    stopStreamTracks(micStream);
-    if (audioCtx) {
-      try {
-        audioCtx.close();
-      } catch (_) {
-        /* ignore */
-      }
-    }
     reportProblem(
       "I couldn't start the screen recorder.",
       "Give it a second and tap the screen-record button again."
     );
-    return;
   }
-
-  preparedScreenRec = { recorder, displayStream, micStream, audioCtx };
-  // The manager exits whatever came before, then runs enterScreenRecMode.
-  enterMode(MODES.SCREEN_REC);
 }
 
-// SCREEN_REC's enter routine — runs inside the manager AFTER the previous
-// mode's exit. Mirrors the voice recorder's enter: quiet Sharon, abandon any
-// in-flight turn, and drive the recorder + live card + 30-minute cap.
-function enterScreenRecMode() {
-  const prep = preparedScreenRec;
-  preparedScreenRec = null;
-  if (!prep) throw new Error("screen record entered with nothing prepared");
+// Stop the background recording (also fired by the live card's Stop button and
+// by Chrome's own "Stop sharing" bar, via the offscreen document). The
+// "stopped" event then drives the review step.
+function stopScreenRecordingCmd() {
+  if (screenRecPhase !== "recording") return;
+  srSend("stop");
+}
 
-  // A playing recording is sound in the room — pause it for good so it can't
-  // bleed into the capture. Abandon any in-flight assist / page task cleanly,
-  // and drop a half-captured utterance.
+/* --- events from the background recorder (routed from offscreen.js via SW) --- */
+
+// A recording actually started — enter SCREEN_REC, show the live card, and run
+// a local MM:SS display timer off the shared start time. The 30-minute cap and
+// the real auto-stop live in the offscreen document; this is display only.
+function onScreenStarted(startAtEpoch) {
+  if (recActive()) return; // the voice recorder owns everything
+  if (screenRecPhase !== "idle") return; // already recording/reviewing (live event + reconnect race)
+  if (!screenRecActive()) enterMode(MODES.SCREEN_REC);
+  screenRecPhase = "recording";
+  screenRecStartAtEpoch = Number(startAtEpoch) || Date.now();
+  ui.setScreenRecTimer("00:00 / " + fmtClock(RECORD_MAX_MS));
+  ui.showScreenRecorder();
+  if (screenRecTimerInt) clearInterval(screenRecTimerInt);
+  screenRecTimerInt = setInterval(() => {
+    const elapsed = Date.now() - screenRecStartAtEpoch;
+    ui.setScreenRecTimer(fmtClock(Math.min(elapsed, RECORD_MAX_MS)) + " / " + fmtClock(RECORD_MAX_MS));
+  }, REC_TIMER_TICK_MS);
+  updateStatus();
+}
+
+// A recording finished (Stop, Chrome's Stop-sharing, or the 30-min cap). Pull
+// the clip back from the offscreen recorder as a Blob — a same-extension blob:
+// URL, so fetch() reads it with no copy through messaging — then show the
+// review/trim card. Also runs on reopen when a finished recording is waiting.
+async function onScreenStopped(info) {
+  if (screenRecPhase === "reviewing" || screenRecPhase === "trimming") return; // already handled
+  if (screenRecTimerInt) {
+    clearInterval(screenRecTimerInt);
+    screenRecTimerInt = null;
+  }
+  let blob = null;
+  try {
+    if (info && info.blobUrl) {
+      const resp = await fetch(info.blobUrl);
+      blob = await resp.blob();
+    }
+  } catch (_) {
+    blob = null;
+  }
+  if (!blob || !blob.size) {
+    srClear();
+    if (screenRecActive()) enterMode(MODES.LISTENING);
+    reportProblem(
+      "the screen recording couldn't be retrieved.",
+      "Tap the screen-record button and try again."
+    );
+    updateStatus();
+    return;
+  }
+  if (!screenRecActive()) enterMode(MODES.SCREEN_REC); // reconnecting after a reopen
+  screenReviewBlob = blob;
+  screenReviewFilename = screenRecFilename();
+  screenReviewUrl = URL.createObjectURL(blob);
+  screenRecPhase = "reviewing";
+  screenReviewCard = ui.addScreenReviewCard({
+    url: screenReviewUrl,
+    onSave: (start, end, dur) => saveScreenReview(start, end, dur),
+    onDiscard: () => discardScreenReview(),
+  });
+  updateStatus();
+}
+
+// The user dismissed Chrome's screen picker — nothing to do.
+function onScreenCancelled() {
+  /* stay in LISTENING; the button is ready to try again */
+}
+
+// The background recorder hit a real problem (not a cancel).
+function onScreenError(info) {
+  if (screenRecTimerInt) {
+    clearInterval(screenRecTimerInt);
+    screenRecTimerInt = null;
+  }
+  if (screenRecActive() && screenRecPhase === "recording") enterMode(MODES.LISTENING);
+  const why = (info && info.error) || "";
+  reportProblem(
+    "the screen recording ran into a problem" + (why ? " (" + why + ")" : "") + ".",
+    "Tap the screen-record button to try again."
+  );
+  updateStatus();
+}
+
+// On panel open, reconnect to whatever the background recorder is doing: a
+// recording in progress (show the live card), or a finished clip waiting to be
+// reviewed (pull it back and show the review card).
+async function reconnectScreenRec() {
+  if (recActive()) return; // the voice recorder owns the panel this session
+  let st = null;
+  try {
+    st = await srSend("query");
+  } catch (_) {
+    st = null;
+  }
+  if (!st || !st.phase) return;
+  if (st.phase === "recording") onScreenStarted(st.startAtEpoch);
+  else if (st.phase === "ready") {
+    onScreenStopped({
+      blobUrl: st.blobUrl,
+      size: st.size,
+      durationSeconds: st.durationSeconds,
+      mime: st.mime,
+    });
+  }
+}
+
+// SCREEN_REC's enter routine — the recording lives in the background offscreen
+// document now, so entering the mode just makes Sharon go quiet (drop mic
+// input, pause any playback, abandon an in-flight turn) while a recording or
+// its review owns the panel. The live/review UI is set by the callers above.
+function enterScreenRecMode() {
   pausePlaybackForUser();
   cancelAgentTask();
   if (abortController) {
@@ -2052,67 +2105,7 @@ function enterScreenRecMode() {
     }
   }
   resetCapture();
-
-  screenDisplayStream = prep.displayStream;
-  screenMicStream = prep.micStream;
-  screenAudioCtx = prep.audioCtx;
-  screenChunks = [];
-  screenMediaRecorder = prep.recorder;
-  screenMediaRecorder.addEventListener("dataavailable", (ev) => {
-    if (ev.data && ev.data.size) screenChunks.push(ev.data);
-  });
-
-  // Clicking Chrome's own "Stop sharing" bar ends the display video track —
-  // treat that exactly like tapping Stop.
-  screenVideoTrack = (prep.displayStream.getVideoTracks() || [])[0] || null;
-  if (screenVideoTrack) {
-    screenVideoTrack.addEventListener("ended", () => stopScreenRecording(), { once: true });
-  }
-
-  screenRecStartAt = Date.now();
-  screenRecState = "recording"; // set before start() so a throw is cleaned up fully
-  screenMediaRecorder.start(1000); // 1s chunks — a crash loses at most a second
-
-  ui.setScreenRecTimer("00:00 / " + fmtClock(RECORD_MAX_MS));
-  ui.showScreenRecorder();
-  screenRecTimerInt = setInterval(() => {
-    const elapsed = Date.now() - screenRecStartAt;
-    ui.setScreenRecTimer(fmtClock(Math.min(elapsed, RECORD_MAX_MS)) + " / " + fmtClock(RECORD_MAX_MS));
-    if (elapsed >= RECORD_MAX_MS) stopScreenRecording(); // auto-stop at 30:00
-  }, REC_TIMER_TICK_MS);
   updateStatus();
-}
-
-// Release the CAPTURE hardware — the recorder, the screen/mic tracks, and the
-// audio graph. Idempotent; used both when a recording stops (capture is done
-// but the review step lives on) and inside the full teardown below.
-function teardownScreenCapture() {
-  if (screenRecTimerInt) {
-    clearInterval(screenRecTimerInt);
-    screenRecTimerInt = null;
-  }
-  if (screenMediaRecorder) {
-    try {
-      if (screenMediaRecorder.state !== "inactive") screenMediaRecorder.stop();
-    } catch (_) {
-      /* ignore */
-    }
-    screenMediaRecorder = null;
-  }
-  stopStreamTracks(screenDisplayStream);
-  stopStreamTracks(screenMicStream);
-  screenDisplayStream = null;
-  screenMicStream = null;
-  screenVideoTrack = null;
-  if (screenAudioCtx) {
-    try {
-      screenAudioCtx.close();
-    } catch (_) {
-      /* ignore */
-    }
-    screenAudioCtx = null;
-  }
-  screenChunks = [];
 }
 
 // Release the REVIEW/TRIM resources — the trim re-record, the off-screen
@@ -2132,6 +2125,8 @@ function teardownScreenReview() {
     }
     screenTrimRecorder = null;
   }
+  stopStreamTracks(screenTrimStream);
+  screenTrimStream = null;
   if (screenTrimVideo) {
     try {
       screenTrimVideo.pause();
@@ -2172,87 +2167,29 @@ function teardownScreenReview() {
   screenTrimStartWall = 0;
 }
 
-// SCREEN_REC's exit routine — idempotent, and safe to call twice. Tears down
-// both the capture hardware and the review/trim resources, then clears the
-// live card. The normal paths have usually wound most of this down already,
-// so this is the safety net for any other way out (panel close, discard, a
-// rescued failed transition).
+// SCREEN_REC's exit routine — idempotent and safe to call twice. Tears down
+// this panel's LOCAL review/trim resources and the display timer, then clears
+// the live card. It deliberately does NOT stop the background recording — that
+// lives in the offscreen document and is managed by explicit start/stop/clear
+// commands, so it survives the panel closing.
 function forceScreenRecIdle() {
-  teardownScreenCapture();
-  teardownScreenReview();
-  if (screenRecState !== "idle") {
-    screenRecState = "idle";
-    ui.hideScreenRecorder();
-  }
-}
-
-// Tap Stop / Chrome's Stop sharing / the 30-minute cap all land here. Stop the
-// recorder and let its "stop" event assemble the blob in finishScreenRecording.
-function stopScreenRecording() {
-  if (screenRecState !== "recording") return;
-  screenRecState = "finishing"; // guard against the timer, the ended event, and the button racing
   if (screenRecTimerInt) {
     clearInterval(screenRecTimerInt);
     screenRecTimerInt = null;
   }
-  const durationSeconds = Math.min(
-    Math.round((Date.now() - screenRecStartAt) / 1000),
-    Math.round(RECORD_MAX_MS / 1000)
-  );
-  const rec = screenMediaRecorder;
-  screenMediaRecorder = null;
-  const mime = (rec && rec.mimeType) || "video/webm";
-  const finish = () => finishScreenRecording(mime, durationSeconds);
-  if (rec && rec.state !== "inactive") {
-    rec.addEventListener("stop", finish, { once: true });
-    try {
-      rec.stop();
-    } catch (_) {
-      finish();
-    }
-  } else {
-    finish();
+  teardownScreenReview();
+  if (screenRecPhase !== "idle") {
+    screenRecPhase = "idle";
+    ui.hideScreenRecorder();
   }
 }
 
-// Assemble the recorded chunks into one Blob. The CAPTURE is done, so free the
-// screen/mic hardware now — but STAY in SCREEN_REC and show the review/trim
-// card, so nothing else runs until the user saves or discards. No download
-// happens here anymore; that's the review card's job.
-function finishScreenRecording(mimeType, durationSeconds) {
-  const type = mimeType || "video/webm";
-  const blob = new Blob(screenChunks, { type });
-
-  // Capture hardware only — NOT the review resources, and NOT the mode.
-  teardownScreenCapture();
-
-  if (!blob.size) {
-    // Nothing to review — hand the mode back and say so.
-    enterMode(MODES.LISTENING);
-    reportProblem(
-      "the screen recording came out empty, so there was nothing to save.",
-      "Tap the screen-record button and try again."
-    );
-    updateStatus();
-    return;
-  }
-
-  screenReviewBlob = blob;
-  screenReviewFilename = screenRecFilename();
-  screenReviewUrl = URL.createObjectURL(blob);
-  screenRecState = "reviewing";
-  screenReviewCard = ui.addScreenReviewCard({
-    url: screenReviewUrl,
-    onSave: (start, end, dur) => saveScreenReview(start, end, dur),
-    onDiscard: () => discardScreenReview(),
-  });
-  updateStatus();
-}
-
-// Discard — nothing is saved. Leaving the mode runs forceScreenRecIdle, which
-// revokes the preview URL and removes the card.
+// Discard — nothing is saved. Release the background recorder's copy, then
+// leave the mode (forceScreenRecIdle revokes the preview URL and removes the
+// card).
 function discardScreenReview() {
   if (!screenRecActive()) return;
+  srClear();
   enterMode(MODES.LISTENING);
   updateStatus();
 }
@@ -2261,7 +2198,7 @@ function discardScreenReview() {
 // AND end ≈ full duration, within ~0.3s), skip re-encoding and download the
 // ORIGINAL blob as-is — instant and lossless. Otherwise trim for real.
 function saveScreenReview(startSec, endSec, durationSec) {
-  if (screenRecState !== "reviewing") return;
+  if (screenRecPhase !== "reviewing") return;
   const TOL = 0.3;
   const untouched =
     !isFinite(durationSec) ||
@@ -2275,6 +2212,7 @@ function saveScreenReview(startSec, endSec, durationSec) {
     if (screenReviewBlob) {
       downloadScreenRecording(URL.createObjectURL(screenReviewBlob), filename);
     }
+    srClear(); // release the background recorder's copy
     enterMode(MODES.LISTENING);
     updateStatus();
     return;
@@ -2293,6 +2231,7 @@ async function trimAndDownload(startSec, endSec, filename) {
   // Save the whole clip instead of losing it if we can't trim here.
   const saveWholeInstead = () => {
     if (sourceBlob) downloadScreenRecording(URL.createObjectURL(sourceBlob), filename);
+    srClear();
     enterMode(MODES.LISTENING);
     updateStatus();
   };
@@ -2301,7 +2240,7 @@ async function trimAndDownload(startSec, endSec, filename) {
     return;
   }
 
-  screenRecState = "trimming";
+  screenRecPhase = "trimming";
   const total = Math.max(0, endSec - startSec);
   if (screenReviewCard)
     screenReviewCard.setTrimming(
@@ -2329,7 +2268,7 @@ async function trimAndDownload(startSec, endSec, filename) {
     saveWholeInstead();
     return;
   }
-  if (screenRecState !== "trimming") return; // torn down while we waited
+  if (screenRecPhase !== "trimming") return; // torn down while we waited
 
   // Seek to the start point before we start capturing.
   try {
@@ -2344,7 +2283,7 @@ async function trimAndDownload(startSec, endSec, filename) {
   } catch (_) {
     /* proceed from wherever it landed */
   }
-  if (screenRecState !== "trimming") return;
+  if (screenRecPhase !== "trimming") return;
 
   const capture = v.captureStream
     ? v.captureStream.bind(v)
@@ -2364,6 +2303,7 @@ async function trimAndDownload(startSec, endSec, filename) {
     saveWholeInstead();
     return;
   }
+  screenTrimStream = stream;
   screenTrimRecorder = recorder;
   const chunks = [];
   recorder.addEventListener("dataavailable", (e) => {
@@ -2401,6 +2341,7 @@ async function trimAndDownload(startSec, endSec, filename) {
       } else if (sourceBlob) {
         downloadScreenRecording(URL.createObjectURL(sourceBlob), filename);
       }
+      srClear(); // release the background recorder's copy
       enterMode(MODES.LISTENING);
       updateStatus();
     },
@@ -2966,30 +2907,30 @@ function wireControls() {
     );
   if (e.screenBtn)
     e.screenBtn.addEventListener("click", () => runModeAction(toggleScreenMode));
-  // Screen record: start/stop, mirroring the voice record button.
+  // Screen record: start/stop the BACKGROUND recorder, mirroring the voice
+  // record button. Recording continues if the panel is collapsed.
   if (e.screenRecBtn)
     e.screenRecBtn.addEventListener("click", () =>
       runModeAction(async () => {
-        if (screenRecState === "recording") {
-          stopScreenRecording();
-        } else if (screenRecState === "reviewing") {
+        if (screenRecPhase === "recording") {
+          stopScreenRecordingCmd();
+        } else if (screenRecPhase === "reviewing") {
           hint("Choose Save or Discard on your recording below.");
-        } else if (screenRecState === "trimming") {
+        } else if (screenRecPhase === "trimming") {
           hint("Trimming your clip — one moment.");
-        } else if (screenRecActive()) {
-          // Mid-finish (blob is being assembled) — starting again would race it.
-          hint("Just a moment — finishing your screen recording.");
         } else {
-          await startScreenRecording();
+          await startScreenRecordingCmd();
         }
       })
     );
   if (e.recStop) e.recStop.addEventListener("click", () => runModeAction(async () => stopRecording()));
   if (e.screenRecStop)
-    e.screenRecStop.addEventListener("click", () => runModeAction(async () => stopScreenRecording()));
-  // Closing the panel ends the recording (the card warns about this). All
-  // recorder state is in-memory, so a reopened panel always starts clean —
-  // never a stuck "recording" state.
+    e.screenRecStop.addEventListener("click", () => runModeAction(async () => stopScreenRecordingCmd()));
+  // Closing the panel ends the VOICE recording (its state is in-memory). But
+  // the SCREEN recording lives in the background offscreen document, so
+  // collapsing the panel must NOT stop it — only release this panel's own
+  // review/trim resources. The recording keeps going with a red dot on the
+  // icon, and the panel reconnects to it on reopen.
   window.addEventListener("pagehide", () => {
     if (recState === "recording" && mediaRecorder && mediaRecorder.state !== "inactive") {
       try {
@@ -2998,11 +2939,10 @@ function wireControls() {
         /* ignore */
       }
     }
-    // Screen recording is in-memory too. Release EVERYTHING so closing the
-    // panel never leaves the screen share live, a trim re-record running, or
-    // an object URL pinned: the capture hardware AND the review/trim resources
-    // (off-screen video, trim recorder, preview URL). Both are idempotent.
-    teardownScreenCapture();
+    if (screenRecTimerInt) {
+      clearInterval(screenRecTimerInt);
+      screenRecTimerInt = null;
+    }
     teardownScreenReview();
   });
 
@@ -3213,9 +3153,18 @@ function wireControls() {
 
   if (chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((msg) => {
-      if (msg && msg.type === "sharon-activate") {
+      if (!msg) return;
+      if (msg.type === "sharon-activate") {
         speech.retryMic();
         updateStatus();
+        return;
+      }
+      // Background screen-recorder events (from offscreen.js via the SW).
+      if (msg.t === "sr:evt") {
+        if (msg.event === "started") onScreenStarted(msg.startAtEpoch);
+        else if (msg.event === "stopped") onScreenStopped(msg);
+        else if (msg.event === "cancelled") onScreenCancelled();
+        else if (msg.event === "error") onScreenError(msg);
       }
     });
   }
@@ -3318,6 +3267,11 @@ function wireControls() {
   // Listening from launch — the mic starts live the moment the panel opens.
   speech.startRecognition();
   watchMicPermission();
+
+  // If a screen recording is already running in the background (the panel was
+  // collapsed and reopened) — or a finished clip is waiting to be reviewed —
+  // reconnect to it now.
+  reconnectScreenRec();
 
   evaluateActiveTab();
   refreshMemoryCount();
