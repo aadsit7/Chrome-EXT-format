@@ -762,17 +762,11 @@ function sectionWho(v) {
   return section;
 }
 
-/* ---- Sidebar (Your quote) ---- */
-function buildAside(v) {
+/* ---- Quote data (shared by the sidebar and the PDF export) ---- */
+function buildQuoteData(v) {
   const { cfg, q, r, m, coTermMo, termLabel, partnerActive, isRen, totalDiscC } = v;
 
-  const card = h('section', { style: 'background: var(--surface-card); border-radius: 18px; padding: 24px; box-shadow: var(--shadow-lg);' });
-  card.append(h('div', { style: 'display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px;' },
-    h('h2', { style: 'margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-strong);' }, 'Your quote'),
-    h('span', { style: 'font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary);' }, termLabel)));
-
-  // Line items
-  const summaryItems = (m.isRenOnly ? (q.renewLines || []).map((rl) => {
+  const items = (m.isRenOnly ? (q.renewLines || []).map((rl) => {
     const p = cfg.products.find((x) => x.id === rl.productId);
     return {
       name: p ? p.name : 'Product',
@@ -788,8 +782,87 @@ function buildAside(v) {
     return { name: p ? p.name : 'Current product', qtyDisp: 'current · renews at today’s price', amt: fmt(Math.max(0, +ex.price || 0)) };
   }) : []);
 
+  const totals = [];
+  totals.push({ label: m.isRenOnly ? 'Current · annual' : 'List price · annual', amt: fmt(m.msrpC / 100) });
+  if (m.isRenOnly && m.upliftY1C > 0) {
+    totals.push({ label: 'Annual increase · ' + ((q.uplift ? (+q.upliftPct || 0) : 0) + '%'), amt: '+' + fmt(m.upliftY1C / 100) });
+  }
+  if (m.bundleAmtC > 0) totals.push({ label: 'RCT bundle · ' + r.bundlePct + '%', amt: '−' + fmt(m.bundleAmtC / 100), green: true });
+  if (m.marginAmtC > 0) totals.push({ label: 'Partner margin · ' + m.margin + '%', amt: '−' + fmt(m.marginAmtC / 100), green: true });
+  if (m.extraAmtC > 0) totals.push({ label: 'Extra discount · ' + q.extraPct + '%', amt: '−' + fmt(m.extraAmtC / 100), green: true });
+  if (m.termAmtC > 0) totals.push({ label: 'Term discount · ' + m.termPct + '%', amt: '−' + fmt(m.termAmtC / 100), green: true });
+  totals.push({ divider: true });
+  const netRowLabel = m.isRenOnly
+    ? (partnerActive ? 'Partner net · annual' : 'Renewal · annual')
+    : m.addonRenew ? (partnerActive ? 'New products · partner net' : 'New products · annual') : (partnerActive ? 'Partner net · annual' : 'Your price · annual');
+  totals.push({ label: netRowLabel, amt: fmt(m.netFinalC / 100), bold: true });
+  if (m.addonRenew) {
+    totals.push({ label: 'Prorated to renewal · ' + coTermMo.toFixed(1) + ' mo', amt: fmt(m.stubC / 100) });
+  }
+  if (m.addonRenew && (q.existing || []).length > 0) {
+    totals.push({ label: 'Current products · renew', amt: fmt(m.existingC / 100) });
+    totals.push({ divider: true });
+    totals.push({ label: 'Renewal · per year', amt: fmt(m.renewalAnnualC / 100), bold: true });
+  }
+
+  const hasYears = m.addonRenew || (!m.isCoterm && m.effYears > 1 + 1e-9);
+  const schedule = !hasYears ? [] : (() => {
+    if (m.isRenOnly) {
+      return m.renYears.map((y, i) => ({
+        label: 'Year ' + (i + 1) + (y.frac < 1 - 1e-9 ? ' · ' + Math.round(y.frac * 12) + ' mo' : ''),
+        amt: fmt(y.netYC / 100),
+      }));
+    }
+    const rows = [];
+    if (m.addonRenew) rows.push({ label: 'Now → renewal · ' + coTermMo.toFixed(1) + ' mo', amt: fmt(m.stubC / 100) });
+    const annualC = m.addonRenew ? m.renewalAnnualC : m.netFinalC;
+    const fullYears = Math.floor(m.baseYears + 1e-9);
+    let acc = m.addonRenew ? m.stubC : 0;
+    for (let i = 1; i <= fullYears; i++) { rows.push({ label: 'Year ' + i, amt: fmt(annualC / 100) }); acc += annualC; }
+    if (!m.isCoterm && m.baseYears - fullYears > 1e-9) {
+      const months = state.quote.months || (state.quote.years || 1) * 12;
+      const remMo = months - fullYears * 12;
+      rows.push({ label: 'Year ' + (fullYears + 1) + ' · ' + remMo + ' mo', amt: fmt((m.tcvC - acc) / 100) });
+    }
+    return rows;
+  })();
+
+  const tcvLabel = partnerActive ? 'Partner price · total' : (m.isCoterm ? 'Total to renewal' : 'Total contract value');
+  const tcvSub = (m.isCoterm ? 'Add-on · co-terms ' + (q.coTermDate || '—')
+    : m.addonRenew ? 'Add-on + renewal · co-terms ' + (q.coTermDate || '—') + ' · then ' + termLabel
+    : (isRen ? 'Renewal' : 'Net new') + ' · ' + termLabel + (m.isRenOnly && m.upliftP > 0 ? ' · +' + m.upliftP + '%/yr' : ''))
+    + (partnerActive ? ' · ' + m.margin + '% margin' : (m.isRenOnly ? '' : ' · list price'));
+
+  const savings = (totalDiscC > 0 && m.msrpC > 0)
+    ? { amt: fmt(totalDiscC / 100), pct: Math.round(totalDiscC / m.msrpC * 100) }
+    : null;
+  const partner = partnerActive
+    ? { msrpTcv: fmt(m.msrpTcvC / 100), savings: fmt((m.msrpTcvC - m.tcvC) / 100), pays: fmt(m.tcvC / 100) }
+    : null;
+
+  return {
+    items, totals, hasYears, schedule, tcvLabel, tcv: fmt(m.tcvC / 100), tcvSub, savings, partner, termLabel,
+    meta: {
+      number: q.number, customer: q.customer, email: q.email, preparedBy: q.preparedBy, expires: q.expires,
+      partnerActive, partnerCompany: q.partnerCompany, partnerEmail: q.partnerEmail,
+      today: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
+    },
+  };
+}
+
+/* ---- Sidebar (Your quote) ---- */
+function buildAside(v) {
+  const { q, m, partnerActive } = v;
+  const data = buildQuoteData(v);
+
+  const card = h('section', { style: 'background: var(--surface-card); border-radius: 18px; padding: 24px; box-shadow: var(--shadow-lg);' });
+  card.append(h('div', { style: 'display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px;' },
+    h('h2', { style: 'margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-strong);' }, 'Your quote'),
+    h('span', { style: 'font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary);' }, data.termLabel)));
+
+  // Line items
   card.append(h('div', { style: 'display: flex; flex-direction: column; margin-bottom: 12px;' },
-    summaryItems.map((it) => h('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle);' },
+    data.items.map((it) => h('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle);' },
       h('div', { style: 'display: flex; flex-direction: column; gap: 0; min-width: 0;' },
         h('span', { style: 'font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;' }, it.name),
         h('span', { style: 'font-size: 11.5px; color: var(--text-tertiary);' }, it.qtyDisp)
@@ -798,82 +871,39 @@ function buildAside(v) {
     ))));
 
   // Totals block
-  const row = (label, amount, opts) => h('div', { style: 'display: flex; justify-content: space-between;' + (opts && opts.bold ? ' font-weight: 600; font-size: 14px;' : '') },
-    h('span', { style: opts && opts.bold ? '' : 'color: var(--text-secondary);' }, label),
-    h('span', { style: 'font-family: var(--font-mono); font-variant-numeric: tabular-nums;' + (opts && opts.green ? ' color: var(--green-600);' : '') }, amount));
-  const divider = () => h('div', { style: 'border-top: 1px solid var(--border-subtle); margin: 2px 0;' });
-
-  const totals = h('div', { style: 'display: flex; flex-direction: column; gap: 8px; font-size: 13.5px;' });
-  totals.append(row(m.isRenOnly ? 'Current · annual' : 'List price · annual', fmt(m.msrpC / 100)));
-  if (m.isRenOnly && m.upliftY1C > 0) {
-    totals.append(row('Annual increase · ' + ((q.uplift ? (+q.upliftPct || 0) : 0) + '%'), '+' + fmt(m.upliftY1C / 100)));
-  }
-  if (m.bundleAmtC > 0) totals.append(row('RCT bundle · ' + r.bundlePct + '%', '−' + fmt(m.bundleAmtC / 100), { green: true }));
-  if (m.marginAmtC > 0) totals.append(row('Partner margin · ' + m.margin + '%', '−' + fmt(m.marginAmtC / 100), { green: true }));
-  if (m.extraAmtC > 0) totals.append(row('Extra discount · ' + q.extraPct + '%', '−' + fmt(m.extraAmtC / 100), { green: true }));
-  if (m.termAmtC > 0) totals.append(row('Term discount · ' + m.termPct + '%', '−' + fmt(m.termAmtC / 100), { green: true }));
-  totals.append(divider());
-  const netRowLabel = m.isRenOnly
-    ? (partnerActive ? 'Partner net · annual' : 'Renewal · annual')
-    : m.addonRenew ? (partnerActive ? 'New products · partner net' : 'New products · annual') : (partnerActive ? 'Partner net · annual' : 'Your price · annual');
-  totals.append(row(netRowLabel, fmt(m.netFinalC / 100), { bold: true }));
-  if (m.addonRenew) {
-    totals.append(row('Prorated to renewal · ' + coTermMo.toFixed(1) + ' mo', fmt(m.stubC / 100)));
-  }
-  if (m.addonRenew && (q.existing || []).length > 0) {
-    totals.append(row('Current products · renew', fmt(m.existingC / 100)));
-    totals.append(divider());
-    totals.append(row('Renewal · per year', fmt(m.renewalAnnualC / 100), { bold: true }));
-  }
-  card.append(totals);
+  const totalsEl = h('div', { style: 'display: flex; flex-direction: column; gap: 8px; font-size: 13.5px;' });
+  data.totals.forEach((rowData) => {
+    if (rowData.divider) {
+      totalsEl.append(h('div', { style: 'border-top: 1px solid var(--border-subtle); margin: 2px 0;' }));
+      return;
+    }
+    totalsEl.append(h('div', { style: 'display: flex; justify-content: space-between;' + (rowData.bold ? ' font-weight: 600; font-size: 14px;' : '') },
+      h('span', { style: rowData.bold ? '' : 'color: var(--text-secondary);' }, rowData.label),
+      h('span', { style: 'font-family: var(--font-mono); font-variant-numeric: tabular-nums;' + (rowData.green ? ' color: var(--green-600);' : '') }, rowData.amt)));
+  });
+  card.append(totalsEl);
 
   // Billing schedule
-  const hasYears = m.addonRenew || (!m.isCoterm && m.effYears > 1 + 1e-9);
-  if (hasYears) {
-    const yearRows = (() => {
-      if (m.isRenOnly) {
-        return m.renYears.map((y, i) => ({
-          label: 'Year ' + (i + 1) + (y.frac < 1 - 1e-9 ? ' · ' + Math.round(y.frac * 12) + ' mo' : ''),
-          amt: fmt(y.netYC / 100),
-        }));
-      }
-      const rows = [];
-      if (m.addonRenew) rows.push({ label: 'Now → renewal · ' + coTermMo.toFixed(1) + ' mo', amt: fmt(m.stubC / 100) });
-      const annualC = m.addonRenew ? m.renewalAnnualC : m.netFinalC;
-      const fullYears = Math.floor(m.baseYears + 1e-9);
-      let acc = m.addonRenew ? m.stubC : 0;
-      for (let i = 1; i <= fullYears; i++) { rows.push({ label: 'Year ' + i, amt: fmt(annualC / 100) }); acc += annualC; }
-      if (!m.isCoterm && m.baseYears - fullYears > 1e-9) {
-        const months = state.quote.months || (state.quote.years || 1) * 12;
-        const remMo = months - fullYears * 12;
-        rows.push({ label: 'Year ' + (fullYears + 1) + ' · ' + remMo + ' mo', amt: fmt((m.tcvC - acc) / 100) });
-      }
-      return rows;
-    })();
+  if (data.hasYears) {
     card.append(h('div', { style: 'margin-top: 12px; padding: 11px 13px; background: var(--surface-sunken); border-radius: 12px; display: flex; flex-direction: column; gap: 6px;' },
       h('span', { style: 'font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary);' }, 'Billing schedule'),
-      yearRows.map((y) => h('div', { style: 'display: flex; justify-content: space-between; font-size: 13px;' },
+      data.schedule.map((y) => h('div', { style: 'display: flex; justify-content: space-between; font-size: 13px;' },
         h('span', { style: 'color: var(--text-secondary);' }, y.label),
         h('span', { style: 'font-family: var(--font-mono); font-variant-numeric: tabular-nums;' }, y.amt)))));
   }
 
   // TCV box
-  const tcvSub = (m.isCoterm ? 'Add-on · co-terms ' + (q.coTermDate || '—')
-    : m.addonRenew ? 'Add-on + renewal · co-terms ' + (q.coTermDate || '—') + ' · then ' + termLabel
-    : (isRen ? 'Renewal' : 'Net new') + ' · ' + termLabel + (m.isRenOnly && m.upliftP > 0 ? ' · +' + m.upliftP + '%/yr' : ''))
-    + (partnerActive ? ' · ' + m.margin + '% margin' : (m.isRenOnly ? '' : ' · list price'));
   card.append(h('div', { style: 'margin-top: 14px; padding: 16px 18px; background: var(--surface-accent-soft); border-radius: 14px; display: flex; flex-direction: column; gap: 1px;' },
-    h('span', { style: 'font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-accent);' },
-      partnerActive ? 'Partner price · total' : (m.isCoterm ? 'Total to renewal' : 'Total contract value')),
-    h('span', { style: "font-family: var(--font-display); font-weight: 700; font-size: 30px; letter-spacing: -0.02em; color: var(--text-strong); font-variant-numeric: tabular-nums; line-height: 1.15;" }, fmt(m.tcvC / 100)),
-    h('span', { style: 'font-size: 12px; color: var(--text-secondary);' }, tcvSub)));
+    h('span', { style: 'font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-accent);' }, data.tcvLabel),
+    h('span', { style: "font-family: var(--font-display); font-weight: 700; font-size: 30px; letter-spacing: -0.02em; color: var(--text-strong); font-variant-numeric: tabular-nums; line-height: 1.15;" }, data.tcv),
+    h('span', { style: 'font-size: 12px; color: var(--text-secondary);' }, data.tcvSub)));
 
   // Savings banner
-  if (totalDiscC > 0 && m.msrpC > 0) {
+  if (data.savings) {
     card.append(h('div', { style: 'margin-top: 10px; padding: 9px 13px; background: var(--success-soft); border-radius: 10px; display: flex; justify-content: space-between; align-items: center;' },
       h('span', { style: 'font-size: 12px; font-weight: 600; color: var(--green-600);' }, 'Customer saves vs list'),
       h('span', { style: 'font-family: var(--font-mono); font-size: 12.5px; font-weight: 700; color: var(--green-600); font-variant-numeric: tabular-nums;' },
-        '−' + fmt(totalDiscC / 100) + ' (' + (m.msrpC > 0 ? Math.round(totalDiscC / m.msrpC * 100) : 0) + '%)')));
+        '−' + data.savings.amt + ' (' + data.savings.pct + '%)')));
   }
 
   // Partner breakdown
@@ -896,7 +926,8 @@ function buildAside(v) {
     if (m.isRenOnly && ((q.renewLines || []).length === 0 || (q.renewLines || []).some((x) => !(+x.price > 0)))) { flash('Enter the amount per year for each renewing product', 'warn'); return; }
     if (partnerActive && !q.partnerCompany.trim()) { flash('Add the partner company (bill to) in “Who’s it for?”', 'warn'); return; }
     if (!q.customer.trim()) { flash('Add a customer name in “Who’s it for?” first', 'warn'); return; }
-    flash('Quote ' + q.number + ' ready for ' + q.customer + (partnerActive ? ' via ' + q.partnerCompany : '') + ' — PDF export coming soon', 'ok');
+    window.SQG_PDF.downloadQuotePdf(data);
+    flash('Quote ' + q.number + ' ready for ' + q.customer + (partnerActive ? ' via ' + q.partnerCompany : '') + ' — PDF downloaded', 'ok');
   };
   card.append(h('div', { style: 'margin-top: 16px;' }, dsButton('Create quote', 'primary', 'lg', true, createQuote)));
 
