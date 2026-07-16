@@ -156,9 +156,31 @@ window.SQG_SHEETS = (function () {
     } catch (e) { /* fire-and-forget */ }
   }
 
-  // Attach the functions so app.js can wire them to the UI.
+  /* AI page analysis — POSTs the rich page snapshot + the live catalog and
+     returns the Apps Script's structured fields for the review card. Rejects on
+     any transport/parse failure so analyze.js can fall back to the existing
+     rule-based detection. Never touches the quote or the calculator itself. */
+  function analyzePage(pageText, catalog) {
+    return fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'analyzePage', pageText: pageText, catalog: catalog }),
+    })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.text();
+      })
+      .then(function (text) {
+        var data = {};
+        try { data = JSON.parse(text) || {}; } catch (e) { data = {}; }
+        if (data.ok === false) throw new Error('server reported failure');
+        return data;
+      });
+  }
+
+  // Attach the functions so app.js / analyze.js can wire them to the UI.
   window.saveQuoteToSheet = saveQuoteToSheet;
   window.registerUser = registerUser;
 
-  return { saveQuoteToSheet: saveQuoteToSheet, registerUser: registerUser };
+  return { saveQuoteToSheet: saveQuoteToSheet, registerUser: registerUser, analyzePage: analyzePage };
 })();

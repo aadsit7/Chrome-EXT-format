@@ -1181,6 +1181,14 @@ function makeCreateQuote(v, data) {
     if (m.isRenOnly && ((q.renewLines || []).length === 0 || (q.renewLines || []).some((x) => !(+x.price > 0)))) { flash('Enter the amount per year for each renewing product', 'warn'); return; }
     if (partnerActive && !q.partnerCompany.trim()) { flash('Add the partner company (bill to) in “Who’s it for?”', 'warn'); return; }
     if (!q.customer.trim()) { flash('Add a customer name in “Who’s it for?” first', 'warn'); return; }
+    // Auto-save to the shared database on every quote request (there's no longer
+    // a separate "Save to database" button). Fire-and-forget — its own toast /
+    // AI note surface when it returns, and a save failure never blocks the PDF.
+    try {
+      if (window.SQG_SHEETS && typeof window.SQG_SHEETS.saveQuoteToSheet === 'function') {
+        window.SQG_SHEETS.saveQuoteToSheet();
+      }
+    } catch (e) { /* saving is best-effort; the PDF still generates */ }
     window.SQG_PDF.downloadQuotePdf(data)
       .then(() => flash('Quote ' + q.number + ' ready for ' + q.customer + (partnerActive ? ' via ' + q.partnerCompany : '') + ' — PDF downloaded', 'ok'))
       .catch(() => flash('Could not generate the PDF — try again', 'warn'));
@@ -1213,7 +1221,8 @@ function buildDock(v) {
     h('div', { class: 'sqg-dock-inner' },
       summary,
       h('div', { class: 'sqg-dock-actions' },
-        dsButton('Save to database', 'secondary', 'md', false, () => window.SQG_SHEETS.saveQuoteToSheet()),
+        // "Save to database" is no longer a button — every quote is saved
+        // automatically when "Create quote" runs (see makeCreateQuote).
         dsButton('Create quote', 'primary', 'md', false, makeCreateQuote(v, data))
       )
     ));

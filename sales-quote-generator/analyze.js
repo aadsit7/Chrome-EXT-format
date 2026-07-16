@@ -1,24 +1,30 @@
 'use strict';
 
 /* Sales Quote Generator — "Analyze this page"
-   Reads the active browser tab (read-only, nothing leaves the browser) and
-   proposes matching values for the quote form. Two extraction paths:
+   Reads the active browser tab (read-only) and proposes matching values for the
+   quote form. Extraction paths, best first:
 
-     • Salesforce-first (primary): when the tab is a Salesforce page (by URL or
-       Lightning DOM markers) we read record-detail label/value pairs from
-       Lightning (.slds-form-element__label / test-id__field-label) and Classic
-       (.labelCol / .dataCol) layouts, and parse related-list tables (Opportunity
-       Products, Quote Line Items, Assets) by their column headers.
-     • Generic fallback: rule-based label/value extraction from tables, forms and
+     • AI-assisted (primary): a rich page snapshot (snapshotPage) is captured in
+       every frame — walking the DOM INCLUDING shadow roots so Salesforce
+       Lightning values are actually seen, plus label→value pairs and related-list
+       tables — merged with the rule-based result below, and POSTed to the Apps
+       Script (action:"analyzePage"). The structured fields it returns are mapped
+       into the review card. If the AI call fails or returns nothing usable, we
+       fall back to the rule-based detection below (so behaviour is never worse).
+     • Salesforce rule-based: record-detail label/value pairs from Lightning
+       (.slds-form-element__label / test-id__field-label) and Classic
+       (.labelCol / .dataCol) layouts, plus related-list product tables.
+     • Generic rule-based: label/value extraction from tables, forms and
        definition lists, plus catalog product matching, for any other website.
 
    Everything is surfaced in a review card first — nothing is written until the
-   user applies. The extraction function runs INSIDE the tab (in every frame,
-   allFrames: true) and only reads the DOM.
+   user applies. The injected functions run INSIDE the tab (allFrames: true) and
+   only read the DOM; the panel side POSTs the snapshot.
 
    Relies on globals defined in app.js (state, setQ, render, flash, h, dsButton,
-   uid, int, fmt). This script is loaded before app.js; the functions here only
-   touch those globals when called (well after app.js has initialised). */
+   uid, int, fmt) and window.SQG_SHEETS.analyzePage (sheets.js). This script is
+   loaded before app.js / after sheets.js is defined-at-call-time; the functions
+   here only touch those globals when called (well after init). */
 
 window.SQG_ANALYZE = (function () {
   /* ---- Label vocabularies (generic, page-agnostic) ---- */
@@ -429,6 +435,141 @@ window.SQG_ANALYZE = (function () {
   }
 
   /* =========================================================================
+     Rich page snapshot for the AI path — runs INSIDE the page via
+     chrome.scripting.executeScript (allFrames: true). Fully self-contained.
+     Salesforce Lightning renders most values inside SHADOW DOM, which
+     document.body.innerText can't see, so this walks the DOM *including every
+     element.shadowRoot*, collecting: visible record text, label→value pairs
+     (lightning-formatted-* / dt-dd / classic labelCol), and every related-list
+     table (role="grid" / <table>) with its column headers + row cells. Nav /
+     header / footer / menu chrome is skipped. Read-only; nothing is sent from
+     here — the panel side POSTs the merged result. Returns { record, tables,
+     fields } strings for this frame.
+     ========================================================================= */
+  function snapshotPage() {
+    try {
+      var norm = function (s) { return (s == null ? '' : String(s)).replace(/\s+/g, ' ').trim(); };
+      var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, HEAD: 1, SVG: 1, PATH: 1, IFRAME: 1, LINK: 1, META: 1, IMG: 1, CANVAS: 1, VIDEO: 1, AUDIO: 1 };
+      var SKIP_ROLE = { navigation: 1, banner: 1, menu: 1, menubar: 1, menuitem: 1, toolbar: 1, tablist: 1, tab: 1, search: 1, contentinfo: 1, complementary: 1 };
+
+      var isChrome = function (el) {
+        var tag = el.tagName;
+        if (tag === 'NAV' || tag === 'HEADER' || tag === 'FOOTER' || tag === 'ASIDE') return true;
+        try {
+          if (el.getAttribute) {
+            var r = (el.getAttribute('role') || '').toLowerCase();
+            if (SKIP_ROLE[r]) return true;
+            if (el.getAttribute('aria-hidden') === 'true') return true;
+          }
+        } catch (e) {}
+        return false;
+      };
+      var isGrid = function (el) {
+        if (el.tagName === 'TABLE') return true;
+        try {
+          var r = (el.getAttribute && (el.getAttribute('role') || '') || '').toLowerCase();
+          return r === 'grid' || r === 'table' || r === 'treegrid';
+        } catch (e) { return false; }
+      };
+
+      var recordParts = [], tableParts = [], fieldParts = [];
+      var seen = {}, seenCount = 0, recordChars = 0;
+      var RECORD_CAP = 24000;
+
+      var pushText = function (t) {
+        t = norm(t);
+        if (!t || t.length < 2) return;
+        if (t.length > 400) t = t.slice(0, 400);
+        if (recordChars > RECORD_CAP) return;
+        if (seenCount < 6000) { if (seen[t]) return; seen[t] = 1; seenCount++; }
+        recordParts.push(t); recordChars += t.length + 1;
+      };
+
+      var addField = function (label, val) {
+        if (fieldParts.length > 400) return;
+        label = norm(label).replace(/\s*[:：]\s*$/, ''); val = norm(val);
+        if (label && val && label !== val && label.length <= 60 && val.length <= 300) fieldParts.push(label + ': ' + val);
+      };
+
+      var dumpGrid = function (g) {
+        try {
+          if (tableParts.length > 40) return;
+          var lines = [];
+          var headCells = g.querySelectorAll('thead th, thead td, [role="columnheader"]');
+          var headers = [];
+          for (var i = 0; i < headCells.length; i++) {
+            var ht = norm((headCells[i].getAttribute && headCells[i].getAttribute('title')) ? headCells[i].getAttribute('title') : headCells[i].textContent);
+            if (ht) headers.push(ht);
+          }
+          if (headers.length) lines.push(headers.join(' | '));
+          var rows = g.querySelectorAll('tbody tr, [role="row"]');
+          if (!rows.length) rows = g.querySelectorAll('tr');
+          var count = 0;
+          for (var r = 0; r < rows.length && count < 60; r++) {
+            var cells = rows[r].querySelectorAll('th, td, [role="gridcell"], [role="cell"], [role="rowheader"]');
+            if (!cells.length) continue;
+            var vals = [];
+            for (var c = 0; c < cells.length; c++) vals.push(norm(cells[c].textContent));
+            var joined = vals.join(' | ');
+            if (norm(joined.replace(/\|/g, ''))) { lines.push(joined); count++; }
+          }
+          if (lines.length > (headers.length ? 1 : 0)) tableParts.push(lines.join('\n'));
+        } catch (e) {}
+      };
+
+      var walk = function (node, depth) {
+        if (depth > 60) return;
+        var cn = node.childNodes;
+        if (!cn) return;
+        for (var i = 0; i < cn.length; i++) {
+          var ch = cn[i];
+          if (ch.nodeType === 3) { pushText(ch.nodeValue); continue; }
+          if (ch.nodeType !== 1) continue;
+          var el = ch;
+          if (SKIP_TAGS[el.tagName]) continue;
+          if (isChrome(el)) continue;
+          if (isGrid(el)) { dumpGrid(el); if (el.shadowRoot) dumpGrid(el.shadowRoot); continue; }
+          try {
+            if (el.classList && (el.classList.contains('slds-form-element__label') || el.classList.contains('test-id__field-label'))) {
+              var container = el.closest ? el.closest('.slds-form-element') : null;
+              var v = '';
+              if (container) {
+                var ve = container.querySelector('lightning-formatted-text, lightning-formatted-email, lightning-formatted-url, lightning-formatted-number, lightning-formatted-date-time, .test-id__field-value, .slds-form-element__static, .uiOutputText, [data-output-element-id]');
+                if (ve) v = norm(ve.textContent);
+                if (!v) { var vc = container.querySelector('.slds-form-element__control'); if (vc) v = norm(vc.textContent); }
+              }
+              if (v) addField(el.textContent, v);
+            }
+            if (el.tagName === 'DT') { var dd = el.nextElementSibling; if (dd && dd.tagName === 'DD') addField(el.textContent, dd.textContent); }
+            if (el.classList && el.classList.contains('labelCol')) {
+              var dc = el.nextElementSibling;
+              while (dc && !(dc.className && /\bdataCol\b/.test(String(dc.className)))) dc = dc.nextElementSibling;
+              if (dc) addField(el.textContent, dc.textContent);
+            }
+          } catch (e) {}
+          if (el.shadowRoot) walk(el.shadowRoot, depth + 1);
+          walk(el, depth + 1);
+        }
+      };
+
+      if (document.body) walk(document.body, 0);
+      else if (document.documentElement) walk(document.documentElement, 0);
+
+      var head = [];
+      if (document.title) head.push('Title: ' + norm(document.title));
+      if (typeof location !== 'undefined' && location.href) head.push('URL: ' + location.href);
+
+      return {
+        record: recordParts.join('\n'),
+        tables: tableParts.join('\n\n'),
+        fields: head.concat(fieldParts).join('\n'),
+      };
+    } catch (e) {
+      return { record: '', tables: '', fields: '', error: String((e && e.message) || e) };
+    }
+  }
+
+  /* =========================================================================
      Panel side — merge frames, then turn the raw extraction into findings.
      ========================================================================= */
   function normS(s) { return (s == null ? '' : String(s)).replace(/\s+/g, ' ').trim(); }
@@ -545,6 +686,115 @@ window.SQG_ANALYZE = (function () {
     return out;
   }
 
+  /* =========================================================================
+     AI path — assemble the request text and map the response into findings.
+     ========================================================================= */
+
+  /* Merge the per-frame snapshots into one text blob, then fold in the
+     rule-based extraction (belt and suspenders) so the AI gets the richest
+     possible input. Structured parts (fields, tables) come first; free page
+     text fills the remainder up to a ~12000-char cap. */
+  function buildSnapshotText(snaps, rawRule) {
+    var ok = (snaps || []).filter(function (s) { return s && !s.error; });
+    var fields = [], tables = [], record = [];
+    ok.forEach(function (s) {
+      if (s.fields) fields.push(s.fields);
+      if (s.tables) tables.push(s.tables);
+      if (s.record) record.push(s.record);
+    });
+    var ruleLines = [];
+    if (rawRule) {
+      if (rawRule.customer) ruleLines.push('Account/Customer: ' + rawRule.customer);
+      if (rawRule.billTo) ruleLines.push('Bill To / Reseller: ' + rawRule.billTo);
+      if (rawRule.email) ruleLines.push('Contact Email: ' + rawRule.email);
+      if (rawRule.renewalDateRaw) ruleLines.push('Renewal/End Date: ' + rawRule.renewalDateRaw);
+      (rawRule.products || []).forEach(function (p) {
+        if (!p || !p.key) return;
+        var prod = state.cfg.products.find(function (x) { return x.id === p.key; });
+        ruleLines.push('Product: ' + (prod ? prod.name : p.key) + (p.qty != null ? ' · qty ' + p.qty : '') + (p.price != null ? ' · $' + p.price : ''));
+      });
+    }
+    var parts = [];
+    if (fields.length) parts.push('== FIELDS ==\n' + fields.join('\n'));
+    if (tables.length) parts.push('== RELATED LISTS ==\n' + tables.join('\n\n'));
+    if (ruleLines.length) parts.push('== DETECTED (rule-based) ==\n' + ruleLines.join('\n'));
+    if (record.length) parts.push('== PAGE TEXT ==\n' + record.join('\n'));
+    var text = parts.join('\n\n');
+    if (text.length > 12000) text = text.slice(0, 12000);
+    return text;
+  }
+
+  /* Turn the Apps Script's structured response into review-card findings.
+     Every returned field maps to a finding so the user previews it before Apply;
+     nothing is written here. Returns { findings, note }. */
+  function buildAiFindings(data) {
+    var out = [], note = null;
+    if (!data || typeof data !== 'object') return { findings: out, note: note };
+    var q = state.quote, cfg = state.cfg;
+    var S = function (x) { return (x == null ? '' : String(x)).replace(/\s+/g, ' ').trim(); };
+
+    if (S(data.customer)) out.push(scalarFinding('customer', 'Customer / company', S(data.customer), S(data.customer), q.customer));
+    if (S(data.contactName)) out.push(scalarFinding('billingContact', 'Billing contact', S(data.contactName), S(data.contactName), q.billingContact));
+    if (S(data.email)) out.push(scalarFinding('email', 'Contact email', S(data.email), S(data.email), q.email));
+    if (S(data.partnerCompany)) {
+      out.push(scalarFinding('partnerCompany', 'Reseller / partner company', S(data.partnerCompany), S(data.partnerCompany), q.partnerCompany));
+      note = 'Reseller detected — turn on Partner pricing in “Who’s it for?” if this should be a partner deal (left off because it changes pricing).';
+    }
+    if (S(data.partnerEmail)) out.push(scalarFinding('partnerEmail', 'Reseller / partner email', S(data.partnerEmail), S(data.partnerEmail), q.partnerEmail));
+    if (S(data.billToAddress)) out.push(scalarFinding('billToAddress', 'Bill-to address', S(data.billToAddress), S(data.billToAddress), q.billToAddress));
+    if (S(data.shipToAddress)) out.push(scalarFinding('shipToAddress', 'Ship-to address', S(data.shipToAddress), S(data.shipToAddress), q.shipToAddress));
+
+    var iso = parseDate(S(data.quoteExpirationDate));
+    if (iso) {
+      var f = scalarFinding('expires', 'Quote expiration date', iso, fmtDate(iso), q.expires);
+      if (f.replaces) f.replaces = q.expires ? fmtDate(q.expires) : f.replaces;
+      out.push(f);
+    }
+    if (S(data.currency)) out.push(scalarFinding('currency', 'Currency', S(data.currency), S(data.currency), q.currency));
+
+    var tm = parseInt(data.termMonths, 10);
+    if (isFinite(tm) && tm > 0) {
+      var yrs = Math.max(1, Math.round(tm / 12));
+      out.push({
+        field: 'term', months: tm, years: yrs, checked: true, label: 'Subscription term',
+        display: tm + ' month' + (tm === 1 ? '' : 's') + ' (' + yrs + ' year' + (yrs === 1 ? '' : 's') + ')',
+        replaces: (q.months && q.months !== tm) ? (q.months + ' months') : null,
+      });
+    }
+
+    (Array.isArray(data.lines) ? data.lines : []).forEach(function (li) {
+      if (!li) return;
+      var prod = cfg.products.find(function (p) { return p.id === li.productId; }); // keep only live-catalog ids
+      if (!prod) return;
+      var qty = parseInt(li.qty, 10);
+      if (!isFinite(qty) || qty <= 0) return;
+      var curL = q.lines.find(function (l) { return l.productId === prod.id; });
+      out.push({
+        field: 'lineQty', productId: prod.id, qty: qty, checked: true,
+        label: prod.name + ' — quantity', display: qty.toLocaleString('en-US') + ' ' + unitWord(prod),
+        replaces: curL ? int(curL.qty).toLocaleString('en-US') + ' ' + unitWord(prod) : null,
+      });
+    });
+
+    return { findings: out, note: note };
+  }
+
+  /* Show the AI findings, then supplement with any rule-based finding the AI
+     didn't cover (e.g. a renewal date or renewal prices the AI schema omits) so
+     nothing the page offered is dropped. Deduped by target field / product. */
+  function mergeAiRule(aiFindings, ruleFindings) {
+    var keyOf = function (f) {
+      if (f.field === 'lineQty') return 'line:' + f.productId;
+      if (f.field === 'renewLine') return 'renew:' + f.productId;
+      return 'f:' + f.field;
+    };
+    var have = {};
+    aiFindings.forEach(function (f) { have[keyOf(f)] = 1; });
+    var merged = aiFindings.slice();
+    (ruleFindings || []).forEach(function (f) { if (!have[keyOf(f)]) { have[keyOf(f)] = 1; merged.push(f); } });
+    return merged;
+  }
+
   /* ---- apply through the app's state functions (setQ) ---- */
   function applyFindings() {
     if (!state.analyze) return;
@@ -554,13 +804,20 @@ window.SQG_ANALYZE = (function () {
     var renew = (q.renewLines || []).map(function (l) { return Object.assign({}, l); });
     var linesTouched = false, renewTouched = false;
 
+    // Scalar findings whose field name is exactly the quote key they fill.
+    // Includes the original rule-based fields (customer / email / partnerCompany /
+    // coTermDate) plus the AI-only fields, so behaviour for the old ones is
+    // unchanged and the new ones just work.
+    var SCALAR_FIELDS = {
+      customer: 1, email: 1, partnerCompany: 1, partnerEmail: 1, billingContact: 1,
+      billToAddress: 1, shipToAddress: 1, expires: 1, currency: 1, coTermDate: 1,
+    };
+
     state.analyze.findings.forEach(function (f) {
       if (!f.checked) return;
       count++;
-      if (f.field === 'customer') patch.customer = f.value;
-      else if (f.field === 'email') patch.email = f.value;
-      else if (f.field === 'partnerCompany') patch.partnerCompany = f.value;
-      else if (f.field === 'coTermDate') patch.coTermDate = f.value;
+      if (SCALAR_FIELDS[f.field]) patch[f.field] = f.value;
+      else if (f.field === 'term') { patch.months = f.months; patch.years = f.years; }
       else if (f.field === 'lineQty') {
         var ln = lines.find(function (l) { return l.productId === f.productId; });
         if (ln) ln.qty = f.qty; else lines.push({ id: uid(), productId: f.productId, qty: f.qty });
@@ -651,6 +908,23 @@ window.SQG_ANALYZE = (function () {
     });
   }
 
+  /* Show a set of findings in the review card (or the "nothing found" toast). */
+  function showFindings(findings, raw, tab, note) {
+    if (!findings || !findings.length) {
+      flash('Couldn’t find quote info on this page.', 'warn');
+      state.analyze = null; render();
+      return;
+    }
+    state.analyze = { findings: findings, title: (raw && raw.title) || '', url: (tab && tab.url) || '', note: note || null };
+    render();
+  }
+
+  /* The rule-based fallback note (Salesforce products still loading). */
+  function ruleNote(raw, ruleFindings) {
+    var hasProducts = (ruleFindings || []).some(function (f) { return f.field === 'renewLine' || f.field === 'lineQty'; });
+    return (raw && raw.source === 'salesforce' && !hasProducts && !raw.productsSeen) ? SF_LAZY_NOTE : null;
+  }
+
   function run() {
     if (state.analyze) { state.analyze = null; render(); }
     if (!(typeof chrome !== 'undefined' && chrome.scripting && chrome.tabs)) {
@@ -662,31 +936,50 @@ window.SQG_ANALYZE = (function () {
         flash('This page can’t be analyzed — open a normal website tab and try again', 'warn');
         return;
       }
-      return chrome.scripting.executeScript({
-        target: { tabId: tab.id, allFrames: true },
-        func: extractQuoteInfo,
+      flash('Analyzing this page…', 'ok');
+      var target = { tabId: tab.id, allFrames: true };
+      // Run the rule-based extractor and the rich snapshot together (both in all
+      // frames), so we always have a complete fallback and the best AI input.
+      var pRule = chrome.scripting.executeScript({
+        target: target, func: extractQuoteInfo,
         args: [{
           custLabels: CUST_LABELS, billLabels: BILL_LABELS, emailLabels: EMAIL_LABELS,
           qtyLabels: QTY_LABELS, dateLabels: DATE_LABELS, productTerms: PRODUCT_KEYMAP,
         }],
-      }).then(function (results) {
-        var frames = (results || []).map(function (r) { return r && r.result; });
-        var raw = mergeFrames(frames);
-        var findings = raw ? buildFindings(raw) : [];
-        if (!findings.length) {
-          flash('Couldn’t find quote info on this page.', 'warn');
-          state.analyze = null; render();
-          return;
+      });
+      var pSnap = chrome.scripting.executeScript({ target: target, func: snapshotPage });
+
+      return Promise.all([pRule, pSnap.catch(function () { return []; })]).then(function (res) {
+        var raw = mergeFrames((res[0] || []).map(function (r) { return r && r.result; }));
+        var ruleFindings = raw ? buildFindings(raw) : [];
+        var pageText = buildSnapshotText((res[1] || []).map(function (r) { return r && r.result; }), raw);
+        var catalog = state.cfg.products.map(function (p) { return { id: p.id, name: p.name, unit: p.unit }; });
+
+        var fallback = function () { showFindings(ruleFindings, raw, tab, ruleNote(raw, ruleFindings)); };
+
+        // No AI transport available → behave exactly like the original tool.
+        if (!(window.SQG_SHEETS && typeof window.SQG_SHEETS.analyzePage === 'function') || !pageText) {
+          fallback(); return;
         }
-        var hasProducts = findings.some(function (f) { return f.field === 'renewLine' || f.field === 'lineQty'; });
-        var note = (raw && raw.source === 'salesforce' && !hasProducts && !raw.productsSeen) ? SF_LAZY_NOTE : null;
-        state.analyze = { findings: findings, title: (raw && raw.title) || '', url: (tab.url || ''), note: note };
-        render();
+        return window.SQG_SHEETS.analyzePage(pageText, catalog).then(function (data) {
+          var ai = buildAiFindings(data);
+          if (ai.findings.length) {
+            var merged = mergeAiRule(ai.findings, ruleFindings); // supplement, never drop
+            showFindings(merged, raw, tab, ai.note || ruleNote(raw, ruleFindings));
+          } else {
+            fallback(); // AI returned nothing usable → rule-based detection
+          }
+        }).catch(fallback); // AI call failed → rule-based detection
       });
     }).catch(function () {
       flash('This page can’t be analyzed — try a different tab', 'warn');
     });
   }
 
-  return { bar: bar, run: run, applyFindings: applyFindings, _extract: extractQuoteInfo, _parseDate: parseDate, _buildFindings: buildFindings, _mergeFrames: mergeFrames };
+  return {
+    bar: bar, run: run, applyFindings: applyFindings,
+    _extract: extractQuoteInfo, _snapshot: snapshotPage, _parseDate: parseDate,
+    _buildFindings: buildFindings, _buildAiFindings: buildAiFindings,
+    _buildSnapshotText: buildSnapshotText, _mergeAiRule: mergeAiRule, _mergeFrames: mergeFrames,
+  };
 })();
