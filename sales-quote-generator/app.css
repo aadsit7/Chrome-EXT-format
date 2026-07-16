@@ -462,6 +462,11 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 }
 .sqg-analyze-value { font-size: 13.5px; font-weight: 600; color: var(--text-strong); word-break: break-word; }
 .sqg-analyze-replace { font-size: 11.5px; color: var(--amber-600); }
+.sqg-analyze-note {
+  margin: 12px 0 0; padding: 10px 12px; border-radius: 10px;
+  background: var(--warning-soft); color: var(--amber-600);
+  font-size: 12px; font-weight: 500; line-height: 1.4;
+}
 .sqg-analyze-actions { display: flex; gap: 10px; margin-top: 14px; }
 .sqg-analyze-actions .ds-btn { flex: 1; }
 
