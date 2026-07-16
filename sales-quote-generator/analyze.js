@@ -436,137 +436,225 @@ window.SQG_ANALYZE = (function () {
 
   /* =========================================================================
      Rich page snapshot for the AI path — runs INSIDE the page via
-     chrome.scripting.executeScript (allFrames: true). Fully self-contained.
-     Salesforce Lightning renders most values inside SHADOW DOM, which
-     document.body.innerText can't see, so this walks the DOM *including every
-     element.shadowRoot*, collecting: visible record text, label→value pairs
-     (lightning-formatted-* / dt-dd / classic labelCol), and every related-list
-     table (role="grid" / <table>) with its column headers + row cells. Nav /
-     header / footer / menu chrome is skipped. Read-only; nothing is sent from
-     here — the panel side POSTs the merged result. Returns { record, tables,
-     fields } strings for this frame.
-     ========================================================================= */
-  function snapshotPage() {
-    try {
-      var norm = function (s) { return (s == null ? '' : String(s)).replace(/\s+/g, ' ').trim(); };
-      var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, HEAD: 1, SVG: 1, PATH: 1, IFRAME: 1, LINK: 1, META: 1, IMG: 1, CANVAS: 1, VIDEO: 1, AUDIO: 1 };
-      var SKIP_ROLE = { navigation: 1, banner: 1, menu: 1, menubar: 1, menuitem: 1, toolbar: 1, tablist: 1, tab: 1, search: 1, contentinfo: 1, complementary: 1 };
+     chrome.scripting.executeScript (allFrames: true). Fully self-contained and
+     ASYNC: it returns a Promise that executeScript awaits.
 
-      var isChrome = function (el) {
-        var tag = el.tagName;
-        if (tag === 'NAV' || tag === 'HEADER' || tag === 'FOOTER' || tag === 'ASIDE') return true;
+     Salesforce lightning-datatables VIRTUALIZE rows (only scrolled-into-view
+     rows exist in the DOM), so before reading the DOM this runs a BOUNDED
+     auto-scroll pass — it finds the main record scroll container and every
+     scrollable related-list container, scrolls each to the bottom in steps
+     (pausing ~200ms per step for rows to render), then captures, then scrolls
+     everything back to the top. The pass is hard-capped at ~12 steps / ~3s per
+     frame and fully wrapped in try/catch, so it can never hang or throw — on any
+     failure it just captures whatever is already rendered.
+
+     Capture walks the DOM *including every element.shadowRoot* (Lightning
+     renders most values inside SHADOW DOM, which document.body.innerText can't
+     see), collecting: visible record text, label→value pairs (lightning-
+     formatted-* / dt-dd / classic labelCol), and every related-list table
+     (role="grid" / <table>) with its column headers + row cells. Nav / header /
+     footer / menu chrome is skipped. Read-only; nothing is sent from here — the
+     panel side POSTs the merged result. Returns { record, tables, fields }
+     strings for this frame.
+     ========================================================================= */
+  async function snapshotPage() {
+    var sleep = function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
+
+    /* Find the main record scroll container plus every scrollable related-list
+       container: elements taller than their viewport (scrollHeight > clientHeight)
+       with a scrolling overflow. Walks shadow roots too, bounded by a node cap. */
+    var findScrollers = function () {
+      var out = [], visited = 0;
+      var scrollable = function (el) {
         try {
-          if (el.getAttribute) {
-            var r = (el.getAttribute('role') || '').toLowerCase();
-            if (SKIP_ROLE[r]) return true;
-            if (el.getAttribute('aria-hidden') === 'true') return true;
-          }
-        } catch (e) {}
-        return false;
-      };
-      var isGrid = function (el) {
-        if (el.tagName === 'TABLE') return true;
-        try {
-          var r = (el.getAttribute && (el.getAttribute('role') || '') || '').toLowerCase();
-          return r === 'grid' || r === 'table' || r === 'treegrid';
+          if (!el || el.nodeType !== 1) return false;
+          var ch = el.clientHeight;
+          if (ch < 40 || (el.scrollHeight - ch) < 40) return false;
+          var view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+          var oy = view.getComputedStyle(el).overflowY;
+          return oy === 'auto' || oy === 'scroll' || oy === 'overlay';
         } catch (e) { return false; }
       };
-
-      var recordParts = [], tableParts = [], fieldParts = [];
-      var seen = {}, seenCount = 0, recordChars = 0;
-      var RECORD_CAP = 24000;
-
-      var pushText = function (t) {
-        t = norm(t);
-        if (!t || t.length < 2) return;
-        if (t.length > 400) t = t.slice(0, 400);
-        if (recordChars > RECORD_CAP) return;
-        if (seenCount < 6000) { if (seen[t]) return; seen[t] = 1; seenCount++; }
-        recordParts.push(t); recordChars += t.length + 1;
-      };
-
-      var addField = function (label, val) {
-        if (fieldParts.length > 400) return;
-        label = norm(label).replace(/\s*[:：]\s*$/, ''); val = norm(val);
-        if (label && val && label !== val && label.length <= 60 && val.length <= 300) fieldParts.push(label + ': ' + val);
-      };
-
-      var dumpGrid = function (g) {
-        try {
-          if (tableParts.length > 40) return;
-          var lines = [];
-          var headCells = g.querySelectorAll('thead th, thead td, [role="columnheader"]');
-          var headers = [];
-          for (var i = 0; i < headCells.length; i++) {
-            var ht = norm((headCells[i].getAttribute && headCells[i].getAttribute('title')) ? headCells[i].getAttribute('title') : headCells[i].textContent);
-            if (ht) headers.push(ht);
-          }
-          if (headers.length) lines.push(headers.join(' | '));
-          var rows = g.querySelectorAll('tbody tr, [role="row"]');
-          if (!rows.length) rows = g.querySelectorAll('tr');
-          var count = 0;
-          for (var r = 0; r < rows.length && count < 60; r++) {
-            var cells = rows[r].querySelectorAll('th, td, [role="gridcell"], [role="cell"], [role="rowheader"]');
-            if (!cells.length) continue;
-            var vals = [];
-            for (var c = 0; c < cells.length; c++) vals.push(norm(cells[c].textContent));
-            var joined = vals.join(' | ');
-            if (norm(joined.replace(/\|/g, ''))) { lines.push(joined); count++; }
-          }
-          if (lines.length > (headers.length ? 1 : 0)) tableParts.push(lines.join('\n'));
-        } catch (e) {}
-      };
-
-      var walk = function (node, depth) {
-        if (depth > 60) return;
-        var cn = node.childNodes;
-        if (!cn) return;
-        for (var i = 0; i < cn.length; i++) {
-          var ch = cn[i];
-          if (ch.nodeType === 3) { pushText(ch.nodeValue); continue; }
-          if (ch.nodeType !== 1) continue;
-          var el = ch;
-          if (SKIP_TAGS[el.tagName]) continue;
-          if (isChrome(el)) continue;
-          if (isGrid(el)) { dumpGrid(el); if (el.shadowRoot) dumpGrid(el.shadowRoot); continue; }
-          try {
-            if (el.classList && (el.classList.contains('slds-form-element__label') || el.classList.contains('test-id__field-label'))) {
-              var container = el.closest ? el.closest('.slds-form-element') : null;
-              var v = '';
-              if (container) {
-                var ve = container.querySelector('lightning-formatted-text, lightning-formatted-email, lightning-formatted-url, lightning-formatted-number, lightning-formatted-date-time, .test-id__field-value, .slds-form-element__static, .uiOutputText, [data-output-element-id]');
-                if (ve) v = norm(ve.textContent);
-                if (!v) { var vc = container.querySelector('.slds-form-element__control'); if (vc) v = norm(vc.textContent); }
-              }
-              if (v) addField(el.textContent, v);
-            }
-            if (el.tagName === 'DT') { var dd = el.nextElementSibling; if (dd && dd.tagName === 'DD') addField(el.textContent, dd.textContent); }
-            if (el.classList && el.classList.contains('labelCol')) {
-              var dc = el.nextElementSibling;
-              while (dc && !(dc.className && /\bdataCol\b/.test(String(dc.className)))) dc = dc.nextElementSibling;
-              if (dc) addField(el.textContent, dc.textContent);
-            }
-          } catch (e) {}
-          if (el.shadowRoot) walk(el.shadowRoot, depth + 1);
-          walk(el, depth + 1);
+      var walkS = function (root, depth) {
+        if (depth > 40 || visited > 9000) return;
+        var els;
+        try { els = root.querySelectorAll('*'); } catch (e) { return; }
+        for (var i = 0; i < els.length && visited < 9000; i++) {
+          visited++;
+          var el = els[i];
+          if (scrollable(el)) out.push(el);
+          if (el.shadowRoot) walkS(el.shadowRoot, depth + 1);
         }
       };
+      try { walkS(document, 0); } catch (e) {}
+      var doc = document.scrollingElement || document.documentElement;
+      if (doc && (doc.scrollHeight - doc.clientHeight) > 40 && out.indexOf(doc) < 0) out.push(doc);
+      // Largest scroll distance first; bound how many containers we drive.
+      out.sort(function (a, b) { return (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight); });
+      return out.slice(0, 30);
+    };
 
-      if (document.body) walk(document.body, 0);
-      else if (document.documentElement) walk(document.documentElement, 0);
+    /* Capture — reads the DOM exactly as before. Its own try/catch means a
+       capture failure never rejects the returned Promise. */
+    var capture = function () {
+      try {
+        var norm = function (s) { return (s == null ? '' : String(s)).replace(/\s+/g, ' ').trim(); };
+        var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, HEAD: 1, SVG: 1, PATH: 1, IFRAME: 1, LINK: 1, META: 1, IMG: 1, CANVAS: 1, VIDEO: 1, AUDIO: 1 };
+        var SKIP_ROLE = { navigation: 1, banner: 1, menu: 1, menubar: 1, menuitem: 1, toolbar: 1, tablist: 1, tab: 1, search: 1, contentinfo: 1, complementary: 1 };
 
-      var head = [];
-      if (document.title) head.push('Title: ' + norm(document.title));
-      if (typeof location !== 'undefined' && location.href) head.push('URL: ' + location.href);
+        var isChrome = function (el) {
+          var tag = el.tagName;
+          if (tag === 'NAV' || tag === 'HEADER' || tag === 'FOOTER' || tag === 'ASIDE') return true;
+          try {
+            if (el.getAttribute) {
+              var r = (el.getAttribute('role') || '').toLowerCase();
+              if (SKIP_ROLE[r]) return true;
+              if (el.getAttribute('aria-hidden') === 'true') return true;
+            }
+          } catch (e) {}
+          return false;
+        };
+        var isGrid = function (el) {
+          if (el.tagName === 'TABLE') return true;
+          try {
+            var r = (el.getAttribute && (el.getAttribute('role') || '') || '').toLowerCase();
+            return r === 'grid' || r === 'table' || r === 'treegrid';
+          } catch (e) { return false; }
+        };
 
-      return {
-        record: recordParts.join('\n'),
-        tables: tableParts.join('\n\n'),
-        fields: head.concat(fieldParts).join('\n'),
-      };
-    } catch (e) {
-      return { record: '', tables: '', fields: '', error: String((e && e.message) || e) };
-    }
+        var recordParts = [], tableParts = [], fieldParts = [];
+        var seen = {}, seenCount = 0, recordChars = 0;
+        var RECORD_CAP = 24000;
+
+        var pushText = function (t) {
+          t = norm(t);
+          if (!t || t.length < 2) return;
+          if (t.length > 400) t = t.slice(0, 400);
+          if (recordChars > RECORD_CAP) return;
+          if (seenCount < 6000) { if (seen[t]) return; seen[t] = 1; seenCount++; }
+          recordParts.push(t); recordChars += t.length + 1;
+        };
+
+        var addField = function (label, val) {
+          if (fieldParts.length > 400) return;
+          label = norm(label).replace(/\s*[:：]\s*$/, ''); val = norm(val);
+          if (label && val && label !== val && label.length <= 60 && val.length <= 300) fieldParts.push(label + ': ' + val);
+        };
+
+        var dumpGrid = function (g) {
+          try {
+            if (tableParts.length > 40) return;
+            var lines = [];
+            var headCells = g.querySelectorAll('thead th, thead td, [role="columnheader"]');
+            var headers = [];
+            for (var i = 0; i < headCells.length; i++) {
+              var ht = norm((headCells[i].getAttribute && headCells[i].getAttribute('title')) ? headCells[i].getAttribute('title') : headCells[i].textContent);
+              if (ht) headers.push(ht);
+            }
+            if (headers.length) lines.push(headers.join(' | '));
+            var rows = g.querySelectorAll('tbody tr, [role="row"]');
+            if (!rows.length) rows = g.querySelectorAll('tr');
+            var count = 0;
+            for (var r = 0; r < rows.length && count < 60; r++) {
+              var cells = rows[r].querySelectorAll('th, td, [role="gridcell"], [role="cell"], [role="rowheader"]');
+              if (!cells.length) continue;
+              var vals = [];
+              for (var c = 0; c < cells.length; c++) vals.push(norm(cells[c].textContent));
+              var joined = vals.join(' | ');
+              if (norm(joined.replace(/\|/g, ''))) { lines.push(joined); count++; }
+            }
+            if (lines.length > (headers.length ? 1 : 0)) tableParts.push(lines.join('\n'));
+          } catch (e) {}
+        };
+
+        var walk = function (node, depth) {
+          if (depth > 60) return;
+          var cn = node.childNodes;
+          if (!cn) return;
+          for (var i = 0; i < cn.length; i++) {
+            var ch = cn[i];
+            if (ch.nodeType === 3) { pushText(ch.nodeValue); continue; }
+            if (ch.nodeType !== 1) continue;
+            var el = ch;
+            if (SKIP_TAGS[el.tagName]) continue;
+            if (isChrome(el)) continue;
+            if (isGrid(el)) { dumpGrid(el); if (el.shadowRoot) dumpGrid(el.shadowRoot); continue; }
+            try {
+              if (el.classList && (el.classList.contains('slds-form-element__label') || el.classList.contains('test-id__field-label'))) {
+                var container = el.closest ? el.closest('.slds-form-element') : null;
+                var v = '';
+                if (container) {
+                  var ve = container.querySelector('lightning-formatted-text, lightning-formatted-email, lightning-formatted-url, lightning-formatted-number, lightning-formatted-date-time, .test-id__field-value, .slds-form-element__static, .uiOutputText, [data-output-element-id]');
+                  if (ve) v = norm(ve.textContent);
+                  if (!v) { var vc = container.querySelector('.slds-form-element__control'); if (vc) v = norm(vc.textContent); }
+                }
+                if (v) addField(el.textContent, v);
+              }
+              if (el.tagName === 'DT') { var dd = el.nextElementSibling; if (dd && dd.tagName === 'DD') addField(el.textContent, dd.textContent); }
+              if (el.classList && el.classList.contains('labelCol')) {
+                var dc = el.nextElementSibling;
+                while (dc && !(dc.className && /\bdataCol\b/.test(String(dc.className)))) dc = dc.nextElementSibling;
+                if (dc) addField(el.textContent, dc.textContent);
+              }
+            } catch (e) {}
+            if (el.shadowRoot) walk(el.shadowRoot, depth + 1);
+            walk(el, depth + 1);
+          }
+        };
+
+        if (document.body) walk(document.body, 0);
+        else if (document.documentElement) walk(document.documentElement, 0);
+
+        var head = [];
+        if (document.title) head.push('Title: ' + norm(document.title));
+        if (typeof location !== 'undefined' && location.href) head.push('URL: ' + location.href);
+
+        return {
+          record: recordParts.join('\n'),
+          tables: tableParts.join('\n\n'),
+          fields: head.concat(fieldParts).join('\n'),
+        };
+      } catch (e) {
+        return { record: '', tables: '', fields: '', error: String((e && e.message) || e) };
+      }
+    };
+
+    /* ---- bounded auto-scroll pass (renders lazy / virtualized rows) ----
+       Hard-capped at ~12 steps OR ~3s per frame, whichever comes first, so it
+       can never hang. Wrapped in try/catch so scrolling never throws — on any
+       failure we fall straight through to capturing what's already there. */
+    var scrollers = [];
+    try {
+      scrollers = findScrollers();
+      var STEP_MS = 200, MAX_STEPS = 12, MAX_MS = 3000, start = Date.now();
+      for (var step = 0; step < MAX_STEPS && scrollers.length; step++) {
+        if (Date.now() - start > MAX_MS) break;
+        var moved = false;
+        for (var s = 0; s < scrollers.length; s++) {
+          var el = scrollers[s];
+          try {
+            var max = el.scrollHeight - el.clientHeight;
+            var before = el.scrollTop;
+            if (before < max - 1) {
+              el.scrollTop = Math.min(max, before + Math.max(200, el.clientHeight));
+              if (el.scrollTop > before) moved = true;
+            }
+          } catch (e) {}
+        }
+        if (!moved) break; // every container already at the bottom
+        await sleep(STEP_MS);
+      }
+    } catch (e) { /* scrolling must never throw — capture what's there */ }
+
+    var snap = capture();
+
+    // Restore scroll position so the page looks untouched.
+    try {
+      scrollers.forEach(function (el) { try { el.scrollTop = 0; } catch (e) {} });
+      try { window.scrollTo(0, 0); } catch (e) {}
+    } catch (e) {}
+
+    return snap;
   }
 
   /* =========================================================================
