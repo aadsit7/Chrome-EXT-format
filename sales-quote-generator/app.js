@@ -35,6 +35,7 @@ function defaults() {
     terms: [{ years: 1, pct: 0 }, { years: 2, pct: 0 }, { years: 3, pct: 0 }],
     defaultYears: 1,
     allowProration: false,
+    settingsPassword: '2026',
   };
 }
 
@@ -54,7 +55,7 @@ function defaultQuote() {
 
 /* ---------------- State ---------------- */
 
-const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null };
+const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false };
 let toastTimer = null;
 
 try {
@@ -301,7 +302,10 @@ function render() {
   iconSlot.textContent = '';
   iconSlot.append(iconButton(
     view === 'calc' ? 'settings' : 'x', 'md',
-    () => { state.view = view === 'calc' ? 'settings' : 'calc'; render(); },
+    () => {
+      if (view === 'calc') { state.pwPrompt = true; render(); }
+      else { state.view = 'calc'; render(); }
+    },
     view === 'calc' ? 'Open pricing settings' : 'Close settings'
   ));
 
@@ -349,7 +353,46 @@ function renderCalc() {
   if (state.toast) {
     frag.append(h('div', { class: 'sqg-toast sqg-toast-' + (state.toastTone === 'warn' ? 'warn' : 'ok'), role: 'status' }, state.toast));
   }
+  if (state.pwPrompt) frag.append(buildPasswordModal());
   return frag;
+}
+
+/* ---- Settings password gate ---- */
+function buildPasswordModal() {
+  const cfg = state.cfg;
+  const close = () => { state.pwPrompt = false; render(); };
+  const errEl = h('p', { class: 'sqg-pw-error' });
+  const input = h('input', {
+    class: 'sqg-in', type: 'password', dataK: 'settings-pw', placeholder: 'Password', 'aria-label': 'Settings password',
+    style: 'height: 42px; padding: 0 12px; font: inherit; font-size: 15px; color: var(--text-primary); ' + IN_BASE,
+    onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); attempt(); } },
+  });
+  const attempt = () => {
+    const val = input.value.trim();
+    if (val && val === String(cfg.settingsPassword || '2026')) {
+      state.pwPrompt = false; state.view = 'settings'; render();
+    } else {
+      errEl.textContent = 'Incorrect password — try again';
+      input.select();
+      input.focus();
+    }
+  };
+  const card = h('div', {
+    class: 'sqg-pw-card', role: 'dialog', 'aria-label': 'Settings password required',
+    onClick: (e) => e.stopPropagation(),
+  },
+    h('h2', null, 'Settings are locked'),
+    h('p', null, 'Enter the password to open pricing settings.'),
+    input,
+    errEl,
+    h('div', { class: 'sqg-pw-actions' },
+      dsButton('Cancel', 'secondary', 'md', false, close),
+      dsButton('Unlock', 'primary', 'md', false, attempt)
+    )
+  );
+  const modal = h('div', { class: 'sqg-pw-modal', onClick: close }, card);
+  setTimeout(() => { try { input.focus(); } catch (e) {} }, 0);
+  return modal;
 }
 
 /* Live update of the dock + sheet while a slider is dragged (no full re-render) */
@@ -1013,6 +1056,20 @@ function renderSettings() {
     h('h1', { style: "margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 21px; letter-spacing: -0.02em; color: var(--text-strong);" }, 'Pricing settings'),
     h('p', { style: 'margin: 0; font-size: 13px; color: var(--text-secondary);' }, 'Changes apply to the calculator immediately and save to this browser.')));
 
+  /* Access */
+  const accessSection = h('section', { class: 'sqg-set-card' },
+    h('div', { style: 'padding-bottom: 2px;' }, h('h2', null, 'Settings access')),
+    h('div', { class: 'sqg-rule-row', style: 'border-bottom: none; padding-bottom: 4px;' },
+      h('div', { class: 'sqg-rule-titles' },
+        h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Settings password'),
+        h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, 'Required to open this screen · default 2026')),
+      h('input', {
+        class: 'sqg-in', type: 'text', value: cfg.settingsPassword, dataK: 'settings-password-cfg',
+        onChange: (e) => { const v = e.target.value.trim(); if (v) setCfg({ settingsPassword: v }); },
+        style: 'height: 36px; padding: 0 10px; font-family: var(--font-mono); font-size: 13.5px; color: var(--text-primary); width: 140px; text-align: right; ' + IN_BASE,
+      })));
+  main.append(accessSection);
+
   /* Products */
   const prodSection = h('section', { class: 'sqg-set-card' },
     h('div', { class: 'sqg-set-head' },
@@ -1206,6 +1263,7 @@ function renderSettings() {
 
 /* ---------------- Boot ---------------- */
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && state.sheet) { state.sheet = false; render(); }
+  if (e.key === 'Escape' && state.pwPrompt) { state.pwPrompt = false; render(); }
+  else if (e.key === 'Escape' && state.sheet) { state.sheet = false; render(); }
 });
 render();

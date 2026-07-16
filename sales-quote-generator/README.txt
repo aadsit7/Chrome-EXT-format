@@ -36,7 +36,10 @@ USING THE TOOL
   show a short notice, and "Couldn't find quote info on this page."
   appears when nothing useful is detected.
 - The gear icon in the header switches between the quote calculator
-  and the pricing settings screen.
+  and the pricing settings screen. Opening settings requires a
+  password — the default is 2026. Change it any time from the
+  "Settings access" field at the top of the settings screen (note:
+  "Reset to default pricing" also resets the password back to 2026).
 - Settings changes apply to the calculator immediately.
 - The running total lives in the dock at the bottom of the panel.
   Tap it to slide up the full quote breakdown (line items, discounts,
