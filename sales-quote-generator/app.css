@@ -84,6 +84,7 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .sqg-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+#header-icon-slot { display: inline-flex; align-items: center; gap: 8px; }
 .sqg-quote-pill {
   font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
   background: var(--surface-sunken); padding: 4px 9px; border-radius: 999px;

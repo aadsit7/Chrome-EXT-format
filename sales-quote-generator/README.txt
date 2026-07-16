@@ -59,6 +59,13 @@ USING THE TOOL
   inside Lightning renders in iframes; the extraction runs in every
   frame and the results are merged. Any other (non-Salesforce) website
   falls back to the generic rule-based detection described above.
+- The "New quote" button (the page-with-a-plus icon in the header, next
+  to the gear) starts a fresh quote: it clears every field and resets
+  the calculator to its defaults with a new quote number. Because this
+  can't be undone, it asks for confirmation first — "Start a new
+  quote?" with Cancel / New quote — so the current quote is never wiped
+  by an accidental tap. Confirming also updates the saved quote in this
+  browser (localStorage), same as any other edit.
 - The gear icon in the header switches between the quote calculator
   and the pricing settings screen. Opening settings requires a
   password — the default is 2026. Change it any time from the
