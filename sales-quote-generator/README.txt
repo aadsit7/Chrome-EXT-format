@@ -81,18 +81,26 @@ USING THE TOOL
   turns red and starts listening; say the details in plain language — for
   example, "The customer is Acme Corporation, contact Jane Doe, email
   jane at acme dot com, they want two thousand endpoints of Right Click
-  Tools on a two-year term." The words appear live as you speak. Tap the
-  button again to stop, and the transcript is run through the SAME
-  advanced AI analysis as "Analyze this page": it figures out which field
-  each spoken value belongs to (customer, billing contact, email,
-  reseller / partner, bill-to and ship-to addresses, quote expiration,
-  currency, subscription term, and catalog products with quantities) and
-  shows them in the same review card. As always, nothing is written until
-  you press Apply, and a detected reseller only fills the partner fields
-  with a note (it never flips Partner pricing). Speech is transcribed by
-  the browser's built-in Web Speech API using the standard microphone
-  permission prompt — allow mic access the first time. If your browser
-  has no speech support the microphone button simply doesn't appear.
+  Tools on a two-year term." A "Listening…" indicator and the words
+  appear live as you speak. Tap the button again (or stop talking) to
+  finish — nothing is sent yet. Instead the transcript is shown in an
+  editable box titled "Here's what I heard — fix anything, then fill", so
+  you can correct a misheard product name or number before it's parsed.
+  Only when you press "Fill from this" is the (possibly edited) text run
+  through the SAME advanced AI analysis as "Analyze this page": it figures
+  out which field each spoken value belongs to (customer, billing contact,
+  email, reseller / partner, bill-to and ship-to addresses, quote
+  expiration, currency, subscription term, and catalog products with
+  quantities) and shows them in the same review card — so you get two
+  chances to catch a mistake: the transcript edit and the card preview.
+  As always, nothing is written until you press Apply, and a detected
+  reseller only fills the partner fields with a note (it never flips
+  Partner pricing). If the mic is blocked or nothing is heard you get a
+  short message and the button resets — it's never left stuck listening.
+  Speech is transcribed by the browser's built-in Web Speech API using
+  the standard microphone permission prompt — allow mic access the first
+  time. If your browser has no speech support the microphone button
+  simply doesn't appear.
 - The "New quote" button (the page-with-a-plus icon in the header, next
   to the gear) starts a fresh quote: it clears every field and resets
   the calculator to its defaults with a new quote number. Because this

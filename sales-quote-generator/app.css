@@ -506,11 +506,36 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
   background: #dc2626; animation: sqg-mic-pulse 1.4s ease-out infinite;
 }
 .sqg-voice-text { font-size: 13px; color: var(--text-secondary); line-height: 1.4; word-break: break-word; }
+.sqg-voice-live-texts { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sqg-voice-live-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: #dc2626;
+}
 .sqg-voice-heard {
   margin: 0 0 10px; padding: 9px 12px; border-radius: 10px;
   background: var(--surface-accent-soft); color: var(--text-strong);
   font-size: 12.5px; font-style: italic; line-height: 1.4;
 }
+
+/* Editable "here's what I heard" confirmation box (shown after listening stops) */
+.sqg-voice-review {
+  display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  border: 1px solid var(--border-default); border-radius: 12px; background: var(--surface-card);
+  box-shadow: var(--shadow-sm);
+}
+.sqg-voice-review-title {
+  font-size: 13px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-strong);
+}
+.sqg-voice-review-ta {
+  width: 100%; box-sizing: border-box; min-height: 72px; resize: vertical;
+  padding: 10px 12px; border: 1px solid var(--border-default); border-radius: 10px;
+  background: var(--surface-card); color: var(--text-primary);
+  font: inherit; font-size: 14px; line-height: 1.45;
+}
+.sqg-voice-review-ta:focus { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+.sqg-voice-review-note { margin: 0; font-size: 11.5px; color: var(--text-tertiary); line-height: 1.4; }
+.sqg-voice-review-actions { display: flex; gap: 10px; margin-top: 2px; }
+.sqg-voice-review-actions .ds-btn { flex: 1; }
 
 /* ---- Settings password gate ---- */
 .sqg-pw-modal {
