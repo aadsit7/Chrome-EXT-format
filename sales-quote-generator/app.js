@@ -57,7 +57,7 @@ function defaultQuote() {
 
 /* ---------------- State ---------------- */
 
-const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, billingOpen: false };
+const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, newQuotePrompt: false, billingOpen: false };
 let toastTimer = null;
 
 try {
@@ -247,10 +247,11 @@ const SVG_SETTINGS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none
 const SVG_X_MD = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
 const SVG_X_SM = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
 const SVG_CHEVRON_UP = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>';
+const SVG_FILE_PLUS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>';
 
 function iconButton(name, size, onClick, ariaLabel) {
-  const btn = h('button', { class: 'ds-iconbtn ds-iconbtn-' + size, type: 'button', 'aria-label': ariaLabel, onClick });
-  btn.innerHTML = name === 'settings' ? SVG_SETTINGS : (size === 'sm' ? SVG_X_SM : SVG_X_MD);
+  const btn = h('button', { class: 'ds-iconbtn ds-iconbtn-' + size, type: 'button', 'aria-label': ariaLabel, title: ariaLabel, onClick });
+  btn.innerHTML = name === 'settings' ? SVG_SETTINGS : name === 'newquote' ? SVG_FILE_PLUS : (size === 'sm' ? SVG_X_SM : SVG_X_MD);
   return btn;
 }
 
@@ -310,6 +311,9 @@ function render() {
   document.getElementById('quote-number').textContent = q.number;
   const iconSlot = document.getElementById('header-icon-slot');
   iconSlot.textContent = '';
+  if (view === 'calc') {
+    iconSlot.append(iconButton('newquote', 'md', () => { state.newQuotePrompt = true; render(); }, 'Start a new quote'));
+  }
   iconSlot.append(iconButton(
     view === 'calc' ? 'settings' : 'x', 'md',
     () => {
@@ -364,6 +368,7 @@ function renderCalc() {
     frag.append(h('div', { class: 'sqg-toast sqg-toast-' + (state.toastTone === 'warn' ? 'warn' : 'ok'), role: 'status' }, state.toast));
   }
   if (state.pwPrompt) frag.append(buildPasswordModal());
+  if (state.newQuotePrompt) frag.append(buildNewQuoteModal());
   return frag;
 }
 
@@ -403,6 +408,35 @@ function buildPasswordModal() {
   const modal = h('div', { class: 'sqg-pw-modal', onClick: close }, card);
   setTimeout(() => { try { input.focus(); } catch (e) {} }, 0);
   return modal;
+}
+
+/* ---- New quote: reset every field to a fresh, empty quote ---- */
+function newQuote() {
+  state.quote = defaultQuote(); // fresh number + cleared fields, exactly like first launch
+  state.newQuotePrompt = false;
+  state.sheet = false;
+  state.addMenu = false;
+  state.analyze = null;
+  state.billingOpen = false;
+  persist(); // clears the saved quote in localStorage the same way a manual edit would
+  render();
+  flash('Started a new quote — all fields cleared', 'ok');
+}
+
+function buildNewQuoteModal() {
+  const close = () => { state.newQuotePrompt = false; render(); };
+  const card = h('div', {
+    class: 'sqg-pw-card', role: 'dialog', 'aria-label': 'Start a new quote',
+    onClick: (e) => e.stopPropagation(),
+  },
+    h('h2', null, 'Start a new quote?'),
+    h('p', null, 'This clears the current quote and resets every field. It can’t be undone.'),
+    h('div', { class: 'sqg-pw-actions' },
+      dsButton('Cancel', 'secondary', 'md', false, close),
+      dsButton('New quote', 'primary', 'md', false, newQuote)
+    )
+  );
+  return h('div', { class: 'sqg-pw-modal', onClick: close }, card);
 }
 
 /* Live update of the dock + sheet while a slider is dragged (no full re-render) */
