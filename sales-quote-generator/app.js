@@ -1,7 +1,9 @@
 'use strict';
 
 /* Sales Quote Generator — vanilla JS port of the original design-tool component.
-   All pricing math (graduated tiers, computeLine, model) is kept identical. */
+   All pricing math (graduated tiers, computeLine, model) is kept identical.
+   v2: redesigned as a single-column side-panel experience — the running quote
+   lives in a bottom dock with an expandable details sheet. */
 
 const KEY = 'sqg-v2';
 const PARTNER_FEATURE = true; // original prop partnerPricing, default true
@@ -52,7 +54,7 @@ function defaultQuote() {
 
 /* ---------------- State ---------------- */
 
-const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false };
+const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false };
 let toastTimer = null;
 
 try {
@@ -241,6 +243,7 @@ function h(tag, attrs, ...kids) {
 const SVG_SETTINGS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
 const SVG_X_MD = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
 const SVG_X_SM = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+const SVG_CHEVRON_UP = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>';
 
 function iconButton(name, size, onClick, ariaLabel) {
   const btn = h('button', { class: 'ds-iconbtn ds-iconbtn-' + size, type: 'button', 'aria-label': ariaLabel, onClick });
@@ -317,7 +320,7 @@ function render() {
   }
 }
 
-/* Shared view computation used by the calculator main column and the sidebar */
+/* Shared view computation used by the calculator main column and the quote dock/sheet */
 function computeView() {
   const cfg = state.cfg, q = state.quote;
   const r = cfg.rules;
@@ -338,29 +341,36 @@ function computeView() {
 
 function renderCalc() {
   const v = computeView();
+  const frag = document.createDocumentFragment();
   const main = h('main', { class: 'sqg-main' });
-  const left = h('div', { style: 'display: flex; flex-direction: column; gap: 18px; min-width: 0;' });
-  left.append(sectionDeal(v), sectionSelling(v), sectionDiscounts(v), sectionWho(v));
-  main.append(left, buildAside(v));
-  return main;
+  main.append(sectionDeal(v), sectionSelling(v), sectionDiscounts(v), sectionWho(v));
+  frag.append(main, buildDock(v), buildSheet(v));
+  if (state.toast) {
+    frag.append(h('div', { class: 'sqg-toast sqg-toast-' + (state.toastTone === 'warn' ? 'warn' : 'ok'), role: 'status' }, state.toast));
+  }
+  return frag;
 }
 
+/* Live update of the dock + sheet while a slider is dragged (no full re-render) */
 function rerenderAside() {
-  const old = document.getElementById('sqg-aside');
-  if (old) old.replaceWith(buildAside(computeView()));
+  const v = computeView();
+  const oldDock = document.getElementById('sqg-dock');
+  if (oldDock) oldDock.replaceWith(buildDock(v));
+  const oldSheet = document.getElementById('sqg-sheet-wrap');
+  if (oldSheet) oldSheet.replaceWith(buildSheet(v));
 }
 
 /* ---- Section: What kind of deal? ---- */
 function sectionDeal(v) {
   const { cfg, q, m, prorated, years, months, coTermMo, termsSorted, isRen } = v;
-  const col = h('div', { style: 'display: flex; flex-direction: column; gap: 14px;' });
+  const col = h('div', { class: 'sqg-col' });
 
   // Customer type
   const custSegs = [
     { label: 'Net new customer', active: !m.isCurrent, onPick: () => setQ({ customerType: 'new' }) },
     { label: 'Current customer', active: m.isCurrent, onPick: () => setQ({ customerType: 'current' }) },
   ];
-  col.append(h('div', { style: 'display: flex; flex-direction: column; gap: 6px;' },
+  col.append(h('div', { class: 'sqg-field' },
     h('span', { class: 'sqg-field-label' }, 'Customer type'),
     h('div', { class: 'sqg-seg-wrap' }, custSegs.map((s) => segButton(s)))
   ));
@@ -372,24 +382,24 @@ function sectionDeal(v) {
       { label: 'Renewal', active: isRen, onPick: () => setQ({ dealType: 'ren' }) },
       { label: 'Add-on + renewal', active: m.addonRenew, onPick: () => setQ({ dealType: 'addonren' }) },
     ];
-    col.append(h('div', { style: 'display: flex; flex-direction: column; gap: 6px;' },
+    col.append(h('div', { class: 'sqg-field' },
       h('span', { class: 'sqg-field-label' }, 'Deal type'),
-      h('div', { class: 'sqg-seg-wrap' }, dealSegs.map((s) => segButton(s, '13.5px')))
+      h('div', { class: 'sqg-seg-wrap' }, dealSegs.map((s) => segButton(s, '12px')))
     ));
   }
 
   // Co-term date
   if (m.needsDate) {
-    col.append(h('div', { style: 'display: flex; flex-direction: column; gap: 6px;' },
+    col.append(h('div', { class: 'sqg-field' },
       h('span', { class: 'sqg-field-label' }, "Customer's renewal date"),
-      h('div', { style: 'display: flex; align-items: center; gap: 12px; flex-wrap: wrap;' },
+      h('div', { style: 'display: flex; align-items: center; gap: 10px; flex-wrap: wrap;' },
         h('input', {
           class: 'sqg-in', type: 'date', value: q.coTermDate, dataK: 'coterm',
           onChange: (e) => setQ({ coTermDate: e.target.value }),
           style: 'height: 40px; padding: 0 12px; font: inherit; font-size: 14px; color: var(--text-primary); ' + IN_BASE,
         }),
         h('span', {
-          style: 'display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; background: var(--surface-accent-soft); color: var(--text-accent); font-size: 12.5px; font-weight: 600;',
+          style: 'display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; background: var(--surface-accent-soft); color: var(--text-accent); font-size: 12px; font-weight: 600;',
         }, m.addonValid ? coTermMo.toFixed(1) + ' months · ' + Math.round(m.stubYears * 100) + '% of annual' : 'Pick a future date')
       )
     ));
@@ -397,7 +407,7 @@ function sectionDeal(v) {
 
   // Term picker
   if (!m.isCoterm) {
-    const inner = h('div', { style: 'display: flex; flex-direction: column; gap: 6px;' },
+    const inner = h('div', { class: 'sqg-field' },
       h('span', { class: 'sqg-field-label' }, m.addonRenew ? 'Renewal term' : 'Term'));
     if (!prorated) {
       const termSegs = termsSorted.map((t) => ({
@@ -419,8 +429,8 @@ function sectionDeal(v) {
         },
         onChange: (e) => setQ({ months: parseInt(e.target.value, 10) || 12 }),
       });
-      inner.append(h('div', { style: 'display: flex; flex-direction: column; gap: 6px;' },
-        h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Contract length ', label),
+      inner.append(h('div', { class: 'sqg-field' },
+        h('span', { style: 'font-size: 13px; font-weight: 600;' }, 'Contract length ', label),
         slider
       ));
     }
@@ -437,38 +447,40 @@ function sectionDeal(v) {
       : isRen
         ? 'Enter the products and current pricing below — add a yearly increase if needed'
         : m.termPct > 0 ? Math.floor(m.effYears) + '-year term applies a ' + m.termPct + '% discount' : 'Billed once per year · annual price × term = total contract value';
-  col.append(h('p', { style: 'margin: 0; font-size: 12.5px; color: var(--text-secondary);' }, termHint));
+  col.append(h('p', { class: 'sqg-hint' }, termHint));
 
   // Current products — renewing (add-on + renewal)
   if (m.addonRenew) {
-    const wrap = h('div', { style: 'display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--border-subtle); padding-top: 14px;' },
-      h('div', null,
-        h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Current products — renewing'),
-        h('p', { style: 'margin: 2px 0 0; font-size: 12.5px; color: var(--text-secondary);' },
+    const wrap = h('div', { style: 'display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--border-subtle); padding-top: 14px;' },
+      h('div', { style: 'padding-bottom: 4px;' },
+        h('span', { style: 'font-size: 13px; font-weight: 600;' }, 'Current products — renewing'),
+        h('p', { class: 'sqg-subhead' },
           'Carried at the price the customer pays today · volume pricing and discounts apply only to new products')
       )
     );
     for (const ex of (q.existing || [])) {
-      wrap.append(h('div', { style: 'display: grid; grid-template-columns: minmax(0,1fr) 170px 28px; gap: 10px; align-items: center;' },
-        h('select', {
-          class: 'sqg-sel', value: ex.productId, dataK: 'ex-prod-' + ex.id,
-          onChange: (e) => setQ({ existing: q.existing.map((x) => x.id === ex.id ? Object.assign({}, x, { productId: e.target.value }) : x) }),
-          style: 'height: 38px; padding: 0 10px; font: inherit; font-size: 14px; color: var(--text-primary); ' + IN_BASE,
-        }, existOptions(cfg)),
-        h('div', { style: 'display: flex; align-items: center; gap: 6px;' },
-          h('span', { style: 'color: var(--text-tertiary); font-size: 14px;' }, '$'),
-          h('input', {
-            class: 'sqg-in', type: 'number', min: 0, step: 100, value: ex.price, dataK: 'ex-price-' + ex.id,
-            onChange: (e) => setQ({ existing: q.existing.map((x) => x.id === ex.id ? Object.assign({}, x, { price: Math.max(0, parseFloat(e.target.value) || 0) }) : x) }),
-            style: 'height: 38px; padding: 0 10px; font-family: var(--font-mono); font-size: 13.5px; color: var(--text-primary); width: 100%; text-align: right; ' + IN_BASE,
-          }),
-          h('span', { style: 'color: var(--text-tertiary); font-size: 12px; white-space: nowrap;' }, '/yr')
+      wrap.append(h('div', { class: 'sqg-stack-row' },
+        h('div', { class: 'sqg-stack-head' },
+          h('select', {
+            class: 'sqg-sel', value: ex.productId, dataK: 'ex-prod-' + ex.id,
+            onChange: (e) => setQ({ existing: q.existing.map((x) => x.id === ex.id ? Object.assign({}, x, { productId: e.target.value }) : x) }),
+            style: 'height: 38px; padding: 0 10px; font: inherit; font-size: 13.5px; color: var(--text-primary); flex: 1; min-width: 0; ' + IN_BASE,
+          }, existOptions(cfg)),
+          iconButton('x', 'sm', () => setQ({ existing: q.existing.filter((x) => x.id !== ex.id) }), 'Remove current product')
         ),
-        iconButton('x', 'sm', () => setQ({ existing: q.existing.filter((x) => x.id !== ex.id) }), 'Remove current product')
+        h('div', { class: 'sqg-money', style: 'max-width: 210px;' },
+          h('span', { class: 'sqg-prefix' }, '$'),
+          h('input', {
+            class: 'sqg-in', type: 'number', min: 0, step: 100, value: ex.price, dataK: 'ex-price-' + ex.id, 'aria-label': 'Current amount per year',
+            onChange: (e) => setQ({ existing: q.existing.map((x) => x.id === ex.id ? Object.assign({}, x, { price: Math.max(0, parseFloat(e.target.value) || 0) }) : x) }),
+            style: 'height: 38px; padding: 0 10px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); text-align: right; ' + IN_BASE,
+          }),
+          h('span', { class: 'sqg-suffix' }, '/yr')
+        )
       ));
     }
     wrap.append(h('button', {
-      class: 'sqg-dashed-btn', type: 'button', style: 'align-self: flex-start;',
+      class: 'sqg-dashed-btn', type: 'button', style: 'align-self: flex-start; margin-top: 8px;',
       onClick: () => setQ({ existing: (q.existing || []).concat([{ id: uid(), productId: (cfg.products[0] || {}).id, price: 0 }]) }),
     }, '+ Add current product'));
     col.append(wrap);
@@ -488,7 +500,7 @@ function sectionSelling(v) {
   const section = h('section', { class: 'sqg-card' },
     h('div', { style: 'margin-bottom: 6px;' },
       h('h2', null, 'What are you selling?'),
-      h('p', { style: 'margin: 3px 0 0; font-size: 13.5px; color: var(--text-secondary);' },
+      h('p', { class: 'sqg-subhead' },
         m.isRenOnly
           ? 'Enter what the customer pays today — the increase and any discounts are applied for the renewal'
           : 'Volume pricing applies automatically as quantities grow')
@@ -515,33 +527,33 @@ function sectionSelling(v) {
         if (c.isUser) n = Math.max(r.minUsers, n || r.minUsers);
         setQ({ lines: q.lines.map((l) => l.id === ln.id ? Object.assign({}, l, { qty: n || 1 }) : l) });
       };
-      list.append(h('div', { style: 'display: grid; grid-template-columns: minmax(0,1fr) auto auto 28px; gap: 14px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border-subtle);' },
-        h('div', { style: 'display: flex; align-items: center; gap: 12px; min-width: 0;' },
-          h('span', { style: 'width: 38px; height: 38px; border-radius: 11px; background: var(--surface-accent-soft); color: var(--text-accent); display: inline-flex; align-items: center; justify-content: center; font-size: 12.5px; font-weight: 700; flex-shrink: 0;' }, initialsOf(c.prod.name)),
-          h('div', { style: 'display: flex; flex-direction: column; gap: 1px; min-width: 0;' },
-            h('span', { style: 'font-size: 14.5px; font-weight: 600; color: var(--text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;' }, c.prod.name),
-            h('span', { style: 'font-size: 12px; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;' }, bits.join(' · '))
+      list.append(h('div', { class: 'sqg-line' },
+        h('div', { class: 'sqg-line-top' },
+          h('span', { class: 'sqg-avatar' }, initialsOf(c.prod.name)),
+          h('div', { class: 'sqg-line-names' },
+            h('span', { class: 'sqg-line-name' }, c.prod.name),
+            h('span', { class: 'sqg-line-meta' }, bits.join(' · '))
+          ),
+          h('div', { class: 'sqg-line-price' },
+            h('span', { class: 'sqg-line-amt' }, fmt(c.msrp)),
+            h('span', { class: 'sqg-line-per' }, 'per year')
           )
         ),
-        h('div', { style: 'display: flex; flex-direction: column; align-items: center; gap: 2px;' },
-          h('div', { style: 'display: flex; align-items: center; gap: 4px;' },
+        h('div', { class: 'sqg-line-controls' },
+          h('div', { class: 'sqg-stepper' },
             h('button', { class: 'sqg-qty-btn', type: 'button', 'aria-label': 'Decrease quantity', onClick: () => setQty(c.units - bumpStep(c.isUser, c.units)) }, '−'),
             h('input', {
               class: 'sqg-in', type: 'text', inputmode: 'numeric', value: ln.qty, dataK: 'qty-' + ln.id, 'aria-label': 'Quantity',
               onChange: (e) => setQty(e.target.value),
-              style: 'height: 34px; width: 64px; padding: 0 6px; border-radius: 9px; font-family: var(--font-mono); font-size: 13.5px; color: var(--text-primary); text-align: center; ' + IN_BASE,
+              style: 'height: 34px; width: 72px; padding: 0 6px; border-radius: 9px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); text-align: center; ' + IN_BASE,
             }),
-            h('button', { class: 'sqg-qty-btn', type: 'button', 'aria-label': 'Increase quantity', style: 'font-size: 15px;', onClick: () => setQty(c.units + bumpStep(c.isUser, c.units)) }, '+')
+            h('button', { class: 'sqg-qty-btn', type: 'button', 'aria-label': 'Increase quantity', style: 'font-size: 15px;', onClick: () => setQty(c.units + bumpStep(c.isUser, c.units)) }, '+'),
+            h('span', { class: 'sqg-stepper-unit' }, c.isUser ? 'users' : 'endpoints')
           ),
-          h('span', { style: 'font-size: 11px; color: var(--text-tertiary);' }, c.isUser ? 'users' : 'endpoints')
-        ),
-        h('div', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 0; min-width: 96px;' },
-          h('span', { style: 'font-family: var(--font-mono); font-size: 15px; font-weight: 600; color: var(--text-strong); font-variant-numeric: tabular-nums;' }, fmt(c.msrp)),
-          h('span', { style: 'font-size: 11px; color: var(--text-tertiary);' }, 'per year')
-        ),
-        q.lines.length > 1
-          ? iconButton('x', 'sm', () => setQ({ lines: q.lines.filter((l) => l.id !== ln.id) }), 'Remove product')
-          : h('span')
+          q.lines.length > 1
+            ? iconButton('x', 'sm', () => setQ({ lines: q.lines.filter((l) => l.id !== ln.id) }), 'Remove product')
+            : h('span')
+        )
       ));
     }
     section.append(list);
@@ -555,7 +567,7 @@ function sectionSelling(v) {
       if (state.addMenu) {
         holder.append(
           h('div', { style: 'position: fixed; inset: 0; z-index: 30;', onClick: () => { state.addMenu = false; render(); } }),
-          h('div', { style: 'position: absolute; left: 0; top: calc(100% + 6px); z-index: 31; background: var(--surface-card); border: 1px solid var(--border-subtle); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 6px; min-width: 280px; display: flex; flex-direction: column; gap: 1px;' },
+          h('div', { class: 'sqg-menu' },
             addPills.map((p) => h('button', {
               class: 'sqg-menu-item', type: 'button',
               onClick: () => {
@@ -574,56 +586,58 @@ function sectionSelling(v) {
 
     // Bundle banner
     if (m.bundleOn) {
-      section.append(h('div', { style: 'margin-top: 14px; padding: 10px 14px; background: var(--success-soft); color: var(--green-600); border-radius: 12px; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px;' },
+      section.append(h('div', { class: 'sqg-banner' },
         h('span', { style: 'font-weight: 700;' }, '✓'),
         'RCT bundle applied — ' + r.bundlePct + '% off endpoint products'));
     }
 
     // Premium support toggle
     if (m.lines.some((x) => !x.c.isUser)) {
-      section.append(h('div', { style: 'margin-top: 14px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; background: var(--surface-sunken); border-radius: 12px;' },
-        h('div', { style: 'display: flex; flex-direction: column; gap: 1px;' },
-          h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Premium support'),
-          h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, 'Adds ' + r.suppPct + '% per endpoint product, min ' + fmt(r.suppMin) + '/yr')
+      section.append(h('div', { class: 'sqg-toggle-row', style: 'margin-top: 12px;' },
+        h('div', { class: 'sqg-toggle-titles' },
+          h('span', { class: 'sqg-toggle-title' }, 'Premium support'),
+          h('span', { class: 'sqg-toggle-desc' }, 'Adds ' + r.suppPct + '% per endpoint product, min ' + fmt(r.suppMin) + '/yr')
         ),
         switchEl(!!q.supportAll, (e) => setQ({ supportAll: e.target.checked }))
       ));
     }
   } else {
     // Renewal-only rows
-    section.append(h('div', { style: 'display: grid; grid-template-columns: minmax(0,1fr) 96px 170px 28px; gap: 12px; align-items: center; padding: 10px 4px 8px; border-bottom: 1px solid var(--border-subtle); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-tertiary);' },
-      h('span', null, 'Product'), h('span', { style: 'text-align: right;' }, 'Quantity'), h('span', { style: 'text-align: right;' }, 'Amount / yr'), h('span')));
     for (const rl of (q.renewLines || [])) {
       const p = cfg.products.find((x) => x.id === rl.productId) || cfg.products[0] || { name: '?', unit: 'endpoint' };
-      section.append(h('div', { style: 'display: grid; grid-template-columns: minmax(0,1fr) 96px 170px 28px; gap: 12px; align-items: center; padding: 12px 4px; border-bottom: 1px solid var(--border-subtle);' },
-        h('div', { style: 'display: flex; align-items: center; gap: 10px; min-width: 0;' },
-          h('span', { style: 'width: 34px; height: 34px; border-radius: 10px; background: var(--surface-accent-soft); color: var(--text-accent); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0;' }, initialsOf(p.name)),
+      section.append(h('div', { class: 'sqg-stack-row' },
+        h('div', { class: 'sqg-stack-head' },
+          h('span', { class: 'sqg-avatar', style: 'width: 34px; height: 34px;' }, initialsOf(p.name)),
           h('select', {
             class: 'sqg-sel', value: rl.productId, dataK: 'rl-prod-' + rl.id,
             onChange: (e) => setQ({ renewLines: q.renewLines.map((x) => x.id === rl.id ? Object.assign({}, x, { productId: e.target.value }) : x) }),
-            style: 'height: 38px; padding: 0 10px; font: inherit; font-size: 14px; font-weight: 500; color: var(--text-primary); width: 100%; ' + IN_BASE,
-          }, existOptions(cfg))
+            style: 'height: 38px; padding: 0 10px; font: inherit; font-size: 13.5px; font-weight: 500; color: var(--text-primary); flex: 1; min-width: 0; ' + IN_BASE,
+          }, existOptions(cfg)),
+          (q.renewLines || []).length > 1
+            ? iconButton('x', 'sm', () => setQ({ renewLines: q.renewLines.filter((x) => x.id !== rl.id) }), 'Remove product')
+            : null
         ),
-        h('div', { style: 'display: flex; flex-direction: column; gap: 2px;' },
-          h('input', {
-            class: 'sqg-in', type: 'text', inputmode: 'numeric', value: rl.qty, dataK: 'rl-qty-' + rl.id, 'aria-label': 'Quantity',
-            onChange: (e) => setQ({ renewLines: q.renewLines.map((x) => x.id === rl.id ? Object.assign({}, x, { qty: int(e.target.value) }) : x) }),
-            style: 'height: 38px; padding: 0 8px; font-family: var(--font-mono); font-size: 13.5px; color: var(--text-primary); text-align: right; width: 100%; ' + IN_BASE,
-          }),
-          h('span', { style: 'font-size: 11px; color: var(--text-tertiary); text-align: right; padding-right: 2px;' }, p.unit === 'user' ? 'users' : 'endpoints')
-        ),
-        h('div', { style: 'display: flex; align-items: center; gap: 6px;' },
-          h('span', { style: 'color: var(--text-tertiary); font-size: 14px;' }, '$'),
-          h('input', {
-            class: 'sqg-in', type: 'number', min: 0, step: 100, value: rl.price, dataK: 'rl-price-' + rl.id, 'aria-label': 'Current amount per year',
-            onChange: (e) => setQ({ renewLines: q.renewLines.map((x) => x.id === rl.id ? Object.assign({}, x, { price: Math.max(0, parseFloat(e.target.value) || 0) }) : x) }),
-            style: 'height: 38px; padding: 0 10px; font-family: var(--font-mono); font-size: 13.5px; color: var(--text-primary); width: 100%; text-align: right; ' + IN_BASE,
-          }),
-          h('span', { style: 'color: var(--text-tertiary); font-size: 12px; white-space: nowrap;' }, '/yr')
-        ),
-        (q.renewLines || []).length > 1
-          ? iconButton('x', 'sm', () => setQ({ renewLines: q.renewLines.filter((x) => x.id !== rl.id) }), 'Remove product')
-          : h('span')
+        h('div', { class: 'sqg-stack-fields' },
+          h('div', { class: 'sqg-cell' },
+            h('span', { class: 'sqg-mini-label' }, p.unit === 'user' ? 'Users' : 'Endpoints'),
+            h('input', {
+              class: 'sqg-in', type: 'text', inputmode: 'numeric', value: rl.qty, dataK: 'rl-qty-' + rl.id, 'aria-label': 'Quantity',
+              onChange: (e) => setQ({ renewLines: q.renewLines.map((x) => x.id === rl.id ? Object.assign({}, x, { qty: int(e.target.value) }) : x) }),
+              style: 'height: 38px; padding: 0 8px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); text-align: right; width: 100%; ' + IN_BASE,
+            })
+          ),
+          h('div', { class: 'sqg-cell' },
+            h('span', { class: 'sqg-mini-label' }, 'Amount / yr'),
+            h('div', { class: 'sqg-money' },
+              h('span', { class: 'sqg-prefix' }, '$'),
+              h('input', {
+                class: 'sqg-in', type: 'number', min: 0, step: 100, value: rl.price, dataK: 'rl-price-' + rl.id, 'aria-label': 'Current amount per year',
+                onChange: (e) => setQ({ renewLines: q.renewLines.map((x) => x.id === rl.id ? Object.assign({}, x, { price: Math.max(0, parseFloat(e.target.value) || 0) }) : x) }),
+                style: 'height: 38px; padding: 0 10px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); width: 100%; text-align: right; ' + IN_BASE,
+              })
+            )
+          )
+        )
       ));
     }
     section.append(h('div', { style: 'padding-top: 14px;' },
@@ -633,13 +647,13 @@ function sectionSelling(v) {
       }, '+ Add product')));
 
     // Annual cost increase (uplift)
-    const upliftDesc = h('span', { id: 'uplift-desc', style: 'font-size: 12.5px; color: var(--text-secondary);' },
+    const upliftDesc = h('span', { id: 'uplift-desc', class: 'sqg-toggle-desc' },
       q.uplift ? '+' + (+q.upliftPct || 0) + '% each year of the term, compounding' : 'Include a yearly price increase in the renewal');
-    const upliftRight = h('div', { style: 'display: flex; align-items: center; gap: 16px;' });
+    const upliftRight = h('div', { style: 'display: flex; align-items: center; gap: 14px; flex: 1 1 100%; justify-content: flex-end;' });
     if (q.uplift) {
       const pctLabel = h('span', { id: 'uplift-label', style: 'font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-accent);' },
         (q.uplift ? (+q.upliftPct || 0) : 0) + '%');
-      upliftRight.append(h('div', { style: 'display: flex; flex-direction: column; gap: 2px; width: 190px;' },
+      upliftRight.append(h('div', { style: 'display: flex; flex-direction: column; gap: 2px; flex: 1; max-width: 220px;' },
         h('input', {
           type: 'range', min: 0, max: 10, step: 0.5, value: q.upliftPct, style: 'width: 100%;',
           onInput: (e) => {
@@ -655,13 +669,14 @@ function sectionSelling(v) {
           h('span', null, '0%'), pctLabel, h('span', null, '10%'))
       ));
     }
-    upliftRight.append(switchEl(!!q.uplift, (e) => setQ({ uplift: e.target.checked })));
-    section.append(h('div', { style: 'margin-top: 14px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; background: var(--surface-sunken); border-radius: 12px; flex-wrap: wrap;' },
-      h('div', { style: 'display: flex; flex-direction: column; gap: 1px; min-width: 180px;' },
-        h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Annual cost increase'),
+    const upliftSwitch = switchEl(!!q.uplift, (e) => setQ({ uplift: e.target.checked }));
+    section.append(h('div', { class: 'sqg-toggle-row', style: 'margin-top: 14px;' },
+      h('div', { class: 'sqg-toggle-titles' },
+        h('span', { class: 'sqg-toggle-title' }, 'Annual cost increase'),
         upliftDesc
       ),
-      upliftRight
+      upliftSwitch,
+      q.uplift ? upliftRight : null
     ));
   }
 
@@ -675,45 +690,47 @@ function sectionDiscounts(v) {
     h('div', { style: 'margin-bottom: 6px;' }, h('h2', null, 'Any discounts?')));
 
   if (PARTNER_FEATURE) {
-    const right = h('div', { style: 'display: flex; align-items: center; gap: 14px; flex-shrink: 0;' });
+    const partnerRow = h('div', { style: 'display: flex; flex-direction: column; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border-subtle);' },
+      h('div', { style: 'display: flex; align-items: center; justify-content: space-between; gap: 12px;' },
+        h('div', { style: 'display: flex; flex-direction: column; gap: 1px; min-width: 0;' },
+          h('span', { class: 'sqg-toggle-title' }, 'Partner deal'),
+          h('span', { class: 'sqg-toggle-desc' },
+            partnerActive
+              ? m.margin + '% ' + (isRen ? 'renewal' : 'net-new') + ' margin off list applies to this quote'
+              : 'Selling through a reseller? Flip on to set their margin')
+        ),
+        switchEl(!!q.partner, (e) => setQ({ partner: e.target.checked }))
+      ));
     if (q.partner) {
-      right.append(h('div', { style: 'display: flex; align-items: center; gap: 7px;' },
-        h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, isRen ? 'Renewal margin' : 'Net-new margin'),
-        h('input', {
-          class: 'sqg-in', type: 'number', min: 0, max: 100, step: 1,
-          value: isRen ? (q.marginRenPct ?? 15) : (q.marginNewPct ?? 20), dataK: 'margin',
-          onChange: (e) => {
-            const val = Math.min(100, Math.max(0, parseFloat(e.target.value) || 0));
-            setQ(isRen ? { marginRenPct: val } : { marginNewPct: val });
-          },
-          style: 'height: 34px; width: 64px; padding: 0 8px; border-radius: 9px; font-family: var(--font-mono); font-size: 13.5px; color: var(--text-primary); text-align: right; ' + IN_BASE,
-        }),
-        h('span', { style: 'color: var(--text-tertiary); font-size: 13px;' }, '%')
+      partnerRow.append(h('div', { style: 'display: flex; align-items: center; justify-content: space-between; gap: 10px;' },
+        h('span', { class: 'sqg-toggle-desc' }, isRen ? 'Renewal margin' : 'Net-new margin'),
+        h('div', { style: 'display: flex; align-items: center; gap: 7px;' },
+          h('input', {
+            class: 'sqg-in', type: 'number', min: 0, max: 100, step: 1,
+            value: isRen ? (q.marginRenPct ?? 15) : (q.marginNewPct ?? 20), dataK: 'margin',
+            onChange: (e) => {
+              const val = Math.min(100, Math.max(0, parseFloat(e.target.value) || 0));
+              setQ(isRen ? { marginRenPct: val } : { marginNewPct: val });
+            },
+            style: 'height: 34px; width: 72px; padding: 0 8px; border-radius: 9px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); text-align: right; ' + IN_BASE,
+          }),
+          h('span', { style: 'color: var(--text-tertiary); font-size: 13px;' }, '%')
+        )
       ));
     }
-    right.append(switchEl(!!q.partner, (e) => setQ({ partner: e.target.checked })));
-    section.append(h('div', { style: 'display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--border-subtle);' },
-      h('div', { style: 'display: flex; flex-direction: column; gap: 1px;' },
-        h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Partner deal'),
-        h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' },
-          partnerActive
-            ? m.margin + '% ' + (isRen ? 'renewal' : 'net-new') + ' margin off list applies to this quote'
-            : 'Selling through a reseller? Flip on to set their margin')
-      ),
-      right
-    ));
+    section.append(partnerRow);
   }
 
-  section.append(h('div', { style: 'display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0 2px;' },
-    h('div', { style: 'display: flex; flex-direction: column; gap: 1px;' },
-      h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Extra discount'),
-      h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, 'One-off sweetener · stacks after partner margin · up to ' + r.maxExtra + '%')
+  section.append(h('div', { style: 'display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0 2px;' },
+    h('div', { style: 'display: flex; flex-direction: column; gap: 1px; min-width: 0;' },
+      h('span', { class: 'sqg-toggle-title' }, 'Extra discount'),
+      h('span', { class: 'sqg-toggle-desc' }, 'One-off sweetener · stacks after partner margin · up to ' + r.maxExtra + '%')
     ),
     h('div', { style: 'display: flex; align-items: center; gap: 7px; flex-shrink: 0;' },
       h('input', {
         class: 'sqg-in', type: 'number', min: 0, max: r.maxExtra, step: 0.5, value: q.extraPct, dataK: 'extra',
         onChange: (e) => setQ({ extraPct: Math.min(r.maxExtra, Math.max(0, parseFloat(e.target.value) || 0)) }),
-        style: 'height: 34px; width: 64px; padding: 0 8px; border-radius: 9px; font-family: var(--font-mono); font-size: 13.5px; color: var(--text-primary); text-align: right; ' + IN_BASE,
+        style: 'height: 34px; width: 72px; padding: 0 8px; border-radius: 9px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); text-align: right; ' + IN_BASE,
       }),
       h('span', { style: 'color: var(--text-tertiary); font-size: 13px;' }, '%')
     )
@@ -727,7 +744,7 @@ function sectionWho(v) {
   const { q, partnerActive } = v;
   const head = h('div', { style: 'margin-bottom: 14px;' }, h('h2', null, "Who's it for?"));
   if (partnerActive) {
-    head.append(h('p', { style: 'margin: 3px 0 0; font-size: 13.5px; color: var(--text-secondary);' },
+    head.append(h('p', { class: 'sqg-subhead' },
       'Partner deal — the partner is billed, the customer receives the licenses'));
   }
   const section = h('section', { class: 'sqg-card' }, head);
@@ -745,24 +762,24 @@ function sectionWho(v) {
     section.append(h('div', { style: 'display: flex; flex-direction: column; gap: 16px;' },
       h('div', { style: 'display: flex; flex-direction: column; gap: 10px;' },
         h('span', { style: 'font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-accent);' }, 'Bill to · Partner'),
-        h('div', { style: 'display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px;' },
+        h('div', { class: 'sqg-form-grid' },
           labeledInput('Partner company', { placeholder: 'Reseller Inc.', value: q.partnerCompany, dataK: 'partnerCompany', onChange: (e) => setQ({ partnerCompany: e.target.value }) }),
           labeledInput('Partner email', { type: 'email', placeholder: 'orders@reseller.com', value: q.partnerEmail, dataK: 'partnerEmail', onChange: (e) => setQ({ partnerEmail: e.target.value }) })
         )
       ),
       h('div', { style: 'display: flex; flex-direction: column; gap: 10px;' },
         h('span', { style: 'font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-tertiary);' }, 'Ship to · Customer'),
-        h('div', { style: 'display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px;' }, custFields)
+        h('div', { class: 'sqg-form-grid' }, custFields)
       ),
-      h('div', { style: 'display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; border-top: 1px solid var(--border-subtle); padding-top: 16px;' }, metaFields)
+      h('div', { class: 'sqg-form-grid', style: 'border-top: 1px solid var(--border-subtle); padding-top: 16px;' }, metaFields)
     ));
   } else {
-    section.append(h('div', { style: 'display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px;' }, custFields, metaFields));
+    section.append(h('div', { class: 'sqg-form-grid' }, custFields, metaFields));
   }
   return section;
 }
 
-/* ---- Quote data (shared by the sidebar and the PDF export) ---- */
+/* ---- Quote data (shared by the quote sheet and the PDF export) ---- */
 function buildQuoteData(v) {
   const { cfg, q, r, m, coTermMo, termLabel, partnerActive, isRen, totalDiscC } = v;
 
@@ -850,78 +867,10 @@ function buildQuoteData(v) {
   };
 }
 
-/* ---- Sidebar (Your quote) ---- */
-function buildAside(v) {
+/* ---- Create quote (validation identical to original) ---- */
+function makeCreateQuote(v, data) {
   const { q, m, partnerActive } = v;
-  const data = buildQuoteData(v);
-
-  const card = h('section', { style: 'background: var(--surface-card); border-radius: 18px; padding: 24px; box-shadow: var(--shadow-lg);' });
-  card.append(h('div', { style: 'display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px;' },
-    h('h2', { style: 'margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-strong);' }, 'Your quote'),
-    h('span', { style: 'font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary);' }, data.termLabel)));
-
-  // Line items
-  card.append(h('div', { style: 'display: flex; flex-direction: column; margin-bottom: 12px;' },
-    data.items.map((it) => h('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle);' },
-      h('div', { style: 'display: flex; flex-direction: column; gap: 0; min-width: 0;' },
-        h('span', { style: 'font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;' }, it.name),
-        h('span', { style: 'font-size: 11.5px; color: var(--text-tertiary);' }, it.qtyDisp)
-      ),
-      h('span', { style: 'font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; flex-shrink: 0;' }, it.amt)
-    ))));
-
-  // Totals block
-  const totalsEl = h('div', { style: 'display: flex; flex-direction: column; gap: 8px; font-size: 13.5px;' });
-  data.totals.forEach((rowData) => {
-    if (rowData.divider) {
-      totalsEl.append(h('div', { style: 'border-top: 1px solid var(--border-subtle); margin: 2px 0;' }));
-      return;
-    }
-    totalsEl.append(h('div', { style: 'display: flex; justify-content: space-between;' + (rowData.bold ? ' font-weight: 600; font-size: 14px;' : '') },
-      h('span', { style: rowData.bold ? '' : 'color: var(--text-secondary);' }, rowData.label),
-      h('span', { style: 'font-family: var(--font-mono); font-variant-numeric: tabular-nums;' + (rowData.green ? ' color: var(--green-600);' : '') }, rowData.amt)));
-  });
-  card.append(totalsEl);
-
-  // Billing schedule
-  if (data.hasYears) {
-    card.append(h('div', { style: 'margin-top: 12px; padding: 11px 13px; background: var(--surface-sunken); border-radius: 12px; display: flex; flex-direction: column; gap: 6px;' },
-      h('span', { style: 'font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary);' }, 'Billing schedule'),
-      data.schedule.map((y) => h('div', { style: 'display: flex; justify-content: space-between; font-size: 13px;' },
-        h('span', { style: 'color: var(--text-secondary);' }, y.label),
-        h('span', { style: 'font-family: var(--font-mono); font-variant-numeric: tabular-nums;' }, y.amt)))));
-  }
-
-  // TCV box
-  card.append(h('div', { style: 'margin-top: 14px; padding: 16px 18px; background: var(--surface-accent-soft); border-radius: 14px; display: flex; flex-direction: column; gap: 1px;' },
-    h('span', { style: 'font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-accent);' }, data.tcvLabel),
-    h('span', { style: "font-family: var(--font-display); font-weight: 700; font-size: 30px; letter-spacing: -0.02em; color: var(--text-strong); font-variant-numeric: tabular-nums; line-height: 1.15;" }, data.tcv),
-    h('span', { style: 'font-size: 12px; color: var(--text-secondary);' }, data.tcvSub)));
-
-  // Savings banner
-  if (data.savings) {
-    card.append(h('div', { style: 'margin-top: 10px; padding: 9px 13px; background: var(--success-soft); border-radius: 10px; display: flex; justify-content: space-between; align-items: center;' },
-      h('span', { style: 'font-size: 12px; font-weight: 600; color: var(--green-600);' }, 'Customer saves vs list'),
-      h('span', { style: 'font-family: var(--font-mono); font-size: 12.5px; font-weight: 700; color: var(--green-600); font-variant-numeric: tabular-nums;' },
-        '−' + data.savings.amt + ' (' + data.savings.pct + '%)')));
-  }
-
-  // Partner breakdown
-  if (partnerActive) {
-    card.append(h('div', { style: 'margin-top: 10px; padding: 12px 14px; background: var(--surface-sunken); border-radius: 12px; display: flex; flex-direction: column; gap: 7px; font-size: 13px;' },
-      h('div', { style: 'display: flex; justify-content: space-between;' },
-        h('span', { style: 'color: var(--text-secondary);' }, 'List price · TCV'),
-        h('span', { style: 'font-family: var(--font-mono); font-variant-numeric: tabular-nums;' }, fmt(m.msrpTcvC / 100))),
-      h('div', { style: 'display: flex; justify-content: space-between;' },
-        h('span', { style: 'color: var(--text-secondary);' }, 'Partner savings'),
-        h('span', { style: 'color: var(--green-600); font-family: var(--font-mono); font-variant-numeric: tabular-nums;' }, '−' + fmt((m.msrpTcvC - m.tcvC) / 100))),
-      h('div', { style: 'display: flex; justify-content: space-between; font-weight: 600; border-top: 1px solid var(--border-default); padding-top: 7px;' },
-        h('span', null, 'Partner pays'),
-        h('span', { style: 'font-family: var(--font-mono); font-variant-numeric: tabular-nums;' }, fmt(m.tcvC / 100)))));
-  }
-
-  // Create quote
-  const createQuote = () => {
+  return () => {
     if (m.needsDate && !m.addonValid) { flash('Pick the customer’s renewal date (a future date) first', 'warn'); return; }
     if (m.isRenOnly && ((q.renewLines || []).length === 0 || (q.renewLines || []).some((x) => !(+x.price > 0)))) { flash('Enter the amount per year for each renewing product', 'warn'); return; }
     if (partnerActive && !q.partnerCompany.trim()) { flash('Add the partner company (bill to) in “Who’s it for?”', 'warn'); return; }
@@ -929,20 +878,123 @@ function buildAside(v) {
     window.SQG_PDF.downloadQuotePdf(data);
     flash('Quote ' + q.number + ' ready for ' + q.customer + (partnerActive ? ' via ' + q.partnerCompany : '') + ' — PDF downloaded', 'ok');
   };
-  card.append(h('div', { style: 'margin-top: 16px;' }, dsButton('Create quote', 'primary', 'lg', true, createQuote)));
+}
 
-  // Toasts
-  if (state.toast && state.toastTone === 'ok') {
-    card.append(h('div', { style: 'margin-top: 12px; padding: 10px 14px; background: var(--success-soft); color: var(--green-600); border-radius: 12px; font-size: 13px; font-weight: 500;' }, state.toast));
-  }
-  if (state.toast && state.toastTone === 'warn') {
-    card.append(h('div', { style: 'margin-top: 12px; padding: 10px 14px; background: var(--warning-soft); color: var(--amber-600); border-radius: 12px; font-size: 13px; font-weight: 500;' }, state.toast));
+/* ---- Bottom dock: running total + Create quote ---- */
+function buildDock(v) {
+  const data = buildQuoteData(v);
+  const summary = h('button', {
+    class: 'sqg-dock-summary', type: 'button',
+    'aria-expanded': state.sheet ? 'true' : 'false',
+    'aria-label': 'Show quote details',
+    onClick: () => { state.sheet = !state.sheet; render(); },
+  });
+  const label = h('span', { class: 'sqg-dock-label' }, data.tcvLabel + ' ');
+  const chev = h('span', { style: 'display: inline-flex; transition: transform 160ms; transform: rotate(' + (state.sheet ? '180deg' : '0deg') + ');' });
+  chev.innerHTML = SVG_CHEVRON_UP;
+  label.append(chev);
+  summary.append(
+    label,
+    h('span', { class: 'sqg-dock-amt' }, data.tcv),
+    h('span', { class: 'sqg-dock-sub' },
+      data.termLabel,
+      data.savings ? h('span', { class: 'save' }, ' · saves ' + data.savings.amt + ' (' + data.savings.pct + '%)') : null
+    )
+  );
+
+  return h('div', { class: 'sqg-dock', id: 'sqg-dock' },
+    h('div', { class: 'sqg-dock-inner' },
+      summary,
+      dsButton('Create quote', 'primary', 'md', false, makeCreateQuote(v, data))
+    ));
+}
+
+/* ---- Quote details sheet ---- */
+function buildSheet(v) {
+  const wrap = h('div', { id: 'sqg-sheet-wrap' });
+  if (!state.sheet) return wrap;
+
+  const { m, partnerActive } = v;
+  const data = buildQuoteData(v);
+  const close = () => { state.sheet = false; render(); };
+
+  const body = h('div', { class: 'sqg-sheet-body' });
+
+  // Line items
+  body.append(h('div', { style: 'display: flex; flex-direction: column; margin-bottom: 12px;' },
+    data.items.map((it) => h('div', { class: 'sqg-sum-item' },
+      h('div', { style: 'display: flex; flex-direction: column; gap: 0; min-width: 0;' },
+        h('span', { style: 'font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;' }, it.name),
+        h('span', { style: 'font-size: 11.5px; color: var(--text-tertiary);' }, it.qtyDisp)
+      ),
+      h('span', { class: 'sqg-mono', style: 'font-size: 13px; flex-shrink: 0;' }, it.amt)
+    ))));
+
+  // Totals block
+  const totalsEl = h('div', { class: 'sqg-sum-rows' });
+  data.totals.forEach((rowData) => {
+    if (rowData.divider) {
+      totalsEl.append(h('div', { class: 'sqg-sum-divider' }));
+      return;
+    }
+    totalsEl.append(h('div', { class: 'sqg-sum-row', style: rowData.bold ? 'font-weight: 600; font-size: 13.5px;' : '' },
+      h('span', { style: rowData.bold ? '' : 'color: var(--text-secondary);' }, rowData.label),
+      h('span', { class: 'sqg-mono', style: rowData.green ? 'color: var(--green-600);' : '' }, rowData.amt)));
+  });
+  body.append(totalsEl);
+
+  // Billing schedule
+  if (data.hasYears) {
+    body.append(h('div', { class: 'sqg-sum-box' },
+      h('span', { class: 'sqg-sum-box-label' }, 'Billing schedule'),
+      data.schedule.map((y) => h('div', { class: 'sqg-sum-row', style: 'font-size: 12.5px;' },
+        h('span', { style: 'color: var(--text-secondary);' }, y.label),
+        h('span', { class: 'sqg-mono' }, y.amt)))));
   }
 
-  return h('aside', { id: 'sqg-aside', style: 'position: sticky; top: 84px; display: flex; flex-direction: column; gap: 12px;' },
-    card,
-    h('p', { style: 'margin: 0; padding: 0 6px; font-size: 12px; color: var(--text-tertiary); text-wrap: pretty;' },
-      'Estimate only, not a formal quote · USD, billed annually · pricing follows the rates in settings'));
+  // TCV box
+  body.append(h('div', { class: 'sqg-tcv-box' },
+    h('span', { class: 'sqg-tcv-label' }, data.tcvLabel),
+    h('span', { class: 'sqg-tcv-amt' }, data.tcv),
+    h('span', { class: 'sqg-tcv-sub' }, data.tcvSub)));
+
+  // Savings banner
+  if (data.savings) {
+    body.append(h('div', { style: 'margin-top: 10px; padding: 9px 13px; background: var(--success-soft); border-radius: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px;' },
+      h('span', { style: 'font-size: 12px; font-weight: 600; color: var(--green-600);' }, 'Customer saves vs list'),
+      h('span', { class: 'sqg-mono', style: 'font-size: 12px; font-weight: 700; color: var(--green-600);' },
+        '−' + data.savings.amt + ' (' + data.savings.pct + '%)')));
+  }
+
+  // Partner breakdown
+  if (partnerActive) {
+    body.append(h('div', { class: 'sqg-sum-box' },
+      h('div', { class: 'sqg-sum-row', style: 'font-size: 12.5px;' },
+        h('span', { style: 'color: var(--text-secondary);' }, 'List price · TCV'),
+        h('span', { class: 'sqg-mono' }, fmt(m.msrpTcvC / 100))),
+      h('div', { class: 'sqg-sum-row', style: 'font-size: 12.5px;' },
+        h('span', { style: 'color: var(--text-secondary);' }, 'Partner savings'),
+        h('span', { class: 'sqg-mono', style: 'color: var(--green-600);' }, '−' + fmt((m.msrpTcvC - m.tcvC) / 100))),
+      h('div', { class: 'sqg-sum-row', style: 'font-size: 12.5px; font-weight: 600; border-top: 1px solid var(--border-default); padding-top: 7px;' },
+        h('span', null, 'Partner pays'),
+        h('span', { class: 'sqg-mono' }, fmt(m.tcvC / 100)))));
+  }
+
+  body.append(h('p', { style: 'margin: 14px 0 0; font-size: 11.5px; color: var(--text-tertiary); text-wrap: pretty;' },
+    'Estimate only, not a formal quote · USD, billed annually · pricing follows the rates in settings'));
+
+  wrap.append(
+    h('button', { class: 'sqg-scrim', type: 'button', 'aria-label': 'Close quote details', onClick: close }),
+    h('div', { class: 'sqg-sheet', role: 'dialog', 'aria-label': 'Quote details' },
+      h('div', { class: 'sqg-sheet-grab' }),
+      h('div', { class: 'sqg-sheet-head' },
+        h('h2', null, 'Your quote'),
+        h('div', { style: 'display: flex; align-items: center; gap: 10px;' },
+          h('span', { class: 'sqg-sheet-term' }, data.termLabel),
+          iconButton('x', 'sm', close, 'Close quote details'))),
+      body)
+  );
+  return wrap;
 }
 
 /* ---------------- Settings screen ---------------- */
@@ -956,83 +1008,87 @@ function renderSettings() {
 
   const main = h('main', { class: 'sqg-settings-main' });
 
-  main.append(h('div', { style: 'display: flex; flex-direction: column; gap: 2px;' },
-    h('h1', { style: "margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 24px; letter-spacing: -0.02em; color: var(--text-strong);" }, 'Pricing settings'),
-    h('p', { style: 'margin: 0; font-size: 14px; color: var(--text-secondary);' }, 'Changes apply to the calculator immediately and save to this browser.')));
+  main.append(h('div', { style: 'display: flex; flex-direction: column; gap: 2px; padding: 2px 4px 0;' },
+    h('h1', { style: "margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 21px; letter-spacing: -0.02em; color: var(--text-strong);" }, 'Pricing settings'),
+    h('p', { style: 'margin: 0; font-size: 13px; color: var(--text-secondary);' }, 'Changes apply to the calculator immediately and save to this browser.')));
 
   /* Products */
-  const prodGrid = 'display: grid; grid-template-columns: minmax(0,1fr) 110px 100px 100px 64px 28px; gap: 10px; align-items: center;';
   const prodSection = h('section', { class: 'sqg-set-card' },
-    h('div', { style: 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;' },
+    h('div', { class: 'sqg-set-head' },
       h('div', null,
         h('h2', null, 'Products'),
-        h('p', { style: 'margin: 3px 0 0; font-size: 13px; color: var(--text-secondary);' },
+        h('p', { style: 'margin: 3px 0 0; font-size: 12.5px; color: var(--text-secondary);' },
           'Endpoint products use the endpoint rate table (× rate multiplier); user products use the per-user monthly table')),
-      dsButton('Add product', 'secondary', 'sm', false,
-        () => setCfg({ products: cfg.products.concat([{ id: uid(), name: 'New product', unit: 'endpoint', platformFee: 0, minTotal: 5000, factor: 1 }]) }))),
-    h('div', { style: prodGrid + ' padding: 8px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-tertiary);' },
-      h('span', null, 'Product'), h('span', null, 'Priced per'), h('span', { style: 'text-align: right;' }, 'Platform fee'),
-      h('span', { style: 'text-align: right;' }, 'Min / yr'), h('span', { style: 'text-align: right;' }, 'Rate ×'), h('span')));
-  const numIn = 'height: 38px; padding: 0 8px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); width: 100%; text-align: right; ' + IN_BASE;
+      dsButton('Add', 'secondary', 'sm', false,
+        () => setCfg({ products: cfg.products.concat([{ id: uid(), name: 'New product', unit: 'endpoint', platformFee: 0, minTotal: 5000, factor: 1 }]) }))));
+  const numIn = 'height: 36px; padding: 0 8px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); width: 100%; text-align: right; ' + IN_BASE;
+  const prodList = h('div', { style: 'display: flex; flex-direction: column; gap: 10px;' });
   for (const p of cfg.products) {
     const upd = (patch) => setCfg({ products: cfg.products.map((x) => x.id === p.id ? Object.assign({}, x, patch) : x) });
-    prodSection.append(h('div', { style: prodGrid + ' padding: 10px 0; border-bottom: 1px solid var(--border-subtle);' },
-      h('input', {
-        class: 'sqg-in', type: 'text', value: p.name, dataK: 'p-name-' + p.id,
-        onChange: (e) => upd({ name: e.target.value }),
-        style: 'height: 38px; padding: 0 10px; font: inherit; font-size: 14px; color: var(--text-primary); width: 100%; ' + IN_BASE,
-      }),
-      h('select', {
-        class: 'sqg-sel', value: p.unit, dataK: 'p-unit-' + p.id,
-        onChange: (e) => upd({ unit: e.target.value }),
-        style: 'height: 38px; padding: 0 8px; font: inherit; font-size: 13px; color: var(--text-primary); ' + IN_BASE,
-      }, h('option', { value: 'user' }, 'User'), h('option', { value: 'endpoint' }, 'Endpoint')),
-      h('input', { class: 'sqg-in', type: 'number', min: 0, step: 500, value: p.platformFee, dataK: 'p-fee-' + p.id, onChange: (e) => upd({ platformFee: Math.max(0, parseFloat(e.target.value) || 0) }), style: numIn }),
-      h('input', { class: 'sqg-in', type: 'number', min: 0, step: 500, value: p.minTotal, dataK: 'p-min-' + p.id, onChange: (e) => upd({ minTotal: Math.max(0, parseFloat(e.target.value) || 0) }), style: numIn }),
-      h('input', { class: 'sqg-in', type: 'number', min: 0, step: 0.1, value: p.factor, dataK: 'p-factor-' + p.id, onChange: (e) => upd({ factor: Math.max(0, parseFloat(e.target.value) || 1) }), style: numIn }),
-      cfg.products.length > 1
-        ? iconButton('x', 'sm', () => setCfg({ products: cfg.products.filter((x) => x.id !== p.id) }), 'Remove product')
-        : h('span')
+    const cell = (labelText, field) => h('div', { class: 'sqg-cell' }, h('span', { class: 'sqg-mini-label' }, labelText), field);
+    prodList.append(h('div', { class: 'sqg-prod-card' },
+      h('div', { class: 'sqg-prod-head' },
+        h('input', {
+          class: 'sqg-in', type: 'text', value: p.name, dataK: 'p-name-' + p.id, 'aria-label': 'Product name',
+          onChange: (e) => upd({ name: e.target.value }),
+          style: 'height: 38px; padding: 0 10px; font: inherit; font-size: 14px; font-weight: 600; color: var(--text-primary); ' + IN_BASE,
+        }),
+        cfg.products.length > 1
+          ? iconButton('x', 'sm', () => setCfg({ products: cfg.products.filter((x) => x.id !== p.id) }), 'Remove product')
+          : null
+      ),
+      h('div', { class: 'sqg-prod-fields' },
+        cell('Priced per', h('select', {
+          class: 'sqg-sel', value: p.unit, dataK: 'p-unit-' + p.id,
+          onChange: (e) => upd({ unit: e.target.value }),
+          style: 'height: 36px; padding: 0 8px; font: inherit; font-size: 13px; color: var(--text-primary); width: 100%; ' + IN_BASE,
+        }, h('option', { value: 'user' }, 'User'), h('option', { value: 'endpoint' }, 'Endpoint'))),
+        cell('Rate ×', h('input', { class: 'sqg-in', type: 'number', min: 0, step: 0.1, value: p.factor, dataK: 'p-factor-' + p.id, onChange: (e) => upd({ factor: Math.max(0, parseFloat(e.target.value) || 1) }), style: numIn })),
+        cell('Platform fee', h('input', { class: 'sqg-in', type: 'number', min: 0, step: 500, value: p.platformFee, dataK: 'p-fee-' + p.id, onChange: (e) => upd({ platformFee: Math.max(0, parseFloat(e.target.value) || 0) }), style: numIn })),
+        cell('Min / yr', h('input', { class: 'sqg-in', type: 'number', min: 0, step: 500, value: p.minTotal, dataK: 'p-min-' + p.id, onChange: (e) => upd({ minTotal: Math.max(0, parseFloat(e.target.value) || 0) }), style: numIn }))
+      )
     ));
   }
-  prodSection.append(h('p', { style: 'margin: 10px 0 0; font-size: 12px; color: var(--text-tertiary);' },
+  prodSection.append(prodList);
+  prodSection.append(h('p', { style: 'margin: 10px 0 0; font-size: 11.5px; color: var(--text-tertiary);' },
     "Platform fee is waived when a line's subscription reaches " + fmt(r.waiveAt) + '/yr; the yearly minimum then applies to subscription + fee.'));
   main.append(prodSection);
 
   /* Tier tables */
   const tierSection = (title, desc, key, sorted, unitWord, addLabel, onAdd, headUnit, rateStep) => {
-    const grid = 'display: grid; grid-template-columns: 140px 120px 1fr 28px; gap: 12px; align-items: center;';
     const sec = h('section', { class: 'sqg-set-card' },
-      h('div', { style: 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;' },
+      h('div', { class: 'sqg-set-head' },
         h('div', null, h('h2', null, title),
-          h('p', { style: 'margin: 3px 0 0; font-size: 13px; color: var(--text-secondary);' }, desc)),
+          h('p', { style: 'margin: 3px 0 0; font-size: 12.5px; color: var(--text-secondary);' }, desc)),
         dsButton(addLabel, 'secondary', 'sm', false, onAdd)),
-      h('div', { style: grid + ' padding: 8px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-tertiary);' },
+      h('div', { class: 'sqg-tier-grid sqg-table-head' },
         h('span', null, 'Up to (' + (unitWord === 'Users' ? 'users' : 'units') + ')'),
-        h('span', { style: 'text-align: right;' }, headUnit), h('span'), h('span')));
+        h('span', { style: 'text-align: right;' }, headUnit), h('span')));
     sorted.forEach((t, i) => {
       const from = i === 0 ? 1 : (sorted[i - 1].upTo == null ? 1 : sorted[i - 1].upTo + 1);
       const hint = t.upTo == null
         ? unitWord + ' ' + from.toLocaleString('en-US') + ' and up'
         : unitWord + ' ' + from.toLocaleString('en-US') + '–' + t.upTo.toLocaleString('en-US');
       const tierIn = 'height: 34px; padding: 0 10px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); width: 100%; text-align: right; ' + IN_BASE;
-      sec.append(h('div', { style: grid + ' padding: 7px 0; border-bottom: 1px solid var(--border-subtle);' },
-        t.upTo == null
-          ? h('span', { style: 'font-family: var(--font-mono); font-size: 13px; color: var(--text-tertiary); padding-left: 10px;' }, '∞ and up')
-          : h('input', {
-              class: 'sqg-in', type: 'number', min: 1, step: 500, value: t.upTo, dataK: key + '-upto-' + i,
-              onChange: (e) => setCfg({ [key]: cfg[key].map((x) => x === t ? Object.assign({}, x, { upTo: Math.max(1, int(e.target.value) || 1) }) : x) }),
-              style: tierIn,
-            }),
-        h('input', {
-          class: 'sqg-in', type: 'number', min: 0, step: rateStep, value: t.rate, dataK: key + '-rate-' + i,
-          onChange: (e) => setCfg({ [key]: cfg[key].map((x) => x === t ? Object.assign({}, x, { rate: Math.max(0, parseFloat(e.target.value) || 0) }) : x) }),
-          style: tierIn,
-        }),
-        h('span', { style: 'font-size: 12px; color: var(--text-tertiary);' }, hint),
-        t.upTo != null
-          ? iconButton('x', 'sm', () => setCfg({ [key]: cfg[key].filter((x) => x !== t) }), 'Remove tier')
-          : h('span')
+      sec.append(h('div', { class: 'sqg-tier-block' },
+        h('div', { class: 'sqg-tier-grid' },
+          t.upTo == null
+            ? h('span', { style: 'font-family: var(--font-mono); font-size: 13px; color: var(--text-tertiary); padding-left: 10px;' }, '∞ and up')
+            : h('input', {
+                class: 'sqg-in', type: 'number', min: 1, step: 500, value: t.upTo, dataK: key + '-upto-' + i,
+                onChange: (e) => setCfg({ [key]: cfg[key].map((x) => x === t ? Object.assign({}, x, { upTo: Math.max(1, int(e.target.value) || 1) }) : x) }),
+                style: tierIn,
+              }),
+          h('input', {
+            class: 'sqg-in', type: 'number', min: 0, step: rateStep, value: t.rate, dataK: key + '-rate-' + i,
+            onChange: (e) => setCfg({ [key]: cfg[key].map((x) => x === t ? Object.assign({}, x, { rate: Math.max(0, parseFloat(e.target.value) || 0) }) : x) }),
+            style: tierIn,
+          }),
+          t.upTo != null
+            ? iconButton('x', 'sm', () => setCfg({ [key]: cfg[key].filter((x) => x !== t) }), 'Remove tier')
+            : h('span')
+        ),
+        h('span', { class: 'sqg-tier-hint' }, hint)
       ));
     });
     return sec;
@@ -1073,67 +1129,65 @@ function renderSettings() {
     { label: 'Minimum users', desc: 'Quantity floor for user-priced products', value: r.minUsers, step: 50, isMoney: false, isPct: false, onChange: (e) => setCfg({ rules: Object.assign({}, r, { minUsers: Math.max(1, int(e.target.value) || 250) }) }) },
     { label: 'Max extra discount', desc: 'Cap on the rep’s stacked discount', value: r.maxExtra, step: 1, isMoney: false, isPct: true, onChange: setRule('maxExtra') },
   ];
-  const rulesSection = h('section', { class: 'sqg-set-card', style: 'padding: 6px 20px;' },
-    h('div', { style: 'padding: 14px 0 4px;' }, h('h2', null, 'Deal rules')));
+  const rulesSection = h('section', { class: 'sqg-set-card', style: 'padding: 4px 16px;' },
+    h('div', { style: 'padding: 12px 0 2px;' }, h('h2', null, 'Deal rules')));
   ruleRows.forEach((rr, i) => {
-    rulesSection.append(h('div', { style: 'display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 0; border-bottom: 1px solid var(--border-subtle);' },
-      h('div', { style: 'display: flex; flex-direction: column; gap: 2px;' },
-        h('span', { style: 'font-size: 14px; font-weight: 600;' }, rr.label),
-        h('span', { style: 'font-size: 13px; color: var(--text-secondary);' }, rr.desc)),
-      h('div', { style: 'display: flex; align-items: center; gap: 6px; flex-shrink: 0;' },
+    rulesSection.append(h('div', { class: 'sqg-rule-row' },
+      h('div', { class: 'sqg-rule-titles' },
+        h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, rr.label),
+        h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, rr.desc)),
+      h('div', { class: 'sqg-rule-input' },
         rr.isMoney ? h('span', { style: 'color: var(--text-tertiary); font-size: 14px;' }, '$') : null,
         h('input', {
           class: 'sqg-in', type: 'number', min: 0, step: rr.step, value: rr.value, dataK: 'rule-' + i,
           onChange: rr.onChange,
-          style: 'height: 36px; padding: 0 10px; font-family: var(--font-mono); font-size: 14px; color: var(--text-primary); width: 96px; text-align: right; ' + IN_BASE,
+          style: 'height: 36px; padding: 0 10px; font-family: var(--font-mono); font-size: 13.5px; color: var(--text-primary); width: 96px; text-align: right; ' + IN_BASE,
         }),
         rr.isPct ? h('span', { style: 'color: var(--text-tertiary); font-size: 14px;' }, '%') : null
       )));
   });
-  rulesSection.append(h('div', { style: 'display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0;' },
-    h('div', { style: 'display: flex; flex-direction: column; gap: 2px;' },
-      h('span', { style: 'font-size: 14px; font-weight: 600;' }, 'Allow prorated terms'),
-      h('span', { style: 'font-size: 13px; color: var(--text-secondary);' }, 'Reps quote any length from 6 to 60 months with a slider')),
+  rulesSection.append(h('div', { class: 'sqg-rule-row', style: 'border-bottom: none;' },
+    h('div', { class: 'sqg-rule-titles' },
+      h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Allow prorated terms'),
+      h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, 'Reps quote any length from 6 to 60 months with a slider')),
     switchEl(!!cfg.allowProration, (e) => setCfg({ allowProration: e.target.checked }))));
-  rulesSection.append(h('div', { style: 'display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 0 16px;' },
-    h('div', { style: 'display: flex; flex-direction: column; gap: 2px;' },
-      h('span', { style: 'font-size: 14px; font-weight: 600;' }, 'Default billing term'),
-      h('span', { style: 'font-size: 13px; color: var(--text-secondary);' }, 'Pre-selected term on new quotes')),
+  rulesSection.append(h('div', { class: 'sqg-rule-row', style: 'border-bottom: none; padding-top: 0; padding-bottom: 14px;' },
+    h('div', { class: 'sqg-rule-titles' },
+      h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Default billing term'),
+      h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, 'Pre-selected term on new quotes')),
     h('select', {
       class: 'sqg-sel', value: cfg.defaultYears, dataK: 'default-years',
       onChange: (e) => setCfg({ defaultYears: parseInt(e.target.value, 10) || 1 }),
-      style: 'height: 38px; padding: 0 12px; border-radius: 12px; font: inherit; font-size: 14px; color: var(--text-primary); ' + IN_BASE,
+      style: 'height: 38px; padding: 0 12px; border-radius: 12px; font: inherit; font-size: 13.5px; color: var(--text-primary); ' + IN_BASE,
     }, termsSorted.map((t) => h('option', { value: t.years }, t.years + (t.years > 1 ? ' years' : ' year') + (t.pct ? ' · −' + t.pct + '%' : ''))))));
   main.append(rulesSection);
 
   /* Term discounts */
-  const termGrid = 'display: grid; grid-template-columns: 160px 140px 1fr 28px; gap: 12px; align-items: center;';
   const termSection = h('section', { class: 'sqg-set-card' },
-    h('div', { style: 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;' },
+    h('div', { class: 'sqg-set-head' },
       h('div', null,
         h('h2', null, 'Term discounts'),
-        h('p', { style: 'margin: 3px 0 0; font-size: 13px; color: var(--text-secondary);' }, 'Optional discount on the whole quote by contract length — 0% by default')),
+        h('p', { style: 'margin: 3px 0 0; font-size: 12.5px; color: var(--text-secondary);' }, 'Optional discount on the whole quote by contract length — 0% by default')),
       dsButton('Add term', 'secondary', 'sm', false, () => {
         const last = termsSorted[termsSorted.length - 1];
         setCfg({ terms: cfg.terms.concat([{ years: last ? last.years + 1 : 1, pct: last ? last.pct : 0 }]) });
       })),
-    h('div', { style: termGrid + ' padding: 8px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-tertiary);' },
-      h('span', null, 'Term (years)'), h('span', { style: 'text-align: right;' }, 'Discount'), h('span'), h('span')));
+    h('div', { class: 'sqg-term-grid sqg-table-head' },
+      h('span', null, 'Term (years)'), h('span', { style: 'text-align: right;' }, 'Discount'), h('span')));
   termsSorted.forEach((t, i) => {
-    termSection.append(h('div', { style: termGrid + ' padding: 10px 0; border-bottom: 1px solid var(--border-subtle);' },
+    termSection.append(h('div', { class: 'sqg-term-grid', style: 'padding: 8px 0; border-bottom: 1px solid var(--border-subtle);' },
       h('input', {
         class: 'sqg-in', type: 'number', min: 1, max: 10, value: t.years, dataK: 'term-years-' + i,
         onChange: (e) => setCfg({ terms: cfg.terms.map((x) => x === t ? Object.assign({}, x, { years: Math.max(1, int(e.target.value) || 1) }) : x) }),
-        style: 'height: 38px; padding: 0 10px; font-family: var(--font-mono); font-size: 14px; color: var(--text-primary); width: 100%; text-align: right; ' + IN_BASE,
+        style: 'height: 36px; padding: 0 10px; font-family: var(--font-mono); font-size: 13.5px; color: var(--text-primary); width: 100%; text-align: right; ' + IN_BASE,
       }),
       h('div', { style: 'display: flex; align-items: center; gap: 6px; justify-content: flex-end;' },
         h('input', {
           class: 'sqg-in', type: 'number', min: 0, max: 100, value: t.pct, dataK: 'term-pct-' + i,
           onChange: (e) => setCfg({ terms: cfg.terms.map((x) => x === t ? Object.assign({}, x, { pct: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) }) : x) }),
-          style: 'height: 38px; padding: 0 10px; font-family: var(--font-mono); font-size: 14px; color: var(--text-primary); width: 72px; text-align: right; ' + IN_BASE,
+          style: 'height: 36px; padding: 0 10px; font-family: var(--font-mono); font-size: 13.5px; color: var(--text-primary); width: 72px; text-align: right; ' + IN_BASE,
         }),
         h('span', { style: 'color: var(--text-tertiary); font-size: 14px;' }, '%')),
-      h('span'),
       cfg.terms.length > 1
         ? iconButton('x', 'sm', () => setCfg({ terms: cfg.terms.filter((x) => x !== t) }), 'Remove term')
         : h('span')
@@ -1142,7 +1196,7 @@ function renderSettings() {
   main.append(termSection);
 
   /* Footer actions */
-  main.append(h('div', { style: 'display: flex; justify-content: space-between; align-items: center;' },
+  main.append(h('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;' },
     h('button', { class: 'sqg-link-btn', type: 'button', onClick: () => { state.cfg = defaults(); persist(); render(); } }, 'Reset to default pricing'),
     dsButton('Back to calculator', 'primary', 'md', false, () => { state.view = 'calc'; render(); })));
 
@@ -1150,4 +1204,7 @@ function renderSettings() {
 }
 
 /* ---------------- Boot ---------------- */
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && state.sheet) { state.sheet = false; render(); }
+});
 render();
