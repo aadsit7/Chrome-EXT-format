@@ -6,15 +6,48 @@
    lives in a bottom dock with an expandable details sheet. */
 
 const KEY = 'sqg-v2';
-const USER_KEY = 'sqg-user'; // saved profile name (asked for on first run)
+const USER_KEY = 'sqg-user'; // saved user profile { userId, firstName, lastName } (captured on first run)
 const PARTNER_FEATURE = true; // original prop partnerPricing, default true
 
-/* ---- Profile name (localStorage 'sqg-user') ---- */
-function getUserName() {
-  try { return (localStorage.getItem(USER_KEY) || '').trim(); } catch (e) { return ''; }
+/* ---- User profile (localStorage 'sqg-user') ----
+   Stored as JSON { userId, firstName, lastName }. A missing value, invalid JSON,
+   or a value with no userId (this includes any old plain-text name saved by the
+   previous version) all mean the user is NOT registered yet. */
+function readUser() {
+  try {
+    const raw = localStorage.getItem(USER_KEY);
+    if (!raw) return null;
+    const u = JSON.parse(raw); // old plain-text names aren't valid JSON → throws → not registered
+    if (!u || typeof u !== 'object' || !u.userId) return null;
+    return { userId: String(u.userId), firstName: String(u.firstName || ''), lastName: String(u.lastName || '') };
+  } catch (e) { return null; }
 }
-function setUserName(name) {
-  try { localStorage.setItem(USER_KEY, name); } catch (e) {}
+function writeUser(u) {
+  try { localStorage.setItem(USER_KEY, JSON.stringify(u)); } catch (e) {}
+}
+function isRegistered() { return !!readUser(); }
+function userFullName() {
+  const u = readUser();
+  return u ? (u.firstName + ' ' + u.lastName).trim() : '';
+}
+function makeUserId() {
+  return 'usr-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+}
+
+/* CHANGE 3 — adopt the server's canonical userId. The Apps Script matches people
+   by first + last name and returns the ONE canonical userId for that name. Given
+   any parsed JSON response from APPS_SCRIPT_URL (registerUser or saveQuote), if it
+   carries a userId different from ours, silently overwrite our stored userId while
+   keeping the same first/last name. No UI change. Exposed as a global so sheets.js
+   can call it from its fetch callbacks. */
+function adoptCanonicalId(data) {
+  try {
+    if (!data || typeof data !== 'object' || !data.userId) return;
+    const u = readUser();
+    if (!u) return;
+    if (String(data.userId) === u.userId) return;
+    writeUser({ userId: String(data.userId), firstName: u.firstName, lastName: u.lastName });
+  } catch (e) { /* best-effort */ }
 }
 
 /* ---------------- Defaults ---------------- */
@@ -52,7 +85,7 @@ function defaultQuote() {
   const d = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
   return {
     number: 'QT-' + new Date().getFullYear() + '-' + String(Math.floor(1000 + Math.random() * 9000)),
-    customer: '', email: '', preparedBy: getUserName(), expires: d, partnerCompany: '', partnerEmail: '',
+    customer: '', email: '', preparedBy: userFullName(), expires: d, partnerCompany: '', partnerEmail: '',
     sourceUrl: '', aiSummary: '',
     billToAddress: '', shipToAddress: '', billingContact: '',
     paymentMethod: 'Credit Card, ACH/Wire, Check', paymentTerms: 'Net 120', currency: 'USD', autoRenewal: false,
@@ -67,7 +100,7 @@ function defaultQuote() {
 
 /* ---------------- State ---------------- */
 
-const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, newQuotePrompt: false, billingOpen: false, namePrompt: false };
+const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, newQuotePrompt: false, billingOpen: false, registerGate: false };
 let toastTimer = null;
 
 try {
@@ -79,8 +112,9 @@ try {
   }
 } catch (e) { /* ignore corrupt storage */ }
 
-// First run: no profile name saved yet → show the name prompt before the calculator.
-state.namePrompt = !getUserName();
+// First run (or any pre-2.2 install without a valid { userId } profile): lock the
+// whole app behind the first + last name registration gate until the user registers.
+state.registerGate = !isRegistered();
 
 function persist() {
   try { localStorage.setItem(KEY, JSON.stringify({ cfg: state.cfg, quote: state.quote })); } catch (e) {}
@@ -320,7 +354,7 @@ function render() {
   if (focusKey && typeof active.selectionStart === 'number') { selStart = active.selectionStart; selEnd = active.selectionEnd; }
 
   const { view, quote: q } = state;
-  const gate = state.namePrompt; // first-run name prompt takes over the whole panel
+  const gate = state.registerGate; // blocking registration screen takes over the whole panel
   document.getElementById('header-title').textContent = gate ? 'Welcome' : (view === 'calc' ? 'New quote' : 'Settings');
   document.getElementById('quote-number').textContent = gate ? '' : q.number;
   const iconSlot = document.getElementById('header-icon-slot');
@@ -341,7 +375,7 @@ function render() {
 
   const root = document.getElementById('screen-root');
   root.textContent = '';
-  root.append(gate ? renderNameGate() : (view === 'calc' ? renderCalc() : renderSettings()));
+  root.append(gate ? renderRegisterGate() : (view === 'calc' ? renderCalc() : renderSettings()));
 
   if (focusKey) {
     const el = root.querySelector('[data-k="' + focusKey + '"]') || document.querySelector('[data-k="' + focusKey + '"]');
@@ -373,39 +407,71 @@ function computeView() {
   return { cfg, q, r, m, prorated, years, months, coTermMo, termLabel, termsSorted, partnerActive, isRen, totalDiscC };
 }
 
-/* ---- First-run: ask for the user's name before showing the calculator ---- */
-function renderNameGate() {
+/* ---- First-run: require first + last name before showing the app ----
+   This gate takes over the whole panel (render() shows nothing else while
+   state.registerGate is true), so the calculator, settings and dock stay
+   hidden until the user registers. */
+function renderRegisterGate() {
   const frag = document.createDocumentFragment();
   const main = h('main', { class: 'sqg-main' });
 
   const errEl = h('p', { class: 'sqg-pw-error' });
-  const input = h('input', {
-    class: 'sqg-in', type: 'text', dataK: 'sqg-user-name', placeholder: 'Your name', 'aria-label': "What's your name?",
-    value: '',
-    style: 'height: 42px; padding: 0 12px; font: inherit; font-size: 15px; color: var(--text-primary); ' + IN_BASE,
-    onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } },
+  const inStyle = 'height: 42px; padding: 0 12px; font: inherit; font-size: 15px; color: var(--text-primary); ' + IN_BASE;
+
+  const firstIn = h('input', {
+    class: 'sqg-in', type: 'text', dataK: 'sqg-reg-first', placeholder: 'First name', 'aria-label': 'First name',
+    value: '', autocomplete: 'off', style: inStyle,
+    onInput: () => sync(),
+    onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); lastIn.focus(); } },
   });
-  const save = () => {
-    const name = input.value.trim();
-    if (!name) { errEl.textContent = 'Please enter your name to continue'; input.focus(); return; }
-    setUserName(name);
-    if (!state.quote.preparedBy) { state.quote.preparedBy = name; persist(); }
-    state.namePrompt = false;
+  const lastIn = h('input', {
+    class: 'sqg-in', type: 'text', dataK: 'sqg-reg-last', placeholder: 'Last name', 'aria-label': 'Last name',
+    value: '', autocomplete: 'off', style: inStyle,
+    onInput: () => sync(),
+    onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); start(); } },
+  });
+
+  // "Start" stays disabled until BOTH fields have non-whitespace text.
+  const startBtn = dsButton('Start', 'primary', 'md', true, () => start());
+  startBtn.disabled = true;
+
+  const sync = () => {
+    const ok = !!firstIn.value.trim() && !!lastIn.value.trim();
+    startBtn.disabled = !ok;
+    if (ok) errEl.textContent = '';
+  };
+
+  const start = () => {
+    const firstName = firstIn.value.trim();
+    const lastName = lastIn.value.trim();
+    if (!firstName || !lastName) {
+      errEl.textContent = 'Please enter both your first and last name to continue';
+      (firstName ? lastIn : firstIn).focus();
+      return;
+    }
+    const user = { userId: makeUserId(), firstName: firstName, lastName: lastName };
+    writeUser(user);
+    // Fire-and-forget registration; if offline they still get in and are
+    // registered on the first saved quote. The response (if any) may adopt a
+    // canonical userId.
+    try { window.SQG_SHEETS.registerUser(user); } catch (e) {}
+    if (!state.quote.preparedBy) { state.quote.preparedBy = firstName + ' ' + lastName; persist(); }
+    state.registerGate = false;
     render();
-    flash('Welcome, ' + name + ' — your quotes are ready', 'ok');
+    flash('Welcome, ' + firstName + ' — your quotes are ready', 'ok');
   };
 
   main.append(h('section', { class: 'sqg-card' },
-    h('div', { style: 'margin-bottom: 8px;' }, h('h2', null, "What's your name?")),
+    h('div', { style: 'margin-bottom: 8px;' }, h('h2', null, "Let's get you set up")),
     h('p', { class: 'sqg-subhead', style: 'margin: 0 0 14px;' },
-      "We'll use it as the default “Prepared by” on your quotes and send it with each quote you save to the shared database. You can change it later in settings."),
-    input,
+      'Enter your first and last name to start. We’ll use it as the default “Prepared by” on your quotes and to identify your entries in the shared database. This is a one-time step.'),
+    h('div', { style: 'display: flex; flex-direction: column; gap: 10px;' }, firstIn, lastIn),
     errEl,
-    dsButton('Save', 'primary', 'md', true, save)
+    startBtn
   ));
 
   frag.append(main);
-  setTimeout(() => { try { input.focus(); } catch (e) {} }, 0);
+  setTimeout(() => { try { firstIn.focus(); } catch (e) {} sync(); }, 0);
   return frag;
 }
 
@@ -1256,18 +1322,14 @@ function renderSettings() {
     h('h1', { style: "margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 21px; letter-spacing: -0.02em; color: var(--text-strong);" }, 'Pricing settings'),
     h('p', { style: 'margin: 0; font-size: 13px; color: var(--text-secondary);' }, 'Changes apply to the calculator immediately and save to this browser.')));
 
-  /* Your profile — change the saved name (localStorage 'sqg-user') */
+  /* Your profile — read-only. Names are captured once at first run (localStorage
+     'sqg-user'); that's intended, so there's no editable field here. */
   const profileSection = h('section', { class: 'sqg-set-card' },
     h('div', { style: 'padding-bottom: 2px;' }, h('h2', null, 'Your profile')),
     h('div', { class: 'sqg-rule-row', style: 'border-bottom: none; padding-bottom: 4px;' },
       h('div', { class: 'sqg-rule-titles' },
-        h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Your name'),
-        h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, 'Default “Prepared by” · sent with every quote saved to the database')),
-      h('input', {
-        class: 'sqg-in', type: 'text', value: getUserName(), dataK: 'sqg-user-name-setting', placeholder: 'Your name', 'aria-label': 'Your name',
-        onChange: (e) => { const val = e.target.value.trim(); if (val) { setUserName(val); render(); } },
-        style: 'height: 36px; padding: 0 10px; font: inherit; font-size: 13.5px; color: var(--text-primary); width: 160px; text-align: right; ' + IN_BASE,
-      })));
+        h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Signed in as ' + userFullName()),
+        h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, 'Captured at first run · default “Prepared by” · sent with every quote saved to the database'))));
   main.append(profileSection);
 
   /* Access */
