@@ -709,6 +709,30 @@ window.SQG_ANALYZE = (function () {
 
   function unitWord(prod) { return prod.unit === 'user' ? 'users' : 'endpoints'; }
 
+  /* Tolerant catalog resolver. The AI sometimes returns a product's NAME (e.g.
+     "Application Workspace") where the schema asks for its id ("aw"); a strict
+     id-only match silently dropped those lines. Resolve a returned reference to
+     the live catalog product by, in order:
+       1. exact id match (case-insensitive), else
+       2. exact name match (case-insensitive), else
+       3. partial name match (catalog name contains ref, or ref contains catalog
+          name), else
+       4. null.
+     Used everywhere a returned productId is matched so a line reliably fills. */
+  function resolveCatalogProduct(ref) {
+    var products = (state.cfg && state.cfg.products) || [];
+    var r = normS(ref).toLowerCase();
+    if (!r) return null;
+    var byId = products.find(function (p) { return String(p.id).toLowerCase() === r; });
+    if (byId) return byId;
+    var byName = products.find(function (p) { return normS(p.name).toLowerCase() === r; });
+    if (byName) return byName;
+    return products.find(function (p) {
+      var name = normS(p.name).toLowerCase();
+      return name && (name.indexOf(r) > -1 || r.indexOf(name) > -1);
+    }) || null;
+  }
+
   function resolveProducts(products, qtyValues) {
     var byKey = {};
     (products || []).forEach(function (p) {
@@ -818,7 +842,7 @@ window.SQG_ANALYZE = (function () {
   function buildAiFindings(data) {
     var out = [], note = null;
     if (!data || typeof data !== 'object') return { findings: out, note: note };
-    var q = state.quote, cfg = state.cfg;
+    var q = state.quote;
     var S = function (x) { return (x == null ? '' : String(x)).replace(/\s+/g, ' ').trim(); };
 
     if (S(data.customer)) out.push(scalarFinding('customer', 'Customer / company', S(data.customer), S(data.customer), q.customer));
@@ -852,10 +876,12 @@ window.SQG_ANALYZE = (function () {
 
     (Array.isArray(data.lines) ? data.lines : []).forEach(function (li) {
       if (!li) return;
-      var prod = cfg.products.find(function (p) { return p.id === li.productId; }); // keep only live-catalog ids
-      if (!prod) return;
+      // Resolve by id OR name OR partial name (the AI may return either). Fall
+      // back to any name-ish field the model used instead of productId.
+      var prod = resolveCatalogProduct(li.productId) || resolveCatalogProduct(li.name) || resolveCatalogProduct(li.product);
+      if (!prod) return; // drop only if it resolves to nothing …
       var qty = parseInt(li.qty, 10);
-      if (!isFinite(qty) || qty <= 0) return;
+      if (!isFinite(qty) || qty <= 0) return; // … or the quantity is missing / <= 0
       var curL = q.lines.find(function (l) { return l.productId === prod.id; });
       out.push({
         field: 'lineQty', productId: prod.id, qty: qty, checked: true,
@@ -1016,6 +1042,11 @@ window.SQG_ANALYZE = (function () {
     var strip = (window.SQG_VOICE && typeof window.SQG_VOICE.liveStrip === 'function') ? window.SQG_VOICE.liveStrip() : null;
     if (strip) wrap.append(strip);
 
+    // Editable "here's what I heard" confirmation — shown after listening stops,
+    // before the words are sent to the AI (voice.js owns its state).
+    var vreview = (window.SQG_VOICE && typeof window.SQG_VOICE.reviewBox === 'function') ? window.SQG_VOICE.reviewBox() : null;
+    if (vreview) wrap.append(vreview);
+
     if (state.analyze) wrap.append(reviewCard());
     return wrap;
   }
@@ -1110,7 +1141,7 @@ window.SQG_ANALYZE = (function () {
   return {
     bar: bar, run: run, applyFindings: applyFindings, fillFromText: fillFromText,
     _extract: extractQuoteInfo, _snapshot: snapshotPage, _parseDate: parseDate,
-    _buildFindings: buildFindings, _buildAiFindings: buildAiFindings,
+    _buildFindings: buildFindings, _buildAiFindings: buildAiFindings, _resolveCatalogProduct: resolveCatalogProduct,
     _buildSnapshotText: buildSnapshotText, _mergeAiRule: mergeAiRule, _mergeFrames: mergeFrames,
   };
 })();
