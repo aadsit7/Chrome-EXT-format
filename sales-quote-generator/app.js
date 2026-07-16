@@ -6,7 +6,16 @@
    lives in a bottom dock with an expandable details sheet. */
 
 const KEY = 'sqg-v2';
+const USER_KEY = 'sqg-user'; // saved profile name (asked for on first run)
 const PARTNER_FEATURE = true; // original prop partnerPricing, default true
+
+/* ---- Profile name (localStorage 'sqg-user') ---- */
+function getUserName() {
+  try { return (localStorage.getItem(USER_KEY) || '').trim(); } catch (e) { return ''; }
+}
+function setUserName(name) {
+  try { localStorage.setItem(USER_KEY, name); } catch (e) {}
+}
 
 /* ---------------- Defaults ---------------- */
 
@@ -43,7 +52,8 @@ function defaultQuote() {
   const d = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
   return {
     number: 'QT-' + new Date().getFullYear() + '-' + String(Math.floor(1000 + Math.random() * 9000)),
-    customer: '', email: '', preparedBy: '', expires: d, partnerCompany: '', partnerEmail: '',
+    customer: '', email: '', preparedBy: getUserName(), expires: d, partnerCompany: '', partnerEmail: '',
+    sourceUrl: '', aiSummary: '',
     billToAddress: '', shipToAddress: '', billingContact: '',
     paymentMethod: 'Credit Card, ACH/Wire, Check', paymentTerms: 'Net 120', currency: 'USD', autoRenewal: false,
     lines: [{ id: 'l1', productId: 'rct', qty: 1000 }],
@@ -57,7 +67,7 @@ function defaultQuote() {
 
 /* ---------------- State ---------------- */
 
-const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, newQuotePrompt: false, billingOpen: false };
+const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, newQuotePrompt: false, billingOpen: false, namePrompt: false };
 let toastTimer = null;
 
 try {
@@ -68,6 +78,9 @@ try {
     state.quote = Object.assign(defaultQuote(), d.quote || {});
   }
 } catch (e) { /* ignore corrupt storage */ }
+
+// First run: no profile name saved yet → show the name prompt before the calculator.
+state.namePrompt = !getUserName();
 
 function persist() {
   try { localStorage.setItem(KEY, JSON.stringify({ cfg: state.cfg, quote: state.quote })); } catch (e) {}
@@ -307,25 +320,28 @@ function render() {
   if (focusKey && typeof active.selectionStart === 'number') { selStart = active.selectionStart; selEnd = active.selectionEnd; }
 
   const { view, quote: q } = state;
-  document.getElementById('header-title').textContent = view === 'calc' ? 'New quote' : 'Settings';
-  document.getElementById('quote-number').textContent = q.number;
+  const gate = state.namePrompt; // first-run name prompt takes over the whole panel
+  document.getElementById('header-title').textContent = gate ? 'Welcome' : (view === 'calc' ? 'New quote' : 'Settings');
+  document.getElementById('quote-number').textContent = gate ? '' : q.number;
   const iconSlot = document.getElementById('header-icon-slot');
   iconSlot.textContent = '';
-  if (view === 'calc') {
-    iconSlot.append(iconButton('newquote', 'md', () => { state.newQuotePrompt = true; render(); }, 'Start a new quote'));
+  if (!gate) {
+    if (view === 'calc') {
+      iconSlot.append(iconButton('newquote', 'md', () => { state.newQuotePrompt = true; render(); }, 'Start a new quote'));
+    }
+    iconSlot.append(iconButton(
+      view === 'calc' ? 'settings' : 'x', 'md',
+      () => {
+        if (view === 'calc') { state.pwPrompt = true; render(); }
+        else { state.view = 'calc'; render(); }
+      },
+      view === 'calc' ? 'Open pricing settings' : 'Close settings'
+    ));
   }
-  iconSlot.append(iconButton(
-    view === 'calc' ? 'settings' : 'x', 'md',
-    () => {
-      if (view === 'calc') { state.pwPrompt = true; render(); }
-      else { state.view = 'calc'; render(); }
-    },
-    view === 'calc' ? 'Open pricing settings' : 'Close settings'
-  ));
 
   const root = document.getElementById('screen-root');
   root.textContent = '';
-  root.append(view === 'calc' ? renderCalc() : renderSettings());
+  root.append(gate ? renderNameGate() : (view === 'calc' ? renderCalc() : renderSettings()));
 
   if (focusKey) {
     const el = root.querySelector('[data-k="' + focusKey + '"]') || document.querySelector('[data-k="' + focusKey + '"]');
@@ -355,6 +371,42 @@ function computeView() {
   const isRen = m.dealType === 'ren';
   const totalDiscC = m.msrpC - m.netFinalC;
   return { cfg, q, r, m, prorated, years, months, coTermMo, termLabel, termsSorted, partnerActive, isRen, totalDiscC };
+}
+
+/* ---- First-run: ask for the user's name before showing the calculator ---- */
+function renderNameGate() {
+  const frag = document.createDocumentFragment();
+  const main = h('main', { class: 'sqg-main' });
+
+  const errEl = h('p', { class: 'sqg-pw-error' });
+  const input = h('input', {
+    class: 'sqg-in', type: 'text', dataK: 'sqg-user-name', placeholder: 'Your name', 'aria-label': "What's your name?",
+    value: '',
+    style: 'height: 42px; padding: 0 12px; font: inherit; font-size: 15px; color: var(--text-primary); ' + IN_BASE,
+    onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } },
+  });
+  const save = () => {
+    const name = input.value.trim();
+    if (!name) { errEl.textContent = 'Please enter your name to continue'; input.focus(); return; }
+    setUserName(name);
+    if (!state.quote.preparedBy) { state.quote.preparedBy = name; persist(); }
+    state.namePrompt = false;
+    render();
+    flash('Welcome, ' + name + ' — your quotes are ready', 'ok');
+  };
+
+  main.append(h('section', { class: 'sqg-card' },
+    h('div', { style: 'margin-bottom: 8px;' }, h('h2', null, "What's your name?")),
+    h('p', { class: 'sqg-subhead', style: 'margin: 0 0 14px;' },
+      "We'll use it as the default “Prepared by” on your quotes and send it with each quote you save to the shared database. You can change it later in settings."),
+    input,
+    errEl,
+    dsButton('Save', 'primary', 'md', true, save)
+  ));
+
+  frag.append(main);
+  setTimeout(() => { try { input.focus(); } catch (e) {} }, 0);
+  return frag;
 }
 
 function renderCalc() {
@@ -1094,7 +1146,10 @@ function buildDock(v) {
   return h('div', { class: 'sqg-dock', id: 'sqg-dock' },
     h('div', { class: 'sqg-dock-inner' },
       summary,
-      dsButton('Create quote', 'primary', 'md', false, makeCreateQuote(v, data))
+      h('div', { class: 'sqg-dock-actions' },
+        dsButton('Save to database', 'secondary', 'md', false, () => window.SQG_SHEETS.saveQuoteToSheet()),
+        dsButton('Create quote', 'primary', 'md', false, makeCreateQuote(v, data))
+      )
     ));
 }
 
@@ -1200,6 +1255,20 @@ function renderSettings() {
   main.append(h('div', { style: 'display: flex; flex-direction: column; gap: 2px; padding: 2px 4px 0;' },
     h('h1', { style: "margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 21px; letter-spacing: -0.02em; color: var(--text-strong);" }, 'Pricing settings'),
     h('p', { style: 'margin: 0; font-size: 13px; color: var(--text-secondary);' }, 'Changes apply to the calculator immediately and save to this browser.')));
+
+  /* Your profile — change the saved name (localStorage 'sqg-user') */
+  const profileSection = h('section', { class: 'sqg-set-card' },
+    h('div', { style: 'padding-bottom: 2px;' }, h('h2', null, 'Your profile')),
+    h('div', { class: 'sqg-rule-row', style: 'border-bottom: none; padding-bottom: 4px;' },
+      h('div', { class: 'sqg-rule-titles' },
+        h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Your name'),
+        h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, 'Default “Prepared by” · sent with every quote saved to the database')),
+      h('input', {
+        class: 'sqg-in', type: 'text', value: getUserName(), dataK: 'sqg-user-name-setting', placeholder: 'Your name', 'aria-label': 'Your name',
+        onChange: (e) => { const val = e.target.value.trim(); if (val) { setUserName(val); render(); } },
+        style: 'height: 36px; padding: 0 10px; font: inherit; font-size: 13.5px; color: var(--text-primary); width: 160px; text-align: right; ' + IN_BASE,
+      })));
+  main.append(profileSection);
 
   /* Access */
   const accessSection = h('section', { class: 'sqg-set-card' },
