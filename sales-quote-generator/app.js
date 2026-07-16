@@ -44,6 +44,8 @@ function defaultQuote() {
   return {
     number: 'QT-' + new Date().getFullYear() + '-' + String(Math.floor(1000 + Math.random() * 9000)),
     customer: '', email: '', preparedBy: '', expires: d, partnerCompany: '', partnerEmail: '',
+    billToAddress: '', shipToAddress: '', billingContact: '',
+    paymentMethod: 'Credit Card, ACH/Wire, Check', paymentTerms: 'Net 120', currency: 'USD', autoRenewal: false,
     lines: [{ id: 'l1', productId: 'rct', qty: 1000 }],
     years: 1, months: 12, partner: false, customerType: 'new', dealType: 'addon', marginNewPct: 20, marginRenPct: 15, extraPct: 0, supportAll: false,
     coTermDate: new Date(Date.now() + 182 * 864e5).toISOString().slice(0, 10),
@@ -55,7 +57,7 @@ function defaultQuote() {
 
 /* ---------------- State ---------------- */
 
-const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false };
+const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, billingOpen: false };
 let toastTimer = null;
 
 try {
@@ -263,6 +265,14 @@ function labeledInput(labelText, opts) {
     onChange: opts.onChange, dataK: opts.dataK,
   });
   return h('div', { class: 'ds-input' }, h('label', null, labelText), input);
+}
+
+function labeledTextarea(labelText, opts) {
+  const ta = h('textarea', {
+    placeholder: opts.placeholder || '', value: opts.value, dataK: opts.dataK, rows: opts.rows || 3,
+    onChange: opts.onChange,
+  });
+  return h('div', { class: 'ds-input' }, h('label', null, labelText), ta);
 }
 
 function dsButton(text, variant, size, fullWidth, onClick) {
@@ -820,12 +830,96 @@ function sectionWho(v) {
   } else {
     section.append(h('div', { class: 'sqg-form-grid' }, custFields, metaFields));
   }
+  section.append(sectionBillingDetails(q));
   return section;
+}
+
+/* ---- Collapsible: Billing details (for PDF) ---- */
+function sectionBillingDetails(q) {
+  const open = state.billingOpen;
+  const toggle = () => { state.billingOpen = !state.billingOpen; render(); };
+  const chev = h('span', { class: 'sqg-collapse-chev' + (open ? ' open' : '') });
+  chev.innerHTML = SVG_CHEVRON_UP;
+  const header = h('button', {
+    class: 'sqg-collapse-head', type: 'button', 'aria-expanded': open ? 'true' : 'false', onClick: toggle,
+  },
+    h('span', { class: 'sqg-toggle-titles' },
+      h('span', { class: 'sqg-toggle-title' }, 'Billing details (for PDF)'),
+      h('span', { class: 'sqg-toggle-desc' }, 'Bill-to / ship-to addresses, contact, and payment terms shown on the quote PDF')),
+    chev
+  );
+  const wrap = h('div', { class: 'sqg-collapse' }, header);
+  if (open) {
+    wrap.append(h('div', { class: 'sqg-collapse-body' },
+      h('div', { class: 'sqg-form-grid' },
+        labeledTextarea('Bill To address', {
+          placeholder: 'Street address\nCity, State ZIP\nCountry', value: q.billToAddress, dataK: 'billToAddress',
+          onChange: (e) => setQ({ billToAddress: e.target.value }),
+        }),
+        labeledTextarea('Ship To address', {
+          placeholder: 'Street address\nCity, State ZIP\nCountry', value: q.shipToAddress, dataK: 'shipToAddress',
+          onChange: (e) => setQ({ shipToAddress: e.target.value }),
+        })
+      ),
+      h('div', { class: 'sqg-form-grid' },
+        labeledInput('Billing contact', { placeholder: 'Name at company', value: q.billingContact, dataK: 'billingContact', onChange: (e) => setQ({ billingContact: e.target.value }) }),
+        labeledInput('Payment method', { value: q.paymentMethod, dataK: 'paymentMethod', onChange: (e) => setQ({ paymentMethod: e.target.value }) }),
+        labeledInput('Payment terms', { value: q.paymentTerms, dataK: 'paymentTerms', onChange: (e) => setQ({ paymentTerms: e.target.value }) }),
+        labeledInput('Currency', { value: q.currency, dataK: 'currency', onChange: (e) => setQ({ currency: e.target.value }) })
+      ),
+      h('div', { class: 'sqg-toggle-row' },
+        h('div', { class: 'sqg-toggle-titles' },
+          h('span', { class: 'sqg-toggle-title' }, 'Auto renewal'),
+          h('span', { class: 'sqg-toggle-desc' }, 'Printed on the quote PDF as Yes / No')),
+        switchEl(!!q.autoRenewal, (e) => setQ({ autoRenewal: e.target.checked }))
+      )
+    ));
+  }
+  return wrap;
+}
+
+/* ---- Date helpers for the PDF's product-row Start/End Date columns ---- */
+function parseDateLocal(s) { return s ? new Date(s + 'T00:00:00') : null; }
+function addTermDate(start, years) {
+  const end = new Date(start.getTime());
+  const whole = Math.floor(years);
+  end.setFullYear(end.getFullYear() + whole);
+  const frac = years - whole;
+  if (frac > 1e-9) end.setDate(end.getDate() + Math.round(frac * 365.25));
+  end.setDate(end.getDate() - 1); // inclusive end date (term ends the day before the anniversary)
+  return end;
+}
+function formatMDY(d) {
+  if (!d || isNaN(d)) return '';
+  return String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0') + '/' + d.getFullYear();
+}
+function fmtPdf(n) { return Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+// The term window shared by every new-product / renewal-only line in a quote.
+function computeTermWindow(v) {
+  const { m, q } = v;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  if (m.isCoterm) return { start: today, end: parseDateLocal(q.coTermDate) || today };
+  if (m.addonRenew) return { start: today, end: addTermDate(parseDateLocal(q.coTermDate) || today, m.baseYears) };
+  return { start: today, end: addTermDate(today, m.baseYears) };
+}
+// Current products carried forward on an add-on + renewal deal: they resume at the co-term date.
+function existingTermWindow(v) {
+  const { m, q } = v;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const coterm = parseDateLocal(q.coTermDate) || today;
+  return { start: coterm, end: addTermDate(coterm, m.baseYears) };
 }
 
 /* ---- Quote data (shared by the quote sheet and the PDF export) ---- */
 function buildQuoteData(v) {
   const { cfg, q, r, m, coTermMo, termLabel, partnerActive, isRen, totalDiscC } = v;
+
+  const termWin = computeTermWindow(v);
+  const termStartDisp = formatMDY(termWin.start), termEndDisp = formatMDY(termWin.end);
+  const existingWin = m.addonRenew ? existingTermWindow(v) : null;
+  const existingStartDisp = existingWin ? formatMDY(existingWin.start) : '';
+  const existingEndDisp = existingWin ? formatMDY(existingWin.end) : '';
 
   const items = (m.isRenOnly ? (q.renewLines || []).map((rl) => {
     const p = cfg.products.find((x) => x.id === rl.productId);
@@ -833,14 +927,19 @@ function buildQuoteData(v) {
       name: p ? p.name : 'Product',
       qtyDisp: int(rl.qty).toLocaleString('en-US') + ' ' + (p && p.unit === 'user' ? 'users' : 'endpoints') + ' · renews',
       amt: fmt(Math.max(0, +rl.price || 0)),
+      start: termStartDisp, end: termEndDisp, qty: int(rl.qty).toLocaleString('en-US'), total: fmtPdf(Math.max(0, +rl.price || 0)),
     };
   }) : m.lines.map(({ c }) => ({
     name: c.prod.name,
     qtyDisp: c.units.toLocaleString('en-US') + ' ' + (c.isUser ? 'users' : 'endpoints') + (c.support > 0 ? ' · support' : '') + (m.addonRenew ? ' · new' : ''),
     amt: fmt(c.msrp),
+    start: termStartDisp, end: termEndDisp, qty: c.units.toLocaleString('en-US'), total: fmtPdf(c.msrp),
   }))).concat(m.addonRenew ? (q.existing || []).map((ex) => {
     const p = cfg.products.find((x) => x.id === ex.productId);
-    return { name: p ? p.name : 'Current product', qtyDisp: 'current · renews at today’s price', amt: fmt(Math.max(0, +ex.price || 0)) };
+    return {
+      name: p ? p.name : 'Current product', qtyDisp: 'current · renews at today’s price', amt: fmt(Math.max(0, +ex.price || 0)),
+      start: existingStartDisp, end: existingEndDisp, qty: '', total: fmtPdf(Math.max(0, +ex.price || 0)),
+    };
   }) : []);
 
   const totals = [];
@@ -902,11 +1001,22 @@ function buildQuoteData(v) {
     : null;
 
   return {
-    items, totals, hasYears, schedule, tcvLabel, tcv: fmt(m.tcvC / 100), tcvSub, savings, partner, termLabel,
+    items, totals, hasYears, schedule, tcvLabel, tcv: fmt(m.tcvC / 100), tcvPdf: fmtPdf(m.tcvC / 100), tcvSub, savings, partner, termLabel,
     meta: {
       number: q.number, customer: q.customer, email: q.email, preparedBy: q.preparedBy, expires: q.expires,
       partnerActive, partnerCompany: q.partnerCompany, partnerEmail: q.partnerEmail,
       today: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
+      billToName: partnerActive ? (q.partnerCompany || '') : (q.customer || ''),
+      billToAddress: q.billToAddress || '',
+      shipToName: q.customer || '',
+      shipToAddress: q.shipToAddress || '',
+      billingFrequency: 'Annually',
+      autoRenewal: q.autoRenewal ? 'Yes' : 'No',
+      expiresDisp: q.expires ? formatMDY(parseDateLocal(q.expires)) : '',
+      billingContact: q.billingContact || '',
+      paymentMethod: q.paymentMethod || '',
+      paymentTerms: q.paymentTerms || '',
+      currency: q.currency || '',
     },
   };
 }
@@ -919,8 +1029,9 @@ function makeCreateQuote(v, data) {
     if (m.isRenOnly && ((q.renewLines || []).length === 0 || (q.renewLines || []).some((x) => !(+x.price > 0)))) { flash('Enter the amount per year for each renewing product', 'warn'); return; }
     if (partnerActive && !q.partnerCompany.trim()) { flash('Add the partner company (bill to) in “Who’s it for?”', 'warn'); return; }
     if (!q.customer.trim()) { flash('Add a customer name in “Who’s it for?” first', 'warn'); return; }
-    window.SQG_PDF.downloadQuotePdf(data);
-    flash('Quote ' + q.number + ' ready for ' + q.customer + (partnerActive ? ' via ' + q.partnerCompany : '') + ' — PDF downloaded', 'ok');
+    window.SQG_PDF.downloadQuotePdf(data)
+      .then(() => flash('Quote ' + q.number + ' ready for ' + q.customer + (partnerActive ? ' via ' + q.partnerCompany : '') + ' — PDF downloaded', 'ok'))
+      .catch(() => flash('Could not generate the PDF — try again', 'warn'));
   };
 }
 

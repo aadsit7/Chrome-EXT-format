@@ -45,9 +45,28 @@ USING THE TOOL
   Tap it to slide up the full quote breakdown (line items, discounts,
   billing schedule, savings); tap the dimmed area, the ×, or press
   Escape to close it.
-- "Create quote" downloads a one-page branded quote PDF (line items,
-  discounts, billing schedule, total contract value, and signature
-  lines), named after the quote number (e.g. QT-2026-1234.pdf).
+- "Billing details (for PDF)" is a collapsible group at the bottom of
+  "Who's it for?". It holds the fields that only appear on the quote
+  PDF: Bill To address and Ship To address (multi-line), Billing
+  Contact, Payment Method (default "Credit Card, ACH/Wire, Check"),
+  Payment Terms (default "Net 120"), Currency (default "USD"), and an
+  Auto Renewal Yes/No toggle (default No). All of it is optional —
+  fields left blank print as blank space on the PDF. Like every other
+  field, these save with the quote (localStorage) and are restored
+  when you reopen the panel.
+- "Create quote" downloads a one-page Recast-branded quote PDF that
+  matches the official Recast Software quote form: the Recast logo
+  and company address, the quote number, a Bill To / Ship To block,
+  an Order Details section (billing contact, payment method, currency,
+  payment terms), a product table (one row per line item, with start
+  date, end date, quantity, and total), a Grand Total, the standard
+  Terms & Conditions copy, and an Acceptance & Signatures block with
+  signature/name/title/date lines for both parties. The file is named
+  after the quote number (e.g. QT-2026-1234.pdf). All pricing shown is
+  the same computed total already displayed in the app — the PDF never
+  re-derives pricing math, and everything is laid out to always fit on
+  one page (the Terms & Conditions type shrinks slightly first if a
+  quote has many line items).
 - The in-progress quote and all pricing settings are saved to this
   browser (localStorage) and restored automatically when you reopen
   the panel. Use "Reset to default pricing" on the settings screen to
@@ -73,5 +92,10 @@ app.css         All styles (single-column, side-panel-first layout)
 app.js          All application logic (no inline scripts)
 analyze.js      "Analyze this page" — read-only page extraction,
                 review card, and apply-through-setQ logic
-pdf.js          Self-contained PDF writer for the quote export
+pdf.js          Self-contained PDF writer for the quote export —
+                replicates the official Recast quote template
+                (section bars, product table, terms, signatures) and
+                embeds the bundled logo as a raster image at runtime
 icons/          Recast-branded "Re" icons (16, 48, 128 px; 512 px source)
+assets/         recast-logo.png — the transparent Recast wordmark logo,
+                embedded in the top-left of every generated quote PDF

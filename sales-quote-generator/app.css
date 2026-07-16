@@ -403,6 +403,24 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .ds-input input::placeholder { color: var(--text-tertiary); }
 .ds-input input:hover { border-color: var(--border-strong); }
 .ds-input input:focus { outline: none; border-color: var(--border-accent); box-shadow: var(--focus-ring); }
+.ds-input textarea {
+  padding: 10px 12px; border: 1px solid var(--border-default); border-radius: 10px;
+  background: var(--surface-card); font: inherit; font-size: 14px; color: var(--text-primary);
+  box-sizing: border-box; width: 100%; min-height: 64px; resize: vertical;
+}
+.ds-input textarea::placeholder { color: var(--text-tertiary); }
+.ds-input textarea:hover { border-color: var(--border-strong); }
+.ds-input textarea:focus { outline: none; border-color: var(--border-accent); box-shadow: var(--focus-ring); }
+
+/* ---- Collapsible group (Billing details for PDF) ---- */
+.sqg-collapse { border-top: 1px solid var(--border-subtle); margin-top: 16px; padding-top: 14px; }
+.sqg-collapse-head {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: none; border: none; padding: 0; margin: 0; cursor: pointer; text-align: left; font: inherit;
+}
+.sqg-collapse-chev { display: inline-flex; color: var(--text-tertiary); transition: transform 160ms; flex-shrink: 0; }
+.sqg-collapse-chev.open { transform: rotate(180deg); }
+.sqg-collapse-body { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
 
 /* Plain link-style button */
 .sqg-link-btn {
