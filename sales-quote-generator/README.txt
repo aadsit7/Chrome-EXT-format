@@ -4,8 +4,11 @@ Sales Quote Generator — Chrome extension (side panel)
 Build sales quotes with volume pricing, discounts, renewals, and
 configurable pricing rules — right in the browser side panel, next to
 whatever page you're working on. Dependency-free and works offline; the
-only network call is the optional "Save to database" action, which sends
-a finished quote to a shared Google Sheet. Requires Chrome 114+.
+only network calls are the one-time first-run registration and the
+optional "Save to database" action, which sends a finished quote to a
+shared Google Sheet (both go to the same Apps Script web app; if you're
+offline at first run you still get straight into the app). Requires
+Chrome 114+.
 
 The optional "Analyze this page" button reads the tab you're on to
 pre-fill the form; page reading happens locally in your browser and
@@ -104,19 +107,38 @@ USING THE TOOL
   the panel. Use "Reset to default pricing" on the settings screen to
   restore the built-in rate tables and rules.
 
+FIRST RUN — WHO ARE YOU?
+------------------------
+- On first run the panel REQUIRES your first and last name before it
+  shows anything else. The whole app (calculator, settings, dock) stays
+  hidden behind a one-time registration screen with a "First name" and a
+  "Last name" field; the "Start" button stays disabled until both fields
+  have text. This replaces the old single "name" prompt — any name saved
+  by an earlier version no longer counts, so you'll be asked once more.
+- When you press Start, your names are saved to this browser
+  (localStorage) along with a hidden user_id — a random identifier
+  generated once for you. Your names become the default "Prepared by" on
+  your quotes, and the user_id is stamped on every entry you save to the
+  shared database.
+- The registration screen never appears again unless the browser's
+  storage is cleared. Your names are captured once and are intended to be
+  fixed; the settings screen shows them read-only as "Signed in as
+  <first> <last>" (there is no editable name field anymore).
+- Merged across computers: the shared database matches people by first +
+  last name and hands back one canonical user_id for that name. The
+  extension quietly adopts that id, so the same name used on a second
+  computer is merged into a single profile automatically — nothing to
+  set up, and you won't see any change in the app.
+
 SAVING QUOTES TO THE SHARED DATABASE
 ------------------------------------
-- On first run the panel asks "What's your name?" before showing the
-  calculator. Type your name and press Save — it's stored in this
-  browser (localStorage) and used as the default "Prepared by" on your
-  quotes. You can change it any time from the "Your profile" field at
-  the top of the settings screen.
 - "Save to database" (next to "Create quote" in the bottom dock) sends
-  the current quote — your name, the full quote, the same annual / total
-  / savings figures and per-line prices shown in the app, and the source
-  page URL if the quote came from "Analyze this page" — to a shared
-  Google Sheet. It's a separate, deliberate action: it never runs on its
-  own, and it doesn't change what "Create quote" (the PDF export) does.
+  the current quote — your user object ({ user_id, first name, last
+  name }), the full quote, the same annual / total / savings figures and
+  per-line prices shown in the app, and the source page URL if the quote
+  came from "Analyze this page" — to a shared Google Sheet. It's a
+  separate, deliberate action: it never runs on its own, and it doesn't
+  change what "Create quote" (the PDF export) does.
 - When the save succeeds, a short AI note about the quote comes back and
   is shown in the usual toast message (and kept with the quote). If the
   save can't go through (offline, etc.), a friendly "Couldn't save to the
@@ -144,13 +166,18 @@ manifest.json   Manifest V3 definition (sidePanel + scripting; host
 background.js   Service worker — opens the side panel on icon click
 app.html        The app page (calculator + settings screens)
 app.css         All styles (single-column, side-panel-first layout)
-app.js          All application logic (no inline scripts)
+app.js          All application logic (no inline scripts) — includes the
+                first-run first/last-name registration gate and the user
+                profile { user_id, first name, last name } stored in
+                localStorage 'sqg-user'
 analyze.js      "Analyze this page" — read-only page extraction
                 (Salesforce Lightning/Classic first, generic fallback),
                 all-frames merge, review card, apply-through-setQ logic
 sheets.js       "Save to database" — POSTs the current quote (built from
-                the same computed totals/line prices the app shows) to the
-                Google Apps Script web app and shows the AI note it returns
+                the same computed totals/line prices the app shows, plus the
+                user object) to the Google Apps Script web app and shows the
+                AI note it returns; also registers the user on first run and
+                adopts the canonical user_id the server sends back
 pdf.js          Self-contained PDF writer for the quote export —
                 replicates the official Recast quote template
                 (section bars, product table, terms, signatures) and

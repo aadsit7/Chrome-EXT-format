@@ -11,15 +11,20 @@ const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyxEGl9ri8aSieW
    Everything sent is read from the SAME computed model the app already shows in
    the quote view (computeView() in app.js), so the totals and line prices match
    the PDF exactly — pricing is never re-derived here. Relies on globals defined
-   in app.js (state, computeView, persist, int, flash); this script is loaded
-   before app.js and only touches those globals when saveQuoteToSheet() is called
-   (well after app.js has initialised, i.e. when the user clicks the button). */
+   in app.js (state, computeView, persist, int, flash, readUser, adoptCanonicalId);
+   this script is loaded before app.js and only touches those globals at call time
+   (well after app.js has initialised, i.e. when the user clicks a button). */
 
 window.SQG_SHEETS = (function () {
-  var USER_KEY = 'sqg-user'; // same localStorage key the profile name is stored under
+  // The user identity object { userId, firstName, lastName } lives in localStorage
+  // 'sqg-user' and is read via app.js's readUser() so there's one source of truth.
+  function currentUser() {
+    try { return (typeof readUser === 'function') ? readUser() : null; } catch (e) { return null; }
+  }
 
-  function readUserName() {
-    try { return (localStorage.getItem(USER_KEY) || '').trim(); } catch (e) { return ''; }
+  // If a JSON response from APPS_SCRIPT_URL carries the canonical userId, adopt it.
+  function maybeAdoptId(data) {
+    try { if (typeof adoptCanonicalId === 'function') adoptCanonicalId(data); } catch (e) {}
   }
 
   // Round a dollar amount to cents, matching how the app formats money.
@@ -75,7 +80,7 @@ window.SQG_SHEETS = (function () {
     var q = v.q, m = v.m;
     return {
       action: 'saveQuote',
-      user: readUserName(),
+      user: currentUser(),   // { userId, firstName, lastName } from localStorage 'sqg-user'
       quote: q,
       totals: {
         annual: round2(m.totalAnnualC / 100),                       // annual total (dollars)
@@ -113,6 +118,9 @@ window.SQG_SHEETS = (function () {
         var data = {};
         try { data = JSON.parse(text) || {}; } catch (e) { data = {}; }
         if (data.ok === false) throw new Error('server reported failure');
+        // Auto-merge across computers: adopt the server's canonical userId if it
+        // returned one that differs from ours (silent, no UI change).
+        maybeAdoptId(data);
         var summary = (data.aiSummary == null ? '' : String(data.aiSummary)).trim();
         // Keep the note on the quote so it isn't lost, then surface it via the toast.
         try {
@@ -126,8 +134,31 @@ window.SQG_SHEETS = (function () {
       });
   }
 
-  // Attach the function so app.js can wire it to the "Save to database" button.
-  window.saveQuoteToSheet = saveQuoteToSheet;
+  /* Fire-and-forget user registration, called once from the first-run gate.
+     POSTs { action:'registerUser', user } and, if the server answers with the
+     canonical userId, adopts it. Never blocks the UI and never surfaces errors:
+     if the user is offline they still get into the app and are registered on
+     their first saved quote. */
+  function registerUser(user) {
+    try {
+      fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'registerUser', user: user }),
+      })
+        .then(function (resp) { return resp.ok ? resp.text() : ''; })
+        .then(function (text) {
+          var data = {};
+          try { data = JSON.parse(text) || {}; } catch (e) { data = {}; }
+          maybeAdoptId(data);
+        })
+        .catch(function () { /* offline is fine — registered on first saved quote */ });
+    } catch (e) { /* fire-and-forget */ }
+  }
 
-  return { saveQuoteToSheet: saveQuoteToSheet };
+  // Attach the functions so app.js can wire them to the UI.
+  window.saveQuoteToSheet = saveQuoteToSheet;
+  window.registerUser = registerUser;
+
+  return { saveQuoteToSheet: saveQuoteToSheet, registerUser: registerUser };
 })();
