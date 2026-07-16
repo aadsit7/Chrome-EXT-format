@@ -795,6 +795,37 @@ window.SQG_ANALYZE = (function () {
     return merged;
   }
 
+  /* Fill the form from free text (used by the voice / "Speak to fill" feature).
+     Runs the SAME advanced AI analysis as "Analyze this page" — the words are
+     POSTed to the Apps Script, which routes each spoken value to the right field
+     — then shows the results in the review card. Nothing is written until Apply;
+     the pricing engine still computes every total. On any failure it just tells
+     the user to try again (there's no page to fall back to). */
+  function fillFromText(text, sourceLabel) {
+    text = (text == null ? '' : String(text)).replace(/\s+/g, ' ').trim();
+    if (!text) { flash('Nothing to fill in — try again', 'warn'); return; }
+    if (!(window.SQG_SHEETS && typeof window.SQG_SHEETS.analyzePage === 'function')) {
+      flash('Voice fill needs a connection — try again', 'warn');
+      return;
+    }
+    var catalog = state.cfg.products.map(function (p) { return { id: p.id, name: p.name, unit: p.unit }; });
+    flash('Analyzing what you said…', 'ok');
+    window.SQG_SHEETS.analyzePage(text, catalog).then(function (data) {
+      var ai = buildAiFindings(data);
+      if (ai.findings.length) {
+        state.analyze = {
+          findings: ai.findings, title: '', url: '', note: ai.note || null,
+          spoken: text, source: sourceLabel || 'voice',
+        };
+        render();
+      } else {
+        flash('Couldn’t pull quote details from that — try rephrasing', 'warn');
+      }
+    }).catch(function () {
+      flash('Couldn’t analyze that — check your connection and try again', 'warn');
+    });
+  }
+
   /* ---- apply through the app's state functions (setQ) ---- */
   function applyFindings() {
     if (!state.analyze) return;
@@ -845,11 +876,14 @@ window.SQG_ANALYZE = (function () {
      ========================================================================= */
   function reviewCard() {
     var a = state.analyze;
+    var isVoice = a.source === 'voice';
     var card = h('section', { class: 'sqg-card sqg-analyze-card' },
       h('div', { class: 'sqg-analyze-head' },
-        h('h2', null, 'Found on this page'),
+        h('h2', null, isVoice ? 'From what you said' : 'Found on this page'),
         h('p', { class: 'sqg-subhead' }, 'Review and choose what to fill in — nothing changes until you apply.')
       ));
+
+    if (isVoice && a.spoken) card.append(h('p', { class: 'sqg-voice-heard' }, '“' + a.spoken + '”'));
 
     var list = h('div', { class: 'sqg-analyze-list' });
     a.findings.forEach(function (f) {
@@ -881,10 +915,19 @@ window.SQG_ANALYZE = (function () {
     var wrap = h('div', { class: 'sqg-analyze-wrap' });
     var ico = h('span', { class: 'sqg-analyze-ico' });
     ico.innerHTML = SVG_SCAN;
-    wrap.append(h('button', {
+    var analyzeBtn = h('button', {
       class: 'sqg-analyze-btn', type: 'button', onClick: run,
       title: 'Read the current tab and suggest quote fields',
-    }, ico, h('span', null, 'Analyze this page')));
+    }, ico, h('span', null, 'Analyze this page'));
+
+    // Sit the "Speak to fill" mic button next to "Analyze this page" — both fill
+    // the form for you. The mic button hides itself when voice isn't supported.
+    var micBtn = (window.SQG_VOICE && typeof window.SQG_VOICE.button === 'function') ? window.SQG_VOICE.button() : null;
+    wrap.append(micBtn ? h('div', { class: 'sqg-fill-row' }, analyzeBtn, micBtn) : analyzeBtn);
+
+    var strip = (window.SQG_VOICE && typeof window.SQG_VOICE.liveStrip === 'function') ? window.SQG_VOICE.liveStrip() : null;
+    if (strip) wrap.append(strip);
+
     if (state.analyze) wrap.append(reviewCard());
     return wrap;
   }
@@ -977,7 +1020,7 @@ window.SQG_ANALYZE = (function () {
   }
 
   return {
-    bar: bar, run: run, applyFindings: applyFindings,
+    bar: bar, run: run, applyFindings: applyFindings, fillFromText: fillFromText,
     _extract: extractQuoteInfo, _snapshot: snapshotPage, _parseDate: parseDate,
     _buildFindings: buildFindings, _buildAiFindings: buildAiFindings,
     _buildSnapshotText: buildSnapshotText, _mergeAiRule: mergeAiRule, _mergeFrames: mergeFrames,

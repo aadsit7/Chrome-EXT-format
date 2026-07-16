@@ -76,6 +76,23 @@ USING THE TOOL
   inside Lightning renders in iframes; the extraction runs in every
   frame and the results are merged. Any other (non-Salesforce) website
   falls back to the generic rule-based detection described above.
+- "Speak to fill" (the microphone button next to "Analyze this page")
+  lets you dictate the quote instead of typing it. Tap it and the button
+  turns red and starts listening; say the details in plain language — for
+  example, "The customer is Acme Corporation, contact Jane Doe, email
+  jane at acme dot com, they want two thousand endpoints of Right Click
+  Tools on a two-year term." The words appear live as you speak. Tap the
+  button again to stop, and the transcript is run through the SAME
+  advanced AI analysis as "Analyze this page": it figures out which field
+  each spoken value belongs to (customer, billing contact, email,
+  reseller / partner, bill-to and ship-to addresses, quote expiration,
+  currency, subscription term, and catalog products with quantities) and
+  shows them in the same review card. As always, nothing is written until
+  you press Apply, and a detected reseller only fills the partner fields
+  with a note (it never flips Partner pricing). Speech is transcribed by
+  the browser's built-in Web Speech API using the standard microphone
+  permission prompt — allow mic access the first time. If your browser
+  has no speech support the microphone button simply doesn't appear.
 - The "New quote" button (the page-with-a-plus icon in the header, next
   to the gear) starts a fresh quote: it clears every field and resets
   the calculator to its defaults with a new quote number. Because this
@@ -181,6 +198,11 @@ PERMISSIONS
               permissions were added. The extension does not read pages in
               the background; it only reads a tab when you press "Analyze
               this page".
+- microphone  Not a manifest permission. "Speak to fill" uses the
+              browser's built-in Web Speech API, which asks for microphone
+              access with the standard browser prompt the first time you
+              use it. The mic is only on while you're actively dictating
+              (the button is red); tap it again to stop.
 
 FILES
 -----
@@ -199,7 +221,16 @@ analyze.js      "Analyze this page" — read-only page extraction. Captures a
                 and related-list tables, POSTs it (with the catalog) for an
                 AI read, and maps the returned fields into the review card;
                 falls back to the built-in rule-based Salesforce/generic
-                detection, then apply-through-setQ
+                detection, then apply-through-setQ. Also exposes
+                fillFromText(), used by voice.js to route dictated text
+                through the same AI analysis + review card
+voice.js        "Speak to fill" — the microphone button and voice input.
+                Transcribes speech with the browser's Web Speech API and
+                hands the transcript to analyze.js's fillFromText(), so
+                dictation flows through the same AI field-routing and review
+                card as "Analyze this page". No new permissions (uses the
+                browser's standard mic prompt); hides itself when the
+                browser has no speech support
 sheets.js       Shared-database + AI network calls to the Apps Script web
                 app: saveQuote (auto-run by "Create quote"; sends the user
                 object + computed totals/line prices, returns the AI note),
