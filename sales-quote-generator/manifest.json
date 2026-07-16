@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sales Quote Generator",
-  "version": "2.2.0",
+  "version": "2.4.0",
   "description": "Build sales quotes with volume pricing, discounts, renewals, and configurable pricing rules — right in the browser side panel.",
   "minimum_chrome_version": "114",
   "permissions": ["sidePanel", "scripting"],

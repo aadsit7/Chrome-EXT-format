@@ -225,12 +225,26 @@
     return out;
   }
 
-  function drawAddressBlock(p, name, addrLines, x, startY, width) {
-    fitText(p, name || '', x, startY, width, 8.5, COLOR.body);
+  function drawAddressBlock(p, name, addrLines, extras, x, startY, width, maxLines) {
+    // Draws: the name, then address lines, then any labeled extra lines (e.g. a
+    // Contact and an Email line). Everything is capped to maxLines TOTAL (name
+    // included) so the block never runs into the fields below it. Room for the
+    // extras is reserved first, so they are never dropped for a long address.
+    extras = (extras || []).filter((s) => s);
+    maxLines = maxLines || 8;
+    fitText(p, name || '', x, startY, width, 8.5, COLOR.body); // line 0 = name
     let y = startY + 11;
-    addrLines.forEach((line) => {
-      if (line) p.text(line, x, y, { size: 8.5, color: COLOR.body });
-      y += 11;
+    let used = 1;
+    const addrRoom = Math.max(0, maxLines - used - extras.length);
+    let drawn = 0;
+    for (let i = 0; i < addrLines.length && drawn < addrRoom; i++) {
+      if (addrLines[i]) p.text(addrLines[i], x, y, { size: 8.5, color: COLOR.body });
+      y += 11; drawn++; used++;
+    }
+    extras.forEach((ex) => {
+      if (used >= maxLines) return;
+      fitText(p, ex, x, y, width, 8.5, COLOR.body);
+      y += 11; used++;
     });
   }
 
@@ -368,8 +382,16 @@
     p.text('Address', L, 149, { size: 8.5, bold: true, color: COLOR.navy });
     p.text('Ship To', 352, 138, { size: 8.5, bold: true, color: COLOR.navy });
     p.text('Address', 352, 149, { size: 8.5, bold: true, color: COLOR.navy });
-    drawAddressBlock(p, meta.billToName, billLines, 172, 138, 170);
-    drawAddressBlock(p, meta.shipToName, shipLines, 460, 138, 128);
+
+    // Bill To also carries the person (Contact) and the relevant email, so a
+    // reader sees who / where to invoice. On a partner deal the bill-to party is
+    // the reseller, so its email is the partner email; otherwise the contact email.
+    const billContact = meta.billingContact ? ('Contact: ' + meta.billingContact) : '';
+    const billEmailVal = meta.partnerActive ? meta.partnerEmail : meta.email;
+    const billEmail = billEmailVal ? ('Email: ' + billEmailVal) : '';
+
+    drawAddressBlock(p, meta.billToName, billLines, [billContact, billEmail], 172, 138, 170, 7);
+    drawAddressBlock(p, meta.shipToName, shipLines, [], 460, 138, 128, 7);
 
     p.text('Prepared By', L, 218, { size: 8.5, bold: true, color: COLOR.navy });
     fitText(p, meta.preparedBy || '', 172, 218, 170, 8.5, COLOR.body);
@@ -384,17 +406,22 @@
 
   function drawOrderDetails(p, meta) {
     drawSectionBar(p, 260, 'Order Details');
-    p.text('Billing Contact', L, 292, { size: 8.5, color: COLOR.body });
-    fitText(p, meta.billingContact || '', 214, 292, 136, 8.5, COLOR.body);
-    p.text('Payment Method', 360, 292, { size: 8.5, color: COLOR.body });
-    fitText(p, meta.paymentMethod || '', 500, 292, 100, 8.5, COLOR.body, { floor: 6 });
-    p.line(20, 297, 592, 297, COLOR.hair, 0.5);
-
-    p.text('Currency', L, 311, { size: 8.5, color: COLOR.body });
-    fitText(p, meta.currency || '', 214, 311, 136, 8.5, COLOR.body);
-    p.text('Payment Terms', 360, 311, { size: 8.5, color: COLOR.body });
-    fitText(p, meta.paymentTerms || '', 500, 311, 100, 8.5, COLOR.body, { floor: 6 });
-    p.line(20, 316, 592, 316, COLOR.hair, 0.5);
+    // Row 1 — Billing Contact + Payment Method
+    p.text('Billing Contact', L, 289, { size: 8.5, color: COLOR.body });
+    fitText(p, meta.billingContact || '', 214, 289, 136, 8.5, COLOR.body);
+    p.text('Payment Method', 360, 289, { size: 8.5, color: COLOR.body });
+    fitText(p, meta.paymentMethod || '', 500, 289, 100, 8.5, COLOR.body, { floor: 6 });
+    p.line(20, 294, 592, 294, COLOR.hair, 0.5);
+    // Row 2 — Email + Currency
+    p.text('Email', L, 305, { size: 8.5, color: COLOR.body });
+    fitText(p, meta.email || '', 214, 305, 136, 8.5, COLOR.body, { floor: 6 });
+    p.text('Currency', 360, 305, { size: 8.5, color: COLOR.body });
+    fitText(p, meta.currency || '', 500, 305, 100, 8.5, COLOR.body);
+    p.line(20, 310, 592, 310, COLOR.hair, 0.5);
+    // Row 3 — Payment Terms
+    p.text('Payment Terms', L, 321, { size: 8.5, color: COLOR.body });
+    fitText(p, meta.paymentTerms || '', 214, 321, 136, 8.5, COLOR.body);
+    p.line(20, 326, 592, 326, COLOR.hair, 0.5);
   }
 
   /* ---- Bundled logo: decoded once via canvas into raw RGB + alpha planes ---- */
