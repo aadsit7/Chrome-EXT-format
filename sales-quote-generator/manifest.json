@@ -4,7 +4,8 @@
   "version": "2.0.0",
   "description": "Build sales quotes with volume pricing, discounts, renewals, and configurable pricing rules — right in the browser side panel.",
   "minimum_chrome_version": "114",
-  "permissions": ["sidePanel"],
+  "permissions": ["sidePanel", "scripting"],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "side_panel": {
     "default_path": "app.html"
   },

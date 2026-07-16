@@ -54,7 +54,7 @@ function defaultQuote() {
 
 /* ---------------- State ---------------- */
 
-const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false };
+const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null };
 let toastTimer = null;
 
 try {
@@ -343,6 +343,7 @@ function renderCalc() {
   const v = computeView();
   const frag = document.createDocumentFragment();
   const main = h('main', { class: 'sqg-main' });
+  if (window.SQG_ANALYZE) main.append(window.SQG_ANALYZE.bar(v));
   main.append(sectionDeal(v), sectionSelling(v), sectionDiscounts(v), sectionWho(v));
   frag.append(main, buildDock(v), buildSheet(v));
   if (state.toast) {

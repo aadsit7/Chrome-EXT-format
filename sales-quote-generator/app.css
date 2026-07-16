@@ -410,6 +410,43 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
   color: var(--text-tertiary); cursor: pointer; text-decoration: underline;
 }
 
+/* ---- Analyze this page ---- */
+.sqg-analyze-wrap { display: flex; flex-direction: column; gap: 12px; }
+.sqg-analyze-btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%;
+  font: inherit; font-size: 13.5px; font-weight: 600; color: var(--text-accent);
+  background: var(--surface-accent-soft); border: 1px solid transparent; border-radius: 12px;
+  padding: 11px 14px; cursor: pointer; transition: all 120ms;
+}
+.sqg-analyze-btn:hover { background: #dbe7fd; }
+.sqg-analyze-btn:active { transform: scale(0.99); }
+.sqg-analyze-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.sqg-analyze-ico { display: inline-flex; }
+.sqg-analyze-ico svg { display: block; }
+
+.sqg-analyze-card { border-color: var(--border-default); box-shadow: var(--shadow-sm); }
+.sqg-analyze-head { margin-bottom: 8px; }
+.sqg-analyze-head h2 { margin: 0; }
+.sqg-analyze-list { display: flex; flex-direction: column; }
+.sqg-analyze-row {
+  display: flex; align-items: flex-start; gap: 11px; padding: 11px 0;
+  border-bottom: 1px solid var(--border-subtle); cursor: pointer;
+}
+.sqg-analyze-row:last-child { border-bottom: none; }
+.sqg-analyze-cb {
+  width: 18px; height: 18px; margin: 1px 0 0; flex-shrink: 0; cursor: pointer;
+  accent-color: var(--accent);
+}
+.sqg-analyze-texts { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sqg-analyze-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-tertiary);
+}
+.sqg-analyze-value { font-size: 13.5px; font-weight: 600; color: var(--text-strong); word-break: break-word; }
+.sqg-analyze-replace { font-size: 11.5px; color: var(--amber-600); }
+.sqg-analyze-actions { display: flex; gap: 10px; margin-top: 14px; }
+.sqg-analyze-actions .ds-btn { flex: 1; }
+
 /* Reduce motion */
 @media (prefers-reduced-motion: reduce) {
   .sqg-sheet, .sqg-scrim, .sqg-toast { animation: none; }
