@@ -35,6 +35,30 @@ USING THE TOOL
   can't be read (chrome:// pages, the Chrome Web Store, PDF viewers)
   show a short notice, and "Couldn't find quote info on this page."
   appears when nothing useful is detected.
+
+  Salesforce support (primary target): the button recognises Salesforce
+  record pages — both Lightning and Classic — by their URL
+  (lightning.force.com, my.salesforce.com, salesforce.com, force.com,
+  visualforce.com) or by Lightning page markers, and reads them first.
+    * Account Name / the Opportunity's related Account → Customer /
+      company. A Bill To Name (or billing account) that differs from the
+      account is mapped to Partner company.
+    * A contact email on the record → Contact email.
+    * A "Renewal", "Contract End", "End Date" or "Expiration" date →
+      the customer's renewal date. "Close Date" is never treated as a
+      renewal date.
+    * Related lists (Opportunity Products, Quote Line Items, Assets) are
+      read by their column headers: the Product column is matched
+      against the built-in catalog, Quantity / Qty sets the line
+      quantity, and Sales Price / Total Price / Annual Price fill the
+      renewal price.
+  Salesforce loads sections lazily, so if the Products related list
+  isn't on screen yet the review card shows: "No products list visible
+  — scroll to the Products section in Salesforce and analyze again." —
+  scroll it into view and click the button again. Classic content shown
+  inside Lightning renders in iframes; the extraction runs in every
+  frame and the results are merged. Any other (non-Salesforce) website
+  falls back to the generic rule-based detection described above.
 - The gear icon in the header switches between the quote calculator
   and the pricing settings screen. Opening settings requires a
   password — the default is 2026. Change it any time from the
@@ -90,8 +114,9 @@ background.js   Service worker — opens the side panel on icon click
 app.html        The app page (calculator + settings screens)
 app.css         All styles (single-column, side-panel-first layout)
 app.js          All application logic (no inline scripts)
-analyze.js      "Analyze this page" — read-only page extraction,
-                review card, and apply-through-setQ logic
+analyze.js      "Analyze this page" — read-only page extraction
+                (Salesforce Lightning/Classic first, generic fallback),
+                all-frames merge, review card, apply-through-setQ logic
 pdf.js          Self-contained PDF writer for the quote export —
                 replicates the official Recast quote template
                 (section bars, product table, terms, signatures) and
