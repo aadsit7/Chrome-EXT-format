@@ -19,6 +19,9 @@ USING THE TOOL
 - The gear icon in the header switches between the quote calculator
   and the pricing settings screen.
 - Settings changes apply to the calculator immediately.
+- "Create quote" downloads a one-page branded quote PDF (line items,
+  discounts, billing schedule, total contract value, and signature
+  lines), named after the quote number (e.g. QT-2026-1234.pdf).
 - The in-progress quote and all pricing settings are saved to this
   browser (localStorage) and restored automatically when you reopen
   the page. Use "Reset to default pricing" on the settings screen to
@@ -31,4 +34,5 @@ background.js   Service worker — opens app.html on icon click
 app.html        The app page (calculator + settings screens)
 app.css         All styles
 app.js          All application logic (no inline scripts)
+pdf.js          Self-contained PDF writer for the quote export
 icons/          Placeholder icons (16, 48, 128 px)
