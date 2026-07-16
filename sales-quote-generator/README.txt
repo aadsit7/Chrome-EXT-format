@@ -3,8 +3,9 @@ Sales Quote Generator — Chrome extension (side panel)
 
 Build sales quotes with volume pricing, discounts, renewals, and
 configurable pricing rules — right in the browser side panel, next to
-whatever page you're working on. Fully self-contained: no network
-access, no external dependencies. Requires Chrome 114+.
+whatever page you're working on. Dependency-free and works offline; the
+only network call is the optional "Save to database" action, which sends
+a finished quote to a shared Google Sheet. Requires Chrome 114+.
 
 The optional "Analyze this page" button reads the tab you're on to
 pre-fill the form; page reading happens locally in your browser and
@@ -103,13 +104,36 @@ USING THE TOOL
   the panel. Use "Reset to default pricing" on the settings screen to
   restore the built-in rate tables and rules.
 
+SAVING QUOTES TO THE SHARED DATABASE
+------------------------------------
+- On first run the panel asks "What's your name?" before showing the
+  calculator. Type your name and press Save — it's stored in this
+  browser (localStorage) and used as the default "Prepared by" on your
+  quotes. You can change it any time from the "Your profile" field at
+  the top of the settings screen.
+- "Save to database" (next to "Create quote" in the bottom dock) sends
+  the current quote — your name, the full quote, the same annual / total
+  / savings figures and per-line prices shown in the app, and the source
+  page URL if the quote came from "Analyze this page" — to a shared
+  Google Sheet. It's a separate, deliberate action: it never runs on its
+  own, and it doesn't change what "Create quote" (the PDF export) does.
+- When the save succeeds, a short AI note about the quote comes back and
+  is shown in the usual toast message (and kept with the quote). If the
+  save can't go through (offline, etc.), a friendly "Couldn't save to the
+  database — check your connection." toast appears and the calculator
+  keeps working normally. The database URL is already wired in, so there
+  is nothing to configure.
+
 PERMISSIONS
 -----------
 - sidePanel   Opens the tool in the browser side panel.
 - scripting   Lets "Analyze this page" run a read-only extraction
               function in the active tab (via chrome.scripting).
-- host_permissions "http://*/*" and "https://*/*" — so the button
-              works on any normal website when you click it. The
+- host_permissions "http://*/*" and "https://*/*" — so "Analyze this
+              page" works on any normal website when you click it, and so
+              "Save to database" can reach the Google Apps Script web app
+              (script.google.com / script.googleusercontent.com). No new
+              permissions were added for the database feature. The
               extension does not read pages in the background; it only
               reads a tab when you press "Analyze this page".
 
@@ -124,6 +148,9 @@ app.js          All application logic (no inline scripts)
 analyze.js      "Analyze this page" — read-only page extraction
                 (Salesforce Lightning/Classic first, generic fallback),
                 all-frames merge, review card, apply-through-setQ logic
+sheets.js       "Save to database" — POSTs the current quote (built from
+                the same computed totals/line prices the app shows) to the
+                Google Apps Script web app and shows the AI note it returns
 pdf.js          Self-contained PDF writer for the quote export —
                 replicates the official Recast quote template
                 (section bars, product table, terms, signatures) and

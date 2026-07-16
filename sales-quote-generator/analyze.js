@@ -549,6 +549,7 @@ window.SQG_ANALYZE = (function () {
   function applyFindings() {
     if (!state.analyze) return;
     var q = state.quote, patch = {}, count = 0;
+    var srcUrl = state.analyze.url || ''; // the analyzed tab URL, recorded onto the quote
     var lines = q.lines.map(function (l) { return Object.assign({}, l); });
     var renew = (q.renewLines || []).map(function (l) { return Object.assign({}, l); });
     var linesTouched = false, renewTouched = false;
@@ -577,6 +578,7 @@ window.SQG_ANALYZE = (function () {
 
     state.analyze = null;
     if (count === 0) { render(); flash('Select at least one value to apply', 'warn'); return; }
+    patch.sourceUrl = srcUrl; // this quote now came from "Analyze this page"
     setQ(patch); // persists to localStorage + re-renders, exactly like a manual edit
     flash('Filled in ' + count + ' value' + (count > 1 ? 's' : '') + ' from the page', 'ok');
   }

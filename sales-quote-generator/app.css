@@ -260,6 +260,8 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 }
 .sqg-dock-sub { font-size: 11px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .sqg-dock-sub .save { color: var(--green-600); font-weight: 600; }
+.sqg-dock-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+.sqg-dock-actions .ds-btn { white-space: nowrap; }
 
 /* ---- Quote details sheet ---- */
 .sqg-scrim {
