@@ -159,12 +159,18 @@ window.SQG_SHEETS = (function () {
   /* AI page analysis — POSTs the rich page snapshot + the live catalog and
      returns the Apps Script's structured fields for the review card. Rejects on
      any transport/parse failure so analyze.js can fall back to the existing
-     rule-based detection. Never touches the quote or the calculator itself. */
-  function analyzePage(pageText, catalog) {
+     rule-based detection. Never touches the quote or the calculator itself.
+
+     `mode` tells the server which brain to use: "page" for "Analyze this page"
+     (a web-page snapshot) and "voice" for "Speak to fill" (conversational quote
+     dictation from fillFromText). It defaults to "page", so the currently
+     deployed Apps Script keeps working unchanged until the voice-mode prompt is
+     re-pasted (see APPS-SCRIPT-UPGRADE.txt). */
+  function analyzePage(pageText, catalog, mode) {
     return fetch(APPS_SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'analyzePage', pageText: pageText, catalog: catalog }),
+      body: JSON.stringify({ action: 'analyzePage', pageText: pageText, catalog: catalog, mode: mode === 'voice' ? 'voice' : 'page' }),
     })
       .then(function (resp) {
         if (!resp.ok) throw new Error('HTTP ' + resp.status);

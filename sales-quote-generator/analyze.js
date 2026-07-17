@@ -1356,6 +1356,48 @@ window.SQG_ANALYZE = (function () {
       });
     }
 
+    // Deal / discount / support fields (Task 2). Each is shown as a normal
+    // finding in the review card and, on Apply, routed through the SAME state
+    // patches the live voice parser uses (see applyFindings — mirrors voice.js
+    // buildPatch, including the clamp / max-discount rules). Nothing is written
+    // here; findings are only proposed until the user applies.
+    var ct = S(data.customerType).toLowerCase();
+    if (ct) {
+      var ctVal = /new|net.?new/.test(ct) ? 'new' : (/current|existing/.test(ct) ? 'current' : null);
+      if (ctVal) out.push({
+        field: 'customerType', value: ctVal, checked: true, label: 'Customer type',
+        display: ctVal === 'new' ? 'Net new' : 'Current customer',
+        replaces: (q.customerType && q.customerType !== ctVal) ? (q.customerType === 'new' ? 'Net new' : 'Current customer') : null,
+      });
+    }
+    var dt = S(data.dealType).toLowerCase().replace(/[^a-z]/g, '');
+    if (dt) {
+      var dtVal = (dt === 'addonren' || dt === 'addonrenewal' || /addon.*ren/.test(dt)) ? 'addonren'
+        : (dt === 'ren' || dt === 'renewal' || dt === 'renew') ? 'ren'
+        : (dt === 'addon' || /add.?on/.test(dt)) ? 'addon' : null;
+      if (dtVal) out.push({
+        field: 'dealType', value: dtVal, checked: true, label: 'Deal type',
+        display: (dtVal === 'ren' ? 'Renewal' : dtVal === 'addonren' ? 'Add-on + renewal' : 'Add-on') + ' (current customer)',
+        replaces: (q.customerType === 'current' && q.dealType && q.dealType !== dtVal) ? q.dealType : null,
+      });
+    }
+    var ed = parseFloat(data.extraDiscountPct);
+    if (isFinite(ed) && ed > 0) out.push({
+      field: 'extraPct', value: ed, checked: true, label: 'Extra discount',
+      display: ed + '%', replaces: (+q.extraPct > 0 && +q.extraPct !== ed) ? (q.extraPct + '%') : null,
+    });
+    var pmg = parseFloat(data.partnerMarginPct);
+    if (isFinite(pmg) && pmg >= 0) out.push({
+      field: 'partnerMargin', value: pmg, checked: true, label: 'Partner margin',
+      display: pmg + '% · turns on partner pricing', replaces: null,
+    });
+    if (data.premiumSupport === true || /^true$/i.test(String(data.premiumSupport))) out.push({
+      field: 'premiumSupport', value: true, checked: true, label: 'Premium support', display: 'On', replaces: null,
+    });
+    else if ((data.premiumSupport === false || /^false$/i.test(String(data.premiumSupport))) && q.supportAll) out.push({
+      field: 'premiumSupport', value: false, checked: true, label: 'Premium support', display: 'Off', replaces: 'On',
+    });
+
     (Array.isArray(data.lines) ? data.lines : []).forEach(function (li) {
       if (!li) return;
       // Resolve by id OR name OR partial name (the AI may return either). Fall
@@ -1430,7 +1472,9 @@ window.SQG_ANALYZE = (function () {
     }
     var catalog = state.cfg.products.map(function (p) { return { id: p.id, name: p.name, unit: p.unit }; });
     flash('Analyzing what you said…', 'ok');
-    window.SQG_SHEETS.analyzePage(text, catalog).then(function (data) {
+    // "voice" mode → the server treats the text as conversational quote dictation
+    // (see APPS-SCRIPT-UPGRADE.txt) and returns the extended deal/discount schema.
+    window.SQG_SHEETS.analyzePage(text, catalog, 'voice').then(function (data) {
       var ai = buildAiFindings(data);
       if (ai.findings.length) {
         state.analyze = {
@@ -1454,6 +1498,13 @@ window.SQG_ANALYZE = (function () {
     var lines = q.lines.map(function (l) { return Object.assign({}, l); });
     var renew = (q.renewLines || []).map(function (l) { return Object.assign({}, l); });
     var linesTouched = false, renewTouched = false;
+    // Deal / discount / support patches mirror voice.js buildPatch EXACTLY (same
+    // clamp + max-discount rules, same isRenOnly margin routing) so the AI review
+    // path and the live parser apply these fields identically.
+    var rules = (state.cfg && state.cfg.rules) || {};
+    var clampPct = function (v, max) { return Math.max(0, Math.min(max == null ? 100 : max, +v || 0)); };
+    var isRenOnly = (q.customerType === 'current' && q.dealType === 'ren');
+    var touched = {}; // sections to expand so the applied change is visible (like voice)
 
     // Scalar findings whose field name is exactly the quote key they fill.
     // Includes the original rule-based fields (customer / email / partnerCompany /
@@ -1468,7 +1519,12 @@ window.SQG_ANALYZE = (function () {
       if (!f.checked) return;
       count++;
       if (SCALAR_FIELDS[f.field]) patch[f.field] = f.value;
-      else if (f.field === 'term') { patch.months = f.months; patch.years = f.years; }
+      else if (f.field === 'term') { patch.months = f.months; patch.years = f.years; touched.deal = 1; }
+      else if (f.field === 'customerType') { patch.customerType = f.value; touched.deal = 1; }
+      else if (f.field === 'dealType') { patch.customerType = 'current'; patch.dealType = f.value; touched.deal = 1; }
+      else if (f.field === 'extraPct') { patch.extraPct = clampPct(f.value, rules.maxExtra != null ? rules.maxExtra : 50); touched.discounts = 1; }
+      else if (f.field === 'partnerMargin') { patch.partner = true; patch[isRenOnly ? 'marginRenPct' : 'marginNewPct'] = clampPct(f.value, 100); touched.discounts = 1; }
+      else if (f.field === 'premiumSupport') { patch.supportAll = f.value; touched.selling = 1; }
       else if (f.field === 'lineQty') {
         var ln = lines.find(function (l) { return l.productId === f.productId; });
         if (ln) ln.qty = f.qty; else lines.push({ id: uid(), productId: f.productId, qty: f.qty });
@@ -1487,6 +1543,9 @@ window.SQG_ANALYZE = (function () {
     state.analyze = null;
     if (count === 0) { render(); flash('Select at least one value to apply', 'warn'); return; }
     patch.sourceUrl = srcUrl; // this quote now came from "Analyze this page"
+    // Expand any section we filled so the applied change is visible.
+    var APP = window.SQG_APP || {};
+    if (typeof APP.openSections === 'function') APP.openSections(Object.keys(touched));
     setQ(patch); // persists to localStorage + re-renders, exactly like a manual edit
     flash('Filled in ' + count + ' value' + (count > 1 ? 's' : '') + ' from the page', 'ok');
   }

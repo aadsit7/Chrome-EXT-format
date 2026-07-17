@@ -3,8 +3,10 @@ WHERE TO PASTE THIS (5 steps):
 1. Open https://script.google.com and open the project bound to your web app
    (the same /macros/s/…/exec URL that sheets.js posts to).
 2. Open the .gs file that contains your doPost(e) and its "analyzePage" branch.
-3. DELETE your current analyzePage handler + its old AI prompt, then paste
-   everything BELOW the line "=== PASTE FROM HERE ===" into that .gs file.
+3. DELETE your current analyzePage handler + its old AI prompt(s), then paste
+   everything BELOW the line "=== PASTE FROM HERE ===" into that .gs file. This
+   block now covers BOTH modes — "Analyze this page" (mode:"page") AND "Speak to
+   fill" (mode:"voice") — through the one analyzePage_ handler.
 4. In doPost(e), route the request so action "analyzePage" calls analyzePage_(data)
    — e.g.  if (data.action === 'analyzePage') return json_(analyzePage_(data));
    (see the doPost snippet at the very bottom; keep your saveQuote/registerUser
@@ -14,40 +16,59 @@ WHERE TO PASTE THIS (5 steps):
 =============================================================================
 
 Notes:
-- This replaces ONLY the analyzePage handler + its prompt. Your pricing logic,
+- This replaces ONLY the analyzePage handler + its prompt(s). Your pricing logic,
   saveQuote, and registerUser are untouched.
-- The extension already falls back to its own rule-based extractor if this call
-  fails, so a bad key or a model hiccup can never make things worse.
+- ONE handler, TWO brains. The POST body carries a "mode" field:
+    • mode:"page"  (default) → a web-page / Salesforce snapshot → buildAnalyzePrompt_
+    • mode:"voice"           → conversational quote dictation   → buildVoicePrompt_
+  The field defaults to "page", so if you haven't re-pasted yet the deployed
+  script keeps analyzing pages exactly as before — voice fill simply gets the
+  page brain until this is deployed, which still returns valid JSON.
+- The extension already falls back to its own rule-based extractor (page) or a
+  friendly retry message (voice) if this call fails, so a bad key or a model
+  hiccup can never make things worse.
 - The handler MUST return ONLY a JSON object (no prose, no markdown fences).
 - If you already have a working model call (callGemini_/callModel_/etc.), keep it
-  and just replace its BODY-of-work with buildAnalyzePrompt_() below; otherwise
-  use the callGenerativeModel_() reference implementation included here and set
+  and just feed it whichever prompt buildPrompt picks below; otherwise use the
+  callGenerativeModel_() reference implementation included here and set
   GEMINI_API_KEY in Project Settings ▸ Script properties.
 
 === PASTE FROM HERE ===
 
 /**
- * "Analyze this page" server brain.
+ * "Analyze this page" + "Speak to fill" server brain (both modes).
  *
- * Input  (POST JSON):  { action:"analyzePage", pageText:"<snapshot>", catalog:[{id,name,unit}] }
- * Output (JSON only):  the schema documented in buildAnalyzePrompt_ below.
+ * Input  (POST JSON):
+ *   { action:"analyzePage", mode:"page"|"voice", pageText:"<snapshot or transcript>",
+ *     catalog:[{id,name,unit}] }
+ *   mode is optional and defaults to "page".
+ * Output (JSON only):  the schema documented in buildAnalyzePrompt_ (page) /
+ *   buildVoicePrompt_ (voice) below. Voice returns the EXTENDED schema
+ *   (customerType / dealType / extraDiscountPct / partnerMarginPct / premiumSupport).
  *
- * The extension (analyze.js) sends a PRIORITIZED Salesforce snapshot:
+ * PAGE mode — the extension (analyze.js) sends a PRIORITIZED Salesforce snapshot:
  *   line 1: "SOURCE: Salesforce Opportunity record"  (or a plain page)
  *   then:   "URL: …"
  *           "== DETECTED (rule-based) ==" — values the extension already parsed
  *           "== QUOTE INFORMATION ==", "== RENEWALS ==", "== SUBSCRIPTION INFORMATION ==",
  *           "== PRODUCTS ==", "== OPPORTUNITY INFORMATION ==", "== CONTACT ROLES ==",
  *           "== ACCOUNT DETAILS ==", then other sections and raw page text.
- * Noise sections (Stage/Field History, System Information, Activity, Chatter,
- * Notes, Files) are already stripped out before it reaches you.
+ *   Noise sections (Stage/Field History, System Information, Activity, Chatter,
+ *   Notes, Files) are already stripped out before it reaches you.
+ *
+ * VOICE mode — pageText is a short spoken transcript, e.g. "We are selling
+ *   Application Workspace to Amazon with a fifteen percent discount. It's a new
+ *   customer." Treat it as conversational quote dictation (see buildVoicePrompt_).
  */
 function analyzePage_(data) {
   var pageText = (data && data.pageText != null) ? String(data.pageText) : '';
   var catalog  = (data && Array.isArray(data.catalog)) ? data.catalog : [];
+  var mode     = (data && data.mode === 'voice') ? 'voice' : 'page';
   if (!pageText.trim()) return { ok: true }; // nothing to analyze — extension falls back
 
-  var prompt = buildAnalyzePrompt_(pageText, catalog);
+  var prompt = (mode === 'voice')
+    ? buildVoicePrompt_(pageText, catalog)   // "Speak to fill" — spoken dictation
+    : buildAnalyzePrompt_(pageText, catalog); // "Analyze this page" — page snapshot
 
   var raw;
   try {
@@ -161,6 +182,98 @@ function buildAnalyzePrompt_(pageText, catalog) {
     '--- PAGE SNAPSHOT START ---',
     pageText,
     '--- PAGE SNAPSHOT END ---'
+  ].join('\n');
+}
+
+/**
+ * The "Speak to fill" (voice) prompt. Here pageText is a short SPOKEN transcript,
+ * not a page — a rep dictating a quote in natural language, in any word order.
+ * It teaches the model how people actually talk ("selling X to Y", "through
+ * partner Z", spelled-out numbers, discount vs margin), the same strict-JSON /
+ * never-invent rules as page mode, and the EXTENDED schema the extension applies
+ * (customerType / dealType / extraDiscountPct / partnerMarginPct / premiumSupport
+ * plus customer / partnerCompany / lines / renewLines / term / contact).
+ */
+function buildVoicePrompt_(pageText, catalog) {
+  var catalogLines = (catalog || []).map(function (p) {
+    return '  - id "' + p.id + '"  name "' + p.name + '"  (priced per ' + (p.unit === 'user' ? 'user' : 'endpoint') + ')';
+  }).join('\n');
+
+  return [
+    'You extract sales-quote fields from a short SPOKEN transcript. A sales rep is',
+    'dictating a quote out loud, in natural language and ANY word order. Return',
+    'ONLY a single JSON object — no explanation, no markdown, no code fences. Use',
+    'null (or omit the key) for anything not clearly said. NEVER invent, guess, or',
+    'calculate values that were not spoken. Speech may be slightly misheard; map',
+    'only what is clearly there.',
+    '',
+    'PRODUCT CATALOG (match spoken products to these; return the catalog id OR the',
+    'exact name — partial/substring matches are fine, e.g. "app workspace" → the',
+    'Application Workspace id):',
+    catalogLines || '  (none provided)',
+    '',
+    'HOW PEOPLE SAY IT — map these patterns (they can appear in any order):',
+    '  • "selling X to Y", "sell X to Y", "quoting X to Y", "quote for Y", "deal',
+    '    with Y", "for Y"  →  Y is the CUSTOMER (customer) and X is the PRODUCT.',
+    '    The customer is the company being sold to, NOT the product and NOT the rep.',
+    '  • "through partner Z", "via Z", "with partner Z", "reseller Z", "sell through',
+    '    Z"  →  Z is the reseller (partnerCompany). A partner/reseller is NOT the',
+    '    customer.',
+    '  • "N percent discount", "discount of N percent", "N% off", "a N percent',
+    '    sweetener" — in ANY word order  →  extraDiscountPct = N. BUT if the word',
+    '    "margin" is used ("N percent margin", "partner margin of N", "margin of N',
+    '    percent")  →  partnerMarginPct = N instead (and that implies a partner',
+    '    deal). "annual increase / uplift / escalation of N percent" is neither —',
+    '    ignore it for these two fields.',
+    '  • "new customer", "net new", "brand new logo"  →  customerType = "new".',
+    '    "current customer", "existing customer", "current account"  →  customerType',
+    '    = "current".',
+    '  • "renewal" / "renewing"  →  dealType = "ren". "add-on" / "upsell" / "expansion"',
+    '    →  dealType = "addon". "add-on and renewal" / "add-on plus renewal"  →',
+    '    dealType = "addonren". (dealType only applies to a current customer.)',
+    '  • "premium support", "with support", "add support"  →  premiumSupport = true.',
+    '    "no support", "without premium support"  →  premiumSupport = false.',
+    '  • "N year term", "N years", "a term of N years", "N month term"  →  termMonths',
+    '    (years × 12). "two year term" = 24.',
+    '  • a quantity near a product ("2,500 endpoints", "500 users", "needs 2,500 of',
+    '    them")  →  that product line\'s qty.',
+    '',
+    'SPELLED-OUT NUMBERS: convert every number word to a figure — "fifteen" → 15,',
+    '"twenty five hundred" / "two thousand five hundred" → 2500, "three" → 3,',
+    '"a couple thousand" → 2000. Strip thousands commas ("2,500" → 2500). Percentages',
+    'stay as the plain number (15, not 0.15).',
+    '',
+    'NEW BUSINESS vs RENEWAL: if the rep says "renewal" set isRenewal true and put',
+    'the products under "renewLines"; otherwise set isRenewal false and put them',
+    'under "lines". Use one or the other, not both.',
+    '',
+    'RETURN EXACTLY THIS JSON SHAPE (include only keys you actually heard):',
+    '{',
+    '  "isRenewal": true/false,',
+    '  "customer": "the company being sold to",',
+    '  "partnerCompany": "reseller / partner, if any",',
+    '  "customerType": "new" | "current",',
+    '  "dealType": "addon" | "ren" | "addonren",',
+    '  "extraDiscountPct": 15,',
+    '  "partnerMarginPct": 20,',
+    '  "premiumSupport": true/false,',
+    '  "contactName": "person named, if any",',
+    '  "email": "email, if spelled out (\\"jane at acme dot com\\" → jane@acme.com)",',
+    '  "termMonths": 24,',
+    '  "lines": [ { "productId": "catalog id or name", "qty": 2500 } ],',
+    '  "renewLines": [ { "product": "catalog id or name", "qty": 20000, "currentAnnualPrice": 133000 } ]',
+    '}',
+    '',
+    'EXAMPLE — "We are selling Application Workspace to Amazon with a fifteen',
+    'percent discount. It\'s a new customer." →',
+    '{ "isRenewal": false, "customer": "Amazon", "customerType": "new",',
+    '  "extraDiscountPct": 15, "lines": [ { "productId": "aw" } ] }',
+    'Note the customer is Amazon (the company), the product is Application Workspace,',
+    'the 15% is the extra discount (no "margin" was said), and it is net new.',
+    '',
+    '--- SPOKEN TRANSCRIPT START ---',
+    pageText,
+    '--- SPOKEN TRANSCRIPT END ---'
   ].join('\n');
 }
 
