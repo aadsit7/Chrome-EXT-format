@@ -1,0 +1,226 @@
+=============================================================================
+WHERE TO PASTE THIS (5 steps):
+1. Open https://script.google.com and open the project bound to your web app
+   (the same /macros/s/…/exec URL that sheets.js posts to).
+2. Open the .gs file that contains your doPost(e) and its "analyzePage" branch.
+3. DELETE your current analyzePage handler + its old AI prompt, then paste
+   everything BELOW the line "=== PASTE FROM HERE ===" into that .gs file.
+4. In doPost(e), route the request so action "analyzePage" calls analyzePage_(data)
+   — e.g.  if (data.action === 'analyzePage') return json_(analyzePage_(data));
+   (see the doPost snippet at the very bottom; keep your saveQuote/registerUser
+   branches exactly as they are).
+5. Save, then Deploy ▸ Manage deployments ▸ edit the existing deployment ▸
+   "New version" ▸ Deploy. The URL stays the same, so no extension change is needed.
+=============================================================================
+
+Notes:
+- This replaces ONLY the analyzePage handler + its prompt. Your pricing logic,
+  saveQuote, and registerUser are untouched.
+- The extension already falls back to its own rule-based extractor if this call
+  fails, so a bad key or a model hiccup can never make things worse.
+- The handler MUST return ONLY a JSON object (no prose, no markdown fences).
+- If you already have a working model call (callGemini_/callModel_/etc.), keep it
+  and just replace its BODY-of-work with buildAnalyzePrompt_() below; otherwise
+  use the callGenerativeModel_() reference implementation included here and set
+  GEMINI_API_KEY in Project Settings ▸ Script properties.
+
+=== PASTE FROM HERE ===
+
+/**
+ * "Analyze this page" server brain.
+ *
+ * Input  (POST JSON):  { action:"analyzePage", pageText:"<snapshot>", catalog:[{id,name,unit}] }
+ * Output (JSON only):  the schema documented in buildAnalyzePrompt_ below.
+ *
+ * The extension (analyze.js) sends a PRIORITIZED Salesforce snapshot:
+ *   line 1: "SOURCE: Salesforce Opportunity record"  (or a plain page)
+ *   then:   "URL: …"
+ *           "== DETECTED (rule-based) ==" — values the extension already parsed
+ *           "== QUOTE INFORMATION ==", "== RENEWALS ==", "== SUBSCRIPTION INFORMATION ==",
+ *           "== PRODUCTS ==", "== OPPORTUNITY INFORMATION ==", "== CONTACT ROLES ==",
+ *           "== ACCOUNT DETAILS ==", then other sections and raw page text.
+ * Noise sections (Stage/Field History, System Information, Activity, Chatter,
+ * Notes, Files) are already stripped out before it reaches you.
+ */
+function analyzePage_(data) {
+  var pageText = (data && data.pageText != null) ? String(data.pageText) : '';
+  var catalog  = (data && Array.isArray(data.catalog)) ? data.catalog : [];
+  if (!pageText.trim()) return { ok: true }; // nothing to analyze — extension falls back
+
+  var prompt = buildAnalyzePrompt_(pageText, catalog);
+
+  var raw;
+  try {
+    // Reuse your existing model helper here if you have one, e.g.:
+    //   raw = callGemini_(prompt);
+    raw = callGenerativeModel_(prompt);
+  } catch (err) {
+    return { ok: false, error: String(err) }; // extension falls back to rule-based
+  }
+
+  var obj = extractJson_(raw);
+  if (!obj || typeof obj !== 'object') return { ok: false, error: 'model did not return JSON' };
+  obj.ok = true;
+  return obj;
+}
+
+/**
+ * The rewritten AI prompt. It teaches the model the payload sections, the exact
+ * Salesforce field names from the two real Opportunity pages, the precedence
+ * rules for conflicting values, and the JSON schema to return — and forbids it
+ * from inventing anything not present in the payload.
+ */
+function buildAnalyzePrompt_(pageText, catalog) {
+  var catalogLines = (catalog || []).map(function (p) {
+    return '  - id "' + p.id + '"  name "' + p.name + '"  (priced per ' + (p.unit === 'user' ? 'user' : 'endpoint') + ')';
+  }).join('\n');
+
+  return [
+    'You extract quote fields from a web page snapshot for a sales-quote tool.',
+    'The snapshot is usually a Salesforce Opportunity record (its first line says',
+    '"SOURCE: Salesforce Opportunity record"). Return ONLY a single JSON object —',
+    'no explanation, no markdown, no code fences. Use null (or omit the key) for',
+    'anything not clearly present. NEVER invent, guess, or calculate values that',
+    'are not in the snapshot.',
+    '',
+    'PRODUCT CATALOG (match products to these; return the catalog id OR the exact',
+    'name — partial/substring name matches are fine):',
+    catalogLines || '  (none provided)',
+    '',
+    'PAYLOAD LAYOUT: sections are marked "== SECTION NAME ==". A',
+    '"== DETECTED (rule-based) ==" block lists values the extension already parsed',
+    '— trust it, but prefer a clearer value from a named section when they',
+    'disagree. Related lists appear as "Header | Header | …" rows.',
+    '',
+    'SALESFORCE FIELD NAMES you will see and how to map them:',
+    '  • Account Name  → customer (the END CUSTOMER). This stays the customer even',
+    '    when a partner/reseller is present.',
+    '  • Partner/Reseller, or Subscription Type = "Reseller"  → partnerCompany',
+    '    (the reseller). Do NOT put the reseller in "customer".',
+    '  • Contact Roles related list → contactName / email / contactPhone. PREFER',
+    '    the row whose "Primary" column is checked.',
+    '  • Close Date, License Start Date, License Expiration Date, End Date,',
+    '    Renewal Month Date, Start Date  → candidate dates (see precedence).',
+    '  • Quote Expiration Date / Expiration Date (Quote Information) → quoteExpirationDate.',
+    '  • Subscription Term  → termMonths. Salesforce stores it as a decimal, e.g.',
+    '    "12.000000000000" means 12 months. A grid "Subscription Term" column is',
+    '    the same field.',
+    '  • Quantity (Renewals / Subscription Information), a Products related-list',
+    '    Quantity column, Current Device Count, Maximum Device Count New → the',
+    '    line quantity (see precedence).',
+    '  • Endpoint Tier is a RANGE like "1,001 - 5,000" — it is context only, NEVER',
+    '    a quantity.',
+    '  • Product(s) (a semicolon list like "Right Click Tools;Insights Subscription")',
+    '    and the Products related list → product lines. Match each against the catalog.',
+    '  • ARR up for Renewal → the current annual price the customer pays today.',
+    '',
+    'STRIP "USD " / currency words and thousands commas from every number',
+    '("USD 133,000.00" → 133000). Dates → ISO "YYYY-MM-DD".',
+    '',
+    'NEW BUSINESS vs RENEWAL:',
+    '  • RENEWAL if Opportunity Record Type = "Renewal", or Subscription Type =',
+    '    "Reseller", or you see Renewals/Subscription fields (ARR up for Renewal,',
+    '    Renewal Month Date, License Expiration Date, Renewal ARR). Set isRenewal',
+    '    true and fill "renewLines" (the products renewing at today\'s price).',
+    '  • Otherwise NEW BUSINESS: set isRenewal false and fill "lines" from the',
+    '    Products related list.',
+    '',
+    'PRECEDENCE when values conflict:',
+    '  1. QUANTITY: Renewals/Subscription "Quantity" > Products related-list',
+    '     Quantity > Account "Current Device Count". Never use Endpoint Tier.',
+    '  2. RENEWAL DATE (renewalDate): License Expiration Date / End Date >',
+    '     Renewal Month Date > Close Date. Close Date is a SALES FORECAST, not the',
+    '     renewal date — use it only if nothing else exists.',
+    '  3. CURRENT RENEWAL PRICE: use "ARR up for Renewal" as the current annual',
+    '     price (currentAnnualPrice) for the renewing product(s).',
+    '  4. CUSTOMER vs PARTNER: Account Name is the customer; the Partner/Reseller',
+    '     (or the reseller implied by Subscription Type = "Reseller") is partnerCompany.',
+    '',
+    'RETURN EXACTLY THIS JSON SHAPE (include only keys you actually found):',
+    '{',
+    '  "isRenewal": true/false,',
+    '  "customer": "end customer / Account Name",',
+    '  "partnerCompany": "reseller company, if any",',
+    '  "partnerEmail": "reseller email, if any",',
+    '  "contactName": "primary contact name",',
+    '  "email": "primary contact email",',
+    '  "contactPhone": "primary contact phone",',
+    '  "billToAddress": "", "shipToAddress": "",',
+    '  "quoteExpirationDate": "YYYY-MM-DD",',
+    '  "renewalDate": "YYYY-MM-DD",',
+    '  "currency": "USD",',
+    '  "termMonths": 12,',
+    '  "lines": [ { "productId": "catalog id or name", "qty": 10000 } ],',
+    '  "renewLines": [ { "product": "catalog id or name", "qty": 20000, "currentAnnualPrice": 133000 } ]',
+    '}',
+    '',
+    'Use "lines" for new business and "renewLines" for renewals (not both). If a',
+    'renewal has one product and only a total "ARR up for Renewal", put that total',
+    'as that product\'s currentAnnualPrice. Omit any field you cannot find.',
+    '',
+    '--- PAGE SNAPSHOT START ---',
+    pageText,
+    '--- PAGE SNAPSHOT END ---'
+  ].join('\n');
+}
+
+/**
+ * Pull the first JSON object out of the model's reply, tolerating stray prose or
+ * ```json fences. Returns null if nothing parseable is found.
+ */
+function extractJson_(text) {
+  if (text == null) return null;
+  var s = String(text).trim();
+  s = s.replace(/^```(?:json)?/i, '').replace(/```$/,'').trim();
+  try { return JSON.parse(s); } catch (e) {}
+  var start = s.indexOf('{'), end = s.lastIndexOf('}');
+  if (start > -1 && end > start) {
+    try { return JSON.parse(s.slice(start, end + 1)); } catch (e2) {}
+  }
+  return null;
+}
+
+/**
+ * Reference model call (Google Gemini). REPLACE with your existing helper if you
+ * already have one — it only needs to take the prompt and return the model's raw
+ * text. Set GEMINI_API_KEY in Project Settings ▸ Script properties.
+ * Must return a plain string.
+ */
+function callGenerativeModel_(prompt) {
+  var key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  if (!key) throw new Error('GEMINI_API_KEY script property is not set');
+  var url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key);
+  var body = {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 0, responseMimeType: 'application/json' }
+  };
+  var resp = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(body),
+    muteHttpExceptions: true
+  });
+  var code = resp.getResponseCode();
+  if (code < 200 || code >= 300) throw new Error('model HTTP ' + code + ': ' + resp.getContentText());
+  var parsed = JSON.parse(resp.getContentText());
+  var cand = parsed && parsed.candidates && parsed.candidates[0];
+  var part = cand && cand.content && cand.content.parts && cand.content.parts[0];
+  return (part && part.text) ? part.text : '';
+}
+
+/* --- doPost routing reminder (keep your other branches unchanged) ---
+
+function doPost(e) {
+  var data = {};
+  try { data = JSON.parse(e.postData.contents) || {}; } catch (err) { data = {}; }
+  if (data.action === 'analyzePage')  return json_(analyzePage_(data));
+  if (data.action === 'saveQuote')    return json_(handleSaveQuote_(data));    // your existing code
+  if (data.action === 'registerUser') return json_(handleRegisterUser_(data)); // your existing code
+  return json_({ ok: false, error: 'unknown action' });
+}
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+*/

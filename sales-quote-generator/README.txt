@@ -57,25 +57,45 @@ USING THE TOOL
   record pages — both Lightning and Classic — by their URL
   (lightning.force.com, my.salesforce.com, salesforce.com, force.com,
   visualforce.com) or by Lightning page markers, and reads them first.
-    * Account Name / the Opportunity's related Account → Customer /
-      company. A Bill To Name (or billing account) that differs from the
-      account is mapped to Partner company.
-    * A contact email on the record → Contact email.
-    * A "Renewal", "Contract End", "End Date" or "Expiration" date →
-      the customer's renewal date. "Close Date" is never treated as a
-      renewal date.
-    * Related lists (Opportunity Products, Quote Line Items, Assets) are
-      read by their column headers: the Product column is matched
-      against the built-in catalog, Quantity / Qty sets the line
-      quantity, and Sales Price / Total Price / Annual Price fill the
-      renewal price.
-  Salesforce loads sections lazily, so if the Products related list
-  isn't on screen yet the review card shows: "No products list visible
-  — scroll to the Products section in Salesforce and analyze again." —
-  scroll it into view and click the button again. Classic content shown
-  inside Lightning renders in iframes; the extraction runs in every
-  frame and the results are merged. Any other (non-Salesforce) website
-  falls back to the generic rule-based detection described above.
+  On Salesforce the snapshot sent to the AI is PRIORITIZED: it leads with
+  "SOURCE: Salesforce Opportunity record" and the page URL, then captures
+  the panels that matter most in order — Quote Information, Renewals,
+  Subscription Information, Products, Opportunity Information, Contact
+  Roles, Account Details — and EXCLUDES noise sections (Stage / Field
+  History, System Information, Activity, Chatter, Notes, Files) so the
+  signal isn't drowned out. Repeated label/value pairs are de-duplicated
+  and the payload is capped only after prioritizing, so high-value
+  sections are never the part that gets truncated.
+    * Account Name → Customer / company (the end customer). It stays the
+      customer even when a Partner/Reseller is present.
+    * A Partner/Reseller, or a Subscription Type of "Reseller" → the
+      reseller / partner company (pricing is left unchanged — turning on
+      Partner pricing stays your call).
+    * The Contact Roles related list → contact name / email / phone,
+      preferring the row marked Primary.
+    * Renewal date precedence: License Expiration Date / End Date beat
+      Renewal Month Date, which beats Close Date. "Close Date" is a sales
+      forecast, so it's only used as a last resort and the finding says so.
+    * Subscription Term (Salesforce's "12.000000000000" = 12 months) →
+      the term. Endpoint Tier ("1,001 - 5,000") is context only, never a
+      quantity.
+    * Quantity precedence: the Renewals / Subscription panel Quantity beats
+      a Products related-list quantity, which beats Account "Current Device
+      Count".
+    * Products come from the Products related list (Product column matched
+      against the catalog by its link/title, so Salesforce's truncated
+      "Application Wo…" still resolves) or, when there's no list, from the
+      semicolon-separated "Product(s)" field. On a renewal, "ARR up for
+      Renewal" fills the current annual price.
+  Salesforce only renders panels/tabs that are open, so if a key section
+  wasn't on screen the review card tells you which one to open: "open or
+  scroll to the Products related list" and, on a renewal with no Renewals
+  / Subscription panel visible, "open that tab in Salesforce, then Analyze
+  again." The analyzer stays strictly read-only — it never opens or clicks
+  anything itself. Classic content shown inside Lightning renders in
+  iframes; the extraction runs in every frame and the results are merged.
+  Any other (non-Salesforce) website falls back to the generic rule-based
+  detection described above.
 - "Speak to fill" (the microphone button next to "Analyze this page")
   fills the form LIVE as you speak. Tap it and the button turns red and
   starts listening; say values in plain language and each field updates
@@ -254,11 +274,27 @@ app.js          All application logic (no inline scripts) — includes the
 analyze.js      "Analyze this page" — read-only page extraction. Captures a
                 rich all-frames snapshot that walks the shadow DOM (so
                 Salesforce Lightning values are seen) plus label/value pairs
-                and related-list tables, POSTs it (with the catalog) for an
-                AI read, and maps the returned fields into the review card;
-                falls back to the built-in rule-based Salesforce/generic
+                and related-list tables. On Salesforce it builds a PRIORITIZED
+                snapshot (named panels in priority order, noise sections
+                excluded, de-duplicated, capped after prioritizing), applies
+                Salesforce-aware precedence (customer vs partner/reseller,
+                renewal-date and quantity precedence, subscription term),
+                POSTs it (with the catalog) for an AI read, and maps the
+                returned fields — including renewal lines — into the review
+                card; falls back to the built-in rule-based Salesforce/generic
                 detection, then apply-through-setQ. Also exposes
                 fillFromText() (an AI-analysis + review-card entry point)
+tests/          Dev-only test harness (NOT shipped — manifest never references
+                it). node tests/analyze.test.js runs two fixtures modeled on
+                real new-business and renewal Opportunity pages through the
+                extractor + finding builders and asserts customer, partner,
+                renewal date, term, product and quantity for both
+APPS-SCRIPT-UPGRADE.txt
+                Ready-to-paste replacement for the Apps Script "analyzePage"
+                handler + AI prompt (understands the prioritized payload, the
+                Salesforce field names, the precedence rules, and the extended
+                JSON schema). Paste it into script.google.com — see the 5-line
+                header in the file
 voice.js        "Speak to fill" — LIVE voice input. Transcribes speech with
                 the browser's Web Speech API and, on every finalized phrase,
                 re-reads the whole running transcript with a deterministic,
