@@ -72,6 +72,17 @@ window.SQG_VOICE = (function () {
     function escapeRx(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
     function isNumWord(t) { return NUM_WORDS[t] != null || SCALES[t] != null; }
 
+    // Normalize a spoken email span ("jane at acme dot com" → "jane@acme.com").
+    function spokenEmail(s) {
+      return String(s == null ? '' : s).toLowerCase()
+        .replace(/\s+at\s+/g, '@').replace(/\s+(?:dot|period)\s+/g, '.').replace(/\s+/g, '');
+    }
+    // The FIRST syntactically valid email in a (possibly noisy / fused) span. The
+    // domain is matched non-greedily up to the first plausible TLD, so a fused
+    // "a@x.com.partneremail.b@x.com" yields just "a@x.com" — never the whole run.
+    var EMAIL_ONE = /[a-z0-9._%+\-]+@[a-z0-9\-]+(?:\.[a-z0-9\-]+)*?\.[a-z]{2,24}/i;
+    function firstEmail(s) { var m = String(s == null ? '' : s).match(EMAIL_ONE); return m ? m[0] : ''; }
+
     function groupToNumber(tokens) {
       var pointIdx = tokens.indexOf('point');
       if (pointIdx >= 0) {
@@ -343,6 +354,11 @@ window.SQG_VOICE = (function () {
         var end = raw.length;
         var rest = orig.slice(vStart);
         var ci = rest.search(/[,;]/); if (ci >= 0) end = Math.min(end, vStart + ci);
+        // End at sentence punctuation — a period / question / exclamation that
+        // closes a clause (followed by whitespace or end), so "customer Amazon.
+        // Selling …" yields "Amazon", never "Amazon. Selling". An in-token dot
+        // ("acme.com") is followed by a letter, so it is left alone.
+        var si = rest.search(/[.?!](?:\s|$)/); if (si >= 0) end = Math.min(end, vStart + si);
         var kb = firstMatch(orig, ALL_KWS.concat(CMD_WORDS), vStart); if (kb > vStart) end = Math.min(end, kb);
         if (prodPhrasesAll.length) { var pb = firstMatch(orig, prodPhrasesAll, vStart); if (pb > vStart) end = Math.min(end, pb); }
         if (numBound) { var di = rest.search(/\b(?:\d|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)\b/); if (di >= 0) end = Math.min(end, vStart + di); }
@@ -379,7 +395,27 @@ window.SQG_VOICE = (function () {
           var vStart = m.index + m[0].length;
           var vEnd = valueEnd(vStart, !!def.num);
           var value = norm(raw.slice(vStart, vEnd)).replace(/[,.;:]+$/, '');
-          if (def.kind === 'email') value = value.toLowerCase().replace(/\s+at\s+/g, '@').replace(/\s+(?:dot|period)\s+/g, '.').replace(/\s+/g, '');
+          if (def.kind === 'email') {
+            // An email field may only ever hold ONE valid address. Extract the
+            // first valid match and discard the rest; a value with no valid email
+            // is discarded (value stays '' → not stored below).
+            var compact = spokenEmail(value);
+            if (def.field === 'email') {
+              // A fused "…partner email <addr>" (the two addresses run together by
+              // speech-to-text) routes the SECOND address to partnerEmail; the
+              // primary email keeps only the first valid one.
+              var segs = compact.split(/\.*(?:partner|reseller)\s*email\.*/i);
+              value = firstEmail(segs[0]);
+              if (value && segs.length > 1) {
+                var pe = firstEmail(segs.slice(1).join(' '));
+                if (pe && !commands.some(function (c) { return c.type === 'scalar' && c.field === 'partnerEmail'; })) {
+                  commands.push({ type: 'scalar', field: 'partnerEmail', value: pe, label: labelFor('partnerEmail') + ' → ' + pe });
+                }
+              }
+            } else {
+              value = firstEmail(compact);
+            }
+          }
           else value = value.replace(/\b\w/g, function (c) { return c.toUpperCase(); });
           if (value) { commands.push({ type: 'scalar', field: def.field, value: value, label: labelFor(def.field) + ' → ' + value }); blankWork(m.index, vEnd); }
           break;

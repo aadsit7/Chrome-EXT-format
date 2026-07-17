@@ -1240,24 +1240,35 @@ function buildQuoteData(v) {
     ? { msrpTcv: fmt(m.msrpTcvC / 100), savings: fmt((m.msrpTcvC - m.tcvC) / 100), pays: fmt(m.tcvC / 100) }
     : null;
 
+  const meta = {
+    number: q.number, customer: q.customer, email: q.email, preparedBy: q.preparedBy, expires: q.expires,
+    partnerActive, partnerCompany: q.partnerCompany, partnerEmail: q.partnerEmail,
+    today: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
+    billToName: partnerActive ? (q.partnerCompany || '') : (q.customer || ''),
+    billToAddress: q.billToAddress || '',
+    shipToName: q.customer || '',
+    shipToAddress: q.shipToAddress || '',
+    billingFrequency: 'Annually',
+    autoRenewal: q.autoRenewal ? 'Yes' : 'No',
+    expiresDisp: q.expires ? formatMDY(parseDateLocal(q.expires)) : '',
+    billingContact: q.billingContact || '',
+    paymentMethod: q.paymentMethod || '',
+    paymentTerms: q.paymentTerms || '',
+    currency: q.currency || '',
+  };
+
+  // Final PDF guard (Bugs 2 & 3): scrub leading/trailing UI action words from the
+  // name fields ONLY when the quote may have come from page analysis (it carries a
+  // sourceUrl) — so a hand-typed "Preview Inc" survives; trim trailing punctuation
+  // for ALL quotes (keeping "Corp." and interior commas); and blank any email that
+  // isn't a single valid address so malformed values print blank, never as garbage.
+  const fromPage = !!(q.sourceUrl && String(q.sourceUrl).trim());
+  const cleanedMeta = (typeof window !== 'undefined' && window.SQG_CLEAN && window.SQG_CLEAN.cleanMeta)
+    ? window.SQG_CLEAN.cleanMeta(meta, fromPage) : meta;
+
   return {
     items, totals, hasYears, schedule, tcvLabel, tcv: fmt(m.tcvC / 100), tcvPdf: fmtPdf(m.tcvC / 100), tcvSub, savings, partner, termLabel,
-    meta: {
-      number: q.number, customer: q.customer, email: q.email, preparedBy: q.preparedBy, expires: q.expires,
-      partnerActive, partnerCompany: q.partnerCompany, partnerEmail: q.partnerEmail,
-      today: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
-      billToName: partnerActive ? (q.partnerCompany || '') : (q.customer || ''),
-      billToAddress: q.billToAddress || '',
-      shipToName: q.customer || '',
-      shipToAddress: q.shipToAddress || '',
-      billingFrequency: 'Annually',
-      autoRenewal: q.autoRenewal ? 'Yes' : 'No',
-      expiresDisp: q.expires ? formatMDY(parseDateLocal(q.expires)) : '',
-      billingContact: q.billingContact || '',
-      paymentMethod: q.paymentMethod || '',
-      paymentTerms: q.paymentTerms || '',
-      currency: q.currency || '',
-    },
+    meta: cleanedMeta,
   };
 }
 
