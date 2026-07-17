@@ -1724,6 +1724,10 @@ window.SQG_APP = {
   showSheet: function (open) { if (state.view !== 'calc') return; state.sheet = !!open; render(); },
   openSettings: function () { if (state.view === 'calc') { state.pwPrompt = true; render(); } },
   setSection: function (key, open) { if (state.sections && Object.prototype.hasOwnProperty.call(state.sections, key)) { state.sections[key] = !!open; render(); } },
+  // Expand a set of calculator sections without forcing a render (the caller's
+  // own setQ/render follows). Used by the AI review path (analyze.js) so applied
+  // deal/discount/support values land in a section the user can see.
+  openSections: function (keys) { if (!state.sections) return; (keys || []).forEach(function (k) { if (Object.prototype.hasOwnProperty.call(state.sections, k)) state.sections[k] = true; }); },
 };
 
 /* ---------------- Boot ---------------- */

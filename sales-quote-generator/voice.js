@@ -204,19 +204,31 @@ window.SQG_VOICE = (function () {
       var pcts = [];
       while ((pm = pctRx.exec(t))) pcts.push({ val: parseFloat(pm[1]), start: pm.index, end: pm.index + pm[0].length });
       pcts.forEach(function (p) {
-        // Classify by the NEAREST preceding keyword (largest index wins), so an
-        // earlier "margin" doesn't capture a later "extra discount 5%".
+        // Classify by the NEAREST keyword on EITHER side of the % (within ~40
+        // chars before OR after), so "fifteen percent discount", "discount of
+        // fifteen percent" and "15% margin" all classify correctly. Nearest
+        // wins; on a tie the prior precedence (margin > uplift > extra) is kept.
         var pre = t.slice(Math.max(0, p.start - 40), p.start);
-        var lastIdx = function (re) { var m, last = -1, rx = new RegExp(re, 'g'); while ((m = rx.exec(pre))) last = m.index; return last; };
-        var iMargin = lastIdx('\\bmargin\\b');
-        var iUplift = lastIdx('\\b(?:increase|uplift|escalat\\w*)\\b');
-        var iExtra = lastIdx('\\b(?:extra|additional|discount|sweetener)\\b');
-        var iPartner = lastIdx('\\b(?:partner|reseller)\\b');
-        var field = 'extra', best = -1;
-        if (iMargin > best) { best = iMargin; field = 'margin'; }
-        if (iUplift > best) { best = iUplift; field = 'uplift'; }
-        if (iExtra > best) { best = iExtra; field = 'extra'; }
-        if (best < 0) field = iPartner >= 0 ? 'margin' : 'extra';
+        var post = t.slice(p.end, Math.min(t.length, p.end + 40));
+        var nearest = function (re) {
+          var d = Infinity, m, rx = new RegExp(re, 'g');
+          while ((m = rx.exec(pre))) d = Math.min(d, pre.length - m.index);   // chars from a preceding match → %
+          rx = new RegExp(re, 'g');
+          while ((m = rx.exec(post))) d = Math.min(d, m.index + 1);           // chars from % → a following match
+          return d;
+        };
+        var dMargin = nearest('\\bmargin\\b');
+        var dUplift = nearest('\\b(?:increase|uplift|escalat\\w*)\\b');
+        var dExtra = nearest('\\b(?:extra|additional|discount|sweetener)\\b');
+        var dPartner = nearest('\\b(?:partner|reseller)\\b');
+        var cands = [
+          { f: 'margin', d: dMargin, pri: 3 },
+          { f: 'uplift', d: dUplift, pri: 2 },
+          { f: 'extra', d: dExtra, pri: 1 },
+        ];
+        var field = 'extra', best = Infinity, bestPri = -1;
+        cands.forEach(function (c) { if (c.d < best || (c.d === best && c.pri > bestPri)) { best = c.d; bestPri = c.pri; field = c.f; } });
+        if (best === Infinity) field = (dPartner !== Infinity) ? 'margin' : 'extra';
         if (field === 'margin') commands.push({ type: 'partner', margin: p.val, label: 'Partner margin → ' + p.val + '%' });
         else if (field === 'uplift') commands.push({ type: 'uplift', value: p.val, label: 'Annual increase → ' + p.val + '%' });
         else commands.push({ type: 'pct', field: 'extraPct', value: p.val, label: 'Extra discount → ' + p.val + '%' });
@@ -253,10 +265,16 @@ window.SQG_VOICE = (function () {
       else if (/\brenewal\b/.test(t) && !/\badd[- ]?on\b/.test(t)) commands.push({ type: 'dealType', value: 'ren', label: 'Deal type → Renewal' });
       else if (/\badd[- ]?on\b/.test(t)) commands.push({ type: 'dealType', value: 'addon', label: 'Deal type → Add-on' });
 
-      // 5. Product quantities
+      // 5. Product quantities (and bare product mentions)
       var prods = findProducts(t, catalog);
       var byProduct = {};
+      var barePhrase = {}; // multi-word product mentions with no nearby quantity
       prods.forEach(function (pr) {
+        // A multi-word product name ("application workspace", "right click tools")
+        // is a confident product mention even without a number, so it can add its
+        // line on its own. Single-word aliases ("workspace", "insights") are too
+        // easily said in passing, so they still require a quantity to add a line.
+        if (/\s/.test(pr.phrase)) barePhrase[pr.id] = { id: pr.id, name: pr.name, unit: pr.unit };
         var numRx = /(\d[\d,]*)(?:\s*(endpoints?|end ?points?|devices?|machines?|nodes?|seats?|users?|licen[cs]es?))?/g, nm;
         var best = null, bestScore = 1e9;
         while ((nm = numRx.exec(t))) {
@@ -264,7 +282,9 @@ window.SQG_VOICE = (function () {
           var npos = nm.index;
           var dist = npos >= pr.end ? (npos - pr.end) : (pr.start - (npos + nm[0].length));
           var score = dist - (nm[2] ? 25 : 0);
-          if (Math.abs(dist) <= 45 && score < bestScore) { bestScore = score; best = { qty: parseInt(nm[1].replace(/,/g, ''), 10), start: nm.index, end: nm.index + nm[0].length }; }
+          // Window widened ~45 → 60 so a slightly farther "… needs 2,500 of them"
+          // near a product mention still attaches (nearest-with-unit still wins).
+          if (Math.abs(dist) <= 60 && score < bestScore) { bestScore = score; best = { qty: parseInt(nm[1].replace(/,/g, ''), 10), start: nm.index, end: nm.index + nm[0].length }; }
         }
         if (best && best.qty > 0) { byProduct[pr.id] = { id: pr.id, name: pr.name, unit: pr.unit, qty: best.qty, order: best.start }; blank(best.start, best.end); }
       });
@@ -272,6 +292,14 @@ window.SQG_VOICE = (function () {
         var b = byProduct[id];
         commands.push({ type: 'lineQty', productId: id, qty: b.qty, unit: b.unit,
           label: b.name + ' → ' + b.qty.toLocaleString('en-US') + ' ' + (b.unit === 'user' ? 'users' : 'endpoints') });
+      });
+      // A product named without any quantity ("selling Application Workspace to
+      // Amazon") still adds its line; quantity keeps the app's own new-line
+      // default (set later by the user). qty:null means "ensure the line exists".
+      Object.keys(barePhrase).forEach(function (id) {
+        if (byProduct[id]) return; // already added with a quantity
+        var b = barePhrase[id];
+        commands.push({ type: 'lineQty', productId: id, qty: null, unit: b.unit, label: b.name + ' → added' });
       });
 
       // 6. Scalar text fields — value ends at the first natural boundary.
@@ -315,6 +343,20 @@ window.SQG_VOICE = (function () {
         if (numBound) { var di = rest.search(/\b(?:\d|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)\b/); if (di >= 0) end = Math.min(end, vStart + di); }
         return end;
       }
+      // Order of operations: blank phrase-level matches ("new customer",
+      // "current/existing customer", partner phrases) in the keyword-scan copy
+      // BEFORE the scalar field scan, so the word "customer" inside "it's a new
+      // customer" can never be mistaken for the start of a customer-name field.
+      var PHRASE_BLANKS = [
+        /\bnet[- ]?new\b/g, /\bnew customer\b/g, /\bcurrent customer\b/g,
+        /\bexisting customer\b/g, /\bcurrent account\b/g, /\bsell through\b/g,
+        /\b(?:through|via)\s+(?:a\s+)?(?:partner|reseller)\b/g,
+        /\bpartner (?:deal|pricing|discount)\b/g, /\breseller deal\b/g,
+      ];
+      PHRASE_BLANKS.forEach(function (re) {
+        work.replace(re, function (match, offset) { blankWork(offset, offset + match.length); return match; });
+      });
+
       FIELD_DEFS.forEach(function (def) {
         for (var k = 0; k < def.kw.length; k++) {
           var rx = new RegExp('\\b' + escapeRx(def.kw[k]) + '\\b\\s*(?:is|=|:|are|equals|to)?\\s+', 'g');
@@ -329,6 +371,53 @@ window.SQG_VOICE = (function () {
           break;
         }
       });
+
+      // 7. Customer from natural prepositional phrasing — "selling/sell/quoting X
+      // to <Name>", "quote for <Name>", "deal with <Name>", or a plain "for
+      // <Name>". Additive fallback: runs only when the label-first scan above
+      // didn't already capture a customer. The name ends at the first boundary —
+      // a command word, product phrase, field keyword, percentage / number, a
+      // connective (with / at / and / plus) or sentence punctuation.
+      var haveCustomer = commands.some(function (c) { return c.type === 'scalar' && c.field === 'customer'; });
+      if (!haveCustomer) {
+        var STOP_LEAD = /^(?:the|a|an|our|their|this|that)\s+/i;
+        var STOP_TAIL = /(?:^|\s)(?:with|at|for|to|of|and|plus|via|through|the|a|an|is|are|be|our|their|this|that)$/i;
+        var trimName = function (s) {
+          s = norm(s).replace(/[,.;:!?]+$/, '').replace(STOP_LEAD, '');
+          var prev;
+          do { prev = s; s = norm(s.replace(STOP_TAIL, '')).replace(/[,.;:!?]+$/, ''); } while (s !== prev);
+          return norm(s);
+        };
+        var custEnd = function (vStart) {
+          var end = valueEnd(vStart, true); // [,;] + field/command keywords + product phrases + numbers
+          var rest = orig.slice(vStart);
+          var pi = rest.search(/[.!?]/); if (pi >= 0) end = Math.min(end, vStart + pi);
+          var wi = rest.search(/\b(?:with|at|plus|and)\b/); if (wi >= 0) end = Math.min(end, vStart + wi);
+          return end;
+        };
+        var TRIGGERS = [
+          { re: /\b(?:selling|sell|sold|reselling|quoting)\b[\s\S]*?\bto\s+/, strong: true },
+          { re: /\bquote\b[\s\S]*?\bto\s+/, strong: true },
+          { re: /\b(?:quote|quoting|quotes)\s+for\s+/, strong: true },
+          { re: /\bdeal\s+(?:with|for)\s+/, strong: true },
+          { re: /\bfor\s+/, strong: false },
+        ];
+        for (var ti = 0; ti < TRIGGERS.length; ti++) {
+          var tm = TRIGGERS[ti].re.exec(orig);
+          if (!tm) continue;
+          var cStart = tm.index + tm[0].length;
+          var cVal = raw.slice(cStart, custEnd(cStart)); // original case (for the proper-noun check)
+          var name = trimName(cVal);
+          if (!name || name.length < 2) continue;
+          if (/^(?:new|current|existing|net[- ]?new)$/i.test(name)) continue; // a customer-TYPE word, not a name
+          // A plain "for <Name>" is weak, so require a proper noun (capitalized in
+          // the original), which the stronger verbs ("selling … to") don't need.
+          if (!TRIGGERS[ti].strong && !/^[A-Z]/.test(cVal.replace(STOP_LEAD, '').replace(/^\s+/, ''))) continue;
+          name = name.replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+          commands.push({ type: 'scalar', field: 'customer', value: name, label: labelFor('customer') + ' → ' + name });
+          break;
+        }
+      }
 
       return { commands: commands, actions: actions, recognized: commands.length > 0 || actions.length > 0 };
     }
@@ -361,11 +450,19 @@ window.SQG_VOICE = (function () {
     var ensureLines = function () { if (!lines) lines = q.lines.map(function (l) { return Object.assign({}, l); }); return lines; };
     var ensureRenew = function () { if (!renew) renew = (q.renewLines || []).map(function (l) { return Object.assign({}, l); }); return renew; };
     var clampPct = function (v, max) { return Math.max(0, Math.min(max == null ? 100 : max, +v || 0)); };
+    // Default quantity for a brand-new line = the app's own "+ Add product"
+    // default (minUsers for user products, 1000 for endpoint products).
+    var defQty = function (productId) {
+      var prod = ((state.cfg && state.cfg.products) || []).find(function (p) { return p.id === productId; }) || {};
+      return prod.unit === 'user' ? ((rules.minUsers != null) ? rules.minUsers : 250) : 1000;
+    };
 
     cmds.forEach(function (c) {
       if (c.type === 'lineQty') {
-        if (isRenOnly) { var rl = ensureRenew(); var ex = rl.find(function (l) { return l.productId === c.productId; }); if (ex) ex.qty = c.qty; else rl.push({ id: uid(), productId: c.productId, qty: c.qty, price: 0 }); }
-        else { var ls = ensureLines(); var e2 = ls.find(function (l) { return l.productId === c.productId; }); if (e2) e2.qty = c.qty; else ls.push({ id: uid(), productId: c.productId, qty: c.qty }); }
+        // qty null = a bare product mention: ensure the line exists, but never
+        // overwrite a quantity the user already has (or one said elsewhere).
+        if (isRenOnly) { var rl = ensureRenew(); var ex = rl.find(function (l) { return l.productId === c.productId; }); if (ex) { if (c.qty != null) ex.qty = c.qty; } else rl.push({ id: uid(), productId: c.productId, qty: c.qty != null ? c.qty : defQty(c.productId), price: 0 }); }
+        else { var ls = ensureLines(); var e2 = ls.find(function (l) { return l.productId === c.productId; }); if (e2) { if (c.qty != null) e2.qty = c.qty; } else ls.push({ id: uid(), productId: c.productId, qty: c.qty != null ? c.qty : defQty(c.productId) }); }
         touched.selling = 1;
       } else if (c.type === 'scalar') {
         patch[c.field] = c.value;

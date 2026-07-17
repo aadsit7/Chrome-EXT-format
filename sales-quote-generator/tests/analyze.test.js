@@ -33,12 +33,21 @@ function freshQuote() {
     customer: '', email: '', partnerCompany: '', partnerEmail: '', billingContact: '',
     billToAddress: '', shipToAddress: '', expires: '', currency: '', coTermDate: '',
     months: 12, years: 1, lines: [], renewLines: [],
+    // deal / discount / support state the AI review path (Task 2) can fill
+    customerType: 'new', dealType: 'addon', partner: false,
+    marginNewPct: 20, marginRenPct: 15, extraPct: 0, supportAll: false,
   };
 }
 global.int = function (n) { n = Number(String(n).replace(/[^0-9]/g, '')); return isFinite(n) ? Math.max(0, Math.floor(n)) : 0; };
 global.fmt = function (n) { return '$' + Math.round(n).toLocaleString('en-US'); };
-global.state = { quote: freshQuote(), cfg: { products: CATALOG } };
+global.state = { quote: freshQuote(), cfg: { products: CATALOG, rules: { maxExtra: 50, minUsers: 250 } }, sections: { deal: false, selling: false, discounts: false, who: false } };
 global.window = {};
+/* Stubs so the panel-side apply path (applyFindings → setQ) runs under Node. */
+let __uid = 0;
+global.uid = function () { return 'x' + (++__uid); };
+global.render = function () {};
+global.flash = function () {};
+global.setQ = function (p) { global.state.quote = Object.assign({}, global.state.quote, p); };
 
 /* Load analyze.js into this scope (it assigns window.SQG_ANALYZE). */
 const src = fs.readFileSync(path.join(__dirname, '..', 'analyze.js'), 'utf8');
@@ -142,6 +151,33 @@ function runAiPath(label, data, expect) {
   if (res.note) console.log('  note: ' + res.note);
 }
 
+/* ==================== EXTENDED AI SCHEMA (Task 2) ====================
+   The voice review path returns extra deal/discount fields. Prove they (1) turn
+   into review-card findings via _buildAiFindings and (2) apply through the exact
+   same state patches (with the clamp / max-discount rules) via applyFindings. */
+function findingVal(findings, field) { const f = findings.find(function (x) { return x.field === field; }); return f ? f.value : undefined; }
+
+function runExtendedAiPath(label, data, expectFindings, expectQuote) {
+  console.log('\n── ' + label + ' — extended AI schema (Task 2) ──');
+  global.state.quote = freshQuote();
+  const findings = A._buildAiFindings(data).findings;
+  Object.keys(expectFindings).forEach(function (field) {
+    checkEq(label + ' (finding)', field, expectFindings[field], findingVal(findings, field));
+  });
+  // Apply through applyFindings (mirrors voice.js buildPatch) and read the quote.
+  global.state.analyze = { findings: findings, url: '', source: 'voice' };
+  A.applyFindings();
+  const q = global.state.quote;
+  Object.keys(expectQuote).forEach(function (key) {
+    if (key === 'lines') {
+      const ln = (q.lines || []).find(function (l) { return l.productId === expectQuote.lines.productId; });
+      checkEq(label + ' (applied)', 'line ' + expectQuote.lines.productId + ' qty', expectQuote.lines.qty, ln && ln.qty);
+    } else {
+      checkEq(label + ' (applied)', key, expectQuote[key], q[key]);
+    }
+  });
+}
+
 /* ============================ SNAPSHOT (Task 1) ============================ */
 async function runSnapshot(label, html, url, mustContain, mustExclude, orderBefore, orderAfter) {
   console.log('\n── ' + label + ' — prioritized AI snapshot ──');
@@ -188,6 +224,23 @@ async function runSnapshot(label, html, url, mustContain, mustExclude, orderBefo
   runAiPath('RENEWAL (Gulfstream Aerospace Corp.)', fx.RENEWAL_AI, {
     customer: 'Gulfstream Aerospace Corp.', partner: 'Insight', renewalDate: '2027-09-29', termMonths: 12, product: 'Right Click Tools', quantity: 20000,
   });
+
+  // Task 2 — the extended deal/discount/support schema the voice review path returns.
+  runExtendedAiPath('VOICE (Amazon, net new, 15% off)',
+    { isRenewal: false, customer: 'Amazon', customerType: 'new', extraDiscountPct: 15, partnerMarginPct: 20, premiumSupport: true, termMonths: 24, lines: [{ productId: 'aw', qty: 500 }] },
+    { customer: 'Amazon', customerType: 'new', extraPct: 15, partnerMargin: 20, premiumSupport: true },
+    { customer: 'Amazon', customerType: 'new', extraPct: 15, partner: true, marginNewPct: 20, supportAll: true, months: 24, years: 2, lines: { productId: 'aw', qty: 500 } });
+
+  runExtendedAiPath('VOICE (renewal, current customer)',
+    { isRenewal: true, customer: 'Globex', dealType: 'ren' },
+    { customer: 'Globex', dealType: 'ren' },
+    { customer: 'Globex', customerType: 'current', dealType: 'ren' });
+
+  // Clamping parity with voice.js buildPatch: extra ≤ maxExtra (50), margin ≤ 100.
+  runExtendedAiPath('VOICE (over-cap discount + margin clamps)',
+    { extraDiscountPct: 999, partnerMarginPct: 150 },
+    { extraPct: 999, partnerMargin: 150 },
+    { extraPct: 50, partner: true, marginNewPct: 100 });
 
   await runSnapshot('NEW BUSINESS snapshot', fx.NEW_BUSINESS_HTML, fx.NEW_BUSINESS_URL,
     ['== QUOTE INFORMATION ==', 'Application Workspace', 'Endpoint Tier'], [], 'QUOTE INFORMATION', 'ACCOUNT DETAILS');
