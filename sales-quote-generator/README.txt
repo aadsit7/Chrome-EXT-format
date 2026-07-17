@@ -92,6 +92,16 @@ USING THE TOOL
     • text fields — "customer is Acme Corporation", "contact Jane Doe",
       "email jane at acme dot com", "partner company Reseller Inc",
       "prepared by …", "currency euros", "payment terms Net 30"
+  It also drives the rest of the extension by voice — spoken commands, run
+  once each (they never repeat when the transcript is re-read):
+    • navigation — "scroll down", "scroll up", "scroll to the top",
+      "scroll to the bottom"
+    • actions — "analyze this page" (hands off to the page reader),
+      "create quote" / "download the PDF", "new quote" / "start over"
+      (asks to confirm), "show the details" / "hide the details",
+      "open settings"
+    • sections — "expand discounts", "collapse the products section",
+      "open who's it for"
   Number words ("twenty five hundred", "two thousand five hundred",
   "seven point five percent") are understood. The section holding each
   field opens automatically as it fills, so you watch it happen. Because
@@ -258,7 +268,12 @@ voice.js        "Speak to fill" — LIVE voice input. Transcribes speech with
                 immediately via setQ — no network round-trip. Re-saying a
                 value corrects it (latest wins); the section being filled
                 opens so the change is visible; after stopping, the
-                transcript stays editable for a "Re-apply". No new
+                transcript stays editable for a "Re-apply". Also recognizes
+                one-shot COMMANDS from each new phrase (scroll up/down/top/
+                bottom, analyze this page, create/new quote, show/hide the
+                details sheet, open settings, expand/collapse a section) and
+                runs them through window.SQG_APP / SQG_ANALYZE — so they fire
+                once, never on the idempotent transcript re-read. No new
                 permissions (uses the browser's standard mic prompt); hides
                 itself when the browser has no speech support
 sheets.js       Shared-database + AI network calls to the Apps Script web
