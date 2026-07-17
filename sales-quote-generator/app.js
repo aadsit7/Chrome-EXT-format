@@ -1462,8 +1462,9 @@ function buildDockToolbar() {
     onClick: () => { state.newQuotePrompt = true; render(); },
   }));
 
-  // Speak to fill — the accent-colored mic; hidden when voice is unsupported,
-  // locked while an analyze is running, and shows the stop glyph while listening.
+  // Speak to fill — default white like the other two dock icons; hidden when voice
+  // is unsupported, locked while an analyze is running, and turns to the red
+  // listening state (stop glyph + pulse) only while actively listening.
   if (voiceSupported) {
     row.append(dockIcon({
       icon: listening ? SVG_STOP_DOCK : SVG_MIC_DOCK,
@@ -1471,7 +1472,6 @@ function buildDockToolbar() {
       ariaLabel: speakLocked
         ? 'Analyzing the page… wait for it to finish'
         : (listening ? 'Stop listening (fields fill live as you speak)' : 'Speak to fill'),
-      accent: true,
       listening: listening,
       pressed: listening,
       disabled: speakLocked,
