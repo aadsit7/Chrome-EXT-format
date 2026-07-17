@@ -519,9 +519,10 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
   100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
 }
 .sqg-voice-live {
-  display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 9px; padding: 10px 12px;
   border: 1px solid var(--border-default); border-radius: 12px; background: var(--surface-card);
 }
+.sqg-voice-live-row { display: flex; align-items: flex-start; gap: 9px; }
 .sqg-voice-dot {
   width: 9px; height: 9px; margin-top: 5px; flex-shrink: 0; border-radius: 50%;
   background: #dc2626; animation: sqg-mic-pulse 1.4s ease-out infinite;
@@ -531,6 +532,14 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .sqg-voice-live-label {
   font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
   color: #dc2626;
+}
+/* Live "filled" chips — one per field the voice parser updated */
+.sqg-voice-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sqg-voice-chip {
+  display: inline-flex; align-items: center; max-width: 100%;
+  padding: 4px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; line-height: 1.3;
+  background: var(--success-soft); color: var(--green-600);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .sqg-voice-heard {
   margin: 0 0 10px; padding: 9px 12px; border-radius: 10px;
@@ -554,6 +563,7 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
   font: inherit; font-size: 14px; line-height: 1.45;
 }
 .sqg-voice-review-ta:focus { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+.sqg-voice-review-sub { font-size: 12px; color: var(--text-secondary); }
 .sqg-voice-review-note { margin: 0; font-size: 11.5px; color: var(--text-tertiary); line-height: 1.4; }
 .sqg-voice-review-actions { display: flex; gap: 10px; margin-top: 2px; }
 .sqg-voice-review-actions .ds-btn { flex: 1; }
