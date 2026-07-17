@@ -110,6 +110,27 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
   padding: 12px 13px;
 }
 .sqg-card h2 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-strong); }
+
+/* ---- Collapsible section accordion (progressive disclosure) ---- */
+.sqg-acc { padding: 0; }
+.sqg-acc-head {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 13px; background: transparent; border: none; border-radius: 14px;
+  font: inherit; text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.sqg-acc.open .sqg-acc-head { padding-bottom: 8px; }
+.sqg-acc-head:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.sqg-acc-title { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-strong); }
+.sqg-acc-right { display: flex; align-items: center; gap: 8px; min-width: 0; flex-shrink: 1; }
+.sqg-acc-summary {
+  font-size: 12.5px; font-weight: 500; color: var(--text-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.sqg-acc-summary.attention { color: var(--amber-600); font-weight: 600; }
+.sqg-acc-chev { display: inline-flex; color: var(--text-tertiary); transition: transform 160ms; flex-shrink: 0; }
+.sqg-acc-chev.open { transform: rotate(180deg); }
+.sqg-acc-body { padding: 0 13px 13px; animation: sqg-acc-in 160ms ease-out; }
+@keyframes sqg-acc-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 .sqg-set-card {
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);

@@ -100,7 +100,13 @@ function defaultQuote() {
 
 /* ---------------- State ---------------- */
 
-const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, newQuotePrompt: false, billingOpen: false, registerGate: false, voice: { on: false, interim: '', finalText: '', error: '', heard: '' } };
+/* Which calculator sections are expanded. Progressive disclosure: the two core
+   steps (deal + products) start open; the secondary steps (discounts + who)
+   start collapsed with a live summary, so a fresh quote is a short scroll.
+   Kept in memory only (not persisted) so every reload starts in this clean state. */
+function defaultSections() { return { deal: true, selling: true, discounts: false, who: false }; }
+
+const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, newQuotePrompt: false, billingOpen: false, registerGate: false, sections: defaultSections(), voice: { on: false, interim: '', finalText: '', error: '', heard: '' } };
 let toastTimer = null;
 
 try {
@@ -475,12 +481,79 @@ function renderRegisterGate() {
   return frag;
 }
 
+/* One-line summaries shown on each collapsed section — a glance tells you what's
+   set without expanding it (the iOS grouped-settings "value on the right" idiom). */
+function calcSummaries(v) {
+  const { q, m, termLabel, partnerActive, isRen } = v;
+
+  const dealBits = [m.isCurrent ? 'Current' : 'Net new'];
+  if (m.isCurrent) dealBits.push(m.isCoterm ? 'Add-on' : isRen ? 'Renewal' : m.addonRenew ? 'Add-on + renewal' : '');
+  dealBits.push(termLabel);
+
+  const prodCount = m.isRenOnly ? (q.renewLines || []).length : m.lines.length;
+  const selling = prodCount + ' product' + (prodCount === 1 ? '' : 's') + ' · ' + fmt(m.msrpC / 100) + '/yr';
+
+  const discBits = [];
+  if (partnerActive) discBits.push('Partner ' + m.margin + '%');
+  if (+q.extraPct > 0) discBits.push('+' + q.extraPct + '% extra');
+
+  let who = q.customer ? q.customer : 'Not set';
+  if (partnerActive && q.partnerCompany) who += ' · via ' + q.partnerCompany;
+
+  return {
+    deal: dealBits.filter(Boolean).join(' · '),
+    selling: selling,
+    discounts: discBits.length ? discBits.join(' · ') : 'None',
+    who: who, whoSet: !!q.customer,
+  };
+}
+
+/* Wrap a section card in a collapsible accordion. The section function still
+   builds its full <section class="sqg-card"> (header first); here we lift the
+   title into a tappable head with a summary + chevron, and show the rest of the
+   body only when expanded. Pure presentation — the section's own controls are
+   untouched. */
+function accordionSection(key, title, summary, sectionEl, opts) {
+  opts = opts || {};
+  if (!state.sections) state.sections = defaultSections();
+  const isOpen = !!state.sections[key];
+
+  // Drop the section's own header block (first child) — the accordion head
+  // carries the title, and dropping the sub-heading is part of condensing.
+  if (sectionEl.children.length) sectionEl.removeChild(sectionEl.children[0]);
+
+  const chev = h('span', { class: 'sqg-acc-chev' + (isOpen ? ' open' : '') });
+  chev.innerHTML = SVG_CHEVRON_UP;
+  const right = h('div', { class: 'sqg-acc-right' });
+  if (!isOpen) right.append(h('span', { class: 'sqg-acc-summary' + (opts.attention ? ' attention' : '') }, summary));
+  right.append(chev);
+
+  const head = h('button', {
+    class: 'sqg-acc-head', type: 'button', 'aria-expanded': isOpen ? 'true' : 'false',
+    onClick: () => { state.sections[key] = !state.sections[key]; render(); },
+  }, h('span', { class: 'sqg-acc-title' }, title), right);
+
+  const card = h('section', { class: 'sqg-card sqg-acc' + (isOpen ? ' open' : '') }, head);
+  if (isOpen) {
+    const body = h('div', { class: 'sqg-acc-body' });
+    while (sectionEl.firstChild) body.appendChild(sectionEl.firstChild);
+    card.append(body);
+  }
+  return card;
+}
+
 function renderCalc() {
   const v = computeView();
+  const s = calcSummaries(v);
   const frag = document.createDocumentFragment();
   const main = h('main', { class: 'sqg-main' });
   if (window.SQG_ANALYZE) main.append(window.SQG_ANALYZE.bar(v));
-  main.append(sectionDeal(v), sectionSelling(v), sectionDiscounts(v), sectionWho(v));
+  main.append(
+    accordionSection('deal', 'What kind of deal?', s.deal, sectionDeal(v)),
+    accordionSection('selling', 'What are you selling?', s.selling, sectionSelling(v)),
+    accordionSection('discounts', 'Any discounts?', s.discounts, sectionDiscounts(v)),
+    accordionSection('who', "Who's it for?", s.who, sectionWho(v), { attention: !s.whoSet })
+  );
   frag.append(main, buildDock(v), buildSheet(v));
   if (state.toast) {
     frag.append(h('div', { class: 'sqg-toast sqg-toast-' + (state.toastTone === 'warn' ? 'warn' : 'ok'), role: 'status' }, state.toast));
@@ -536,6 +609,7 @@ function newQuote() {
   state.addMenu = false;
   state.analyze = null;
   state.billingOpen = false;
+  state.sections = defaultSections(); // back to the clean deal+products-open layout
   persist(); // clears the saved quote in localStorage the same way a manual edit would
   render();
   flash('Started a new quote — all fields cleared', 'ok');
@@ -1177,10 +1251,12 @@ function buildQuoteData(v) {
 function makeCreateQuote(v, data) {
   const { q, m, partnerActive } = v;
   return () => {
-    if (m.needsDate && !m.addonValid) { flash('Pick the customer’s renewal date (a future date) first', 'warn'); return; }
-    if (m.isRenOnly && ((q.renewLines || []).length === 0 || (q.renewLines || []).some((x) => !(+x.price > 0)))) { flash('Enter the amount per year for each renewing product', 'warn'); return; }
-    if (partnerActive && !q.partnerCompany.trim()) { flash('Add the partner company (bill to) in “Who’s it for?”', 'warn'); return; }
-    if (!q.customer.trim()) { flash('Add a customer name in “Who’s it for?” first', 'warn'); return; }
+    // On a validation miss, expand the section that holds the offending field so
+    // the error message always points at something the user can see and fix.
+    if (m.needsDate && !m.addonValid) { state.sections.deal = true; flash('Pick the customer’s renewal date (a future date) first', 'warn'); return; }
+    if (m.isRenOnly && ((q.renewLines || []).length === 0 || (q.renewLines || []).some((x) => !(+x.price > 0)))) { state.sections.selling = true; flash('Enter the amount per year for each renewing product', 'warn'); return; }
+    if (partnerActive && !q.partnerCompany.trim()) { state.sections.who = true; flash('Add the partner company (bill to) in “Who’s it for?”', 'warn'); return; }
+    if (!q.customer.trim()) { state.sections.who = true; flash('Add a customer name in “Who’s it for?” first', 'warn'); return; }
     // Auto-save to the shared database on every quote request (there's no longer
     // a separate "Save to database" button). Fire-and-forget — its own toast /
     // AI note surface when it returns, and a save failure never blocks the PDF.

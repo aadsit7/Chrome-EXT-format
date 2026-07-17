@@ -108,6 +108,16 @@ USING THE TOOL
   quote?" with Cancel / New quote — so the current quote is never wiped
   by an accidental tap. Confirming also updates the saved quote in this
   browser (localStorage), same as any other edit.
+- The calculator is organized into four tap-to-expand sections to keep
+  the panel short and scannable. The two core steps — "What kind of
+  deal?" and "What are you selling?" — start open; the secondary steps
+  — "Any discounts?" and "Who's it for?" — start collapsed, each showing
+  a one-line summary of its current state on the right (for example
+  "Net new · 2 years", "3 products · $45,000/yr", "Partner 20%", or the
+  customer name; an unset customer shows "Not set" in amber). Tap a
+  section header to open or close it. If you press "Create quote" while
+  a required field is still empty, the section holding that field opens
+  automatically so the message points you straight to the fix.
 - The gear icon in the header switches between the quote calculator
   and the pricing settings screen. Opening settings requires a
   password — the default is 2026. Change it any time from the
