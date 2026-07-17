@@ -69,6 +69,11 @@ function checkTrue(label, field, got) {
   rows.push({ label, field, expected: 'true', got: got === true ? 'true' : String(got), ok });
   ok ? passed++ : failed++;
 }
+function checkNull(label, field, got) {
+  const ok = got == null;
+  rows.push({ label, field, expected: '(none)', got: got == null ? '(none)' : String(got), ok });
+  ok ? passed++ : failed++;
+}
 
 /* ============================ FIXTURES ============================ */
 /* Each fixture: a spoken phrase + the command values it must produce.
@@ -151,6 +156,47 @@ const FIXTURES = [
     assert: function (cs) {
       checkEq('Trailing-term', 'term years', 3, termYears(cs));
       checkEq('Trailing-term', 'customer', 'Costco', scalar(cs, 'customer'));
+    },
+  },
+
+  /* ---- regression guards for issues found in adversarial review ---- */
+  {
+    name: 'Two discount %s back-to-back: each keeps its own keyword (no hijack)',
+    text: 'partner margin 20 percent, extra discount 5 percent',
+    assert: function (cs) {
+      checkEq('Multi-pct', 'partner margin %', 20, partnerMargin(cs));
+      checkEq('Multi-pct', 'extra discount %', 5, extraPct(cs));
+    },
+  },
+  {
+    name: 'Discount % immediately before an increase % (no connector)',
+    text: 'extra discount 5 percent annual increase 3 percent',
+    assert: function (cs) {
+      checkEq('Discount+increase', 'extra discount %', 5, extraPct(cs));
+      checkEq('Discount+increase', 'annual increase %', 3, uplift(cs));
+    },
+  },
+  {
+    name: 'Prepositional capture must not swallow a bare quantity as the customer',
+    text: 'quote for 3000 endpoints',
+    assert: function (cs) {
+      checkNull('Bare-qty', 'customer (not "3000 …")', scalar(cs, 'customer'));
+    },
+  },
+  {
+    name: 'Name right after a customer-type phrase still fills',
+    text: 'current customer Acme Corporation',
+    assert: function (cs) {
+      checkEq('Type+name', 'customer type', 'current', customerType(cs));
+      checkEq('Type+name', 'customer', 'Acme Corporation', scalar(cs, 'customer'));
+    },
+  },
+  {
+    name: 'Net-new phrase immediately followed by the customer name',
+    text: 'new customer Globex Industries',
+    assert: function (cs) {
+      checkEq('New+name', 'customer type', 'new', customerType(cs));
+      checkEq('New+name', 'customer', 'Globex Industries', scalar(cs, 'customer'));
     },
   },
 ];

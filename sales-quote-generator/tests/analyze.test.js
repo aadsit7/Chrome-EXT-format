@@ -157,10 +157,10 @@ function runAiPath(label, data, expect) {
    same state patches (with the clamp / max-discount rules) via applyFindings. */
 function findingVal(findings, field) { const f = findings.find(function (x) { return x.field === field; }); return f ? f.value : undefined; }
 
-function runExtendedAiPath(label, data, expectFindings, expectQuote) {
+function runExtendedAiPath(label, data, expectFindings, expectQuote, opts) {
   console.log('\n── ' + label + ' — extended AI schema (Task 2) ──');
   global.state.quote = freshQuote();
-  const findings = A._buildAiFindings(data).findings;
+  const findings = A._buildAiFindings(data, opts).findings;
   Object.keys(expectFindings).forEach(function (field) {
     checkEq(label + ' (finding)', field, expectFindings[field], findingVal(findings, field));
   });
@@ -241,6 +241,14 @@ async function runSnapshot(label, html, url, mustContain, mustExclude, orderBefo
     { extraDiscountPct: 999, partnerMarginPct: 150 },
     { extraPct: 999, partnerMargin: 150 },
     { extraPct: 50, partner: true, marginNewPct: 100 });
+
+  // Voice mode keeps a spoken product that has no quantity (the exact shape the
+  // buildVoicePrompt_ example returns) and seeds the app's new-line default.
+  runExtendedAiPath('VOICE (product with no quantity — canonical Amazon shape)',
+    { customer: 'Amazon', customerType: 'new', extraDiscountPct: 15, lines: [{ productId: 'aw' }] },
+    { customer: 'Amazon', customerType: 'new', extraPct: 15 },
+    { customer: 'Amazon', customerType: 'new', extraPct: 15, lines: { productId: 'aw', qty: 250 } },
+    { voice: true });
 
   await runSnapshot('NEW BUSINESS snapshot', fx.NEW_BUSINESS_HTML, fx.NEW_BUSINESS_URL,
     ['== QUOTE INFORMATION ==', 'Application Workspace', 'Endpoint Tier'], [], 'QUOTE INFORMATION', 'ACCOUNT DETAILS');
