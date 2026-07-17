@@ -209,6 +209,32 @@ FIXTURES.forEach(function (fx) {
   fx.assert(parse(fx.text));
 });
 
+/* ============ Quote-type enablement guardrail (Task c) ============
+   A spoken command that targets a disabled quote type is SKIPPED through the
+   applier (window.SQG_VOICE._buildPatch): no state change and a
+   "<type> — not enabled" note in the applied feedback. Enabled types still apply. */
+console.log('\n• Voice respects Settings → Quote types');
+console.log('    “it’s a renewal” with renewals turned off → skipped');
+(function () {
+  const saved = global.state.cfg.enabledQuoteTypes;
+
+  // Only net-new enabled → "it's a renewal" is skipped, no patch, skip label shown.
+  global.state.quote = {};
+  global.state.cfg.enabledQuoteTypes = { new: true, addon: false, ren: false, addonren: false };
+  const off = V._buildPatch(parse("it's a renewal"));
+  checkEq('Voice type off', 'no state change (hasChange)', false, off.hasChange);
+  checkTrue('Voice type off', 'skip label "Renewal — not enabled"', off.labels.indexOf('Renewal — not enabled') > -1);
+
+  // All types enabled → the same phrase applies dealType "ren" as before.
+  global.state.quote = {};
+  global.state.cfg.enabledQuoteTypes = { new: true, addon: true, ren: true, addonren: true };
+  const on = V._buildPatch(parse("it's a renewal"));
+  checkEq('Voice type on', 'dealType applied', 'ren', on.patch.dealType);
+  checkTrue('Voice type on', 'state changed (hasChange)', on.hasChange === true);
+
+  global.state.cfg.enabledQuoteTypes = saved;
+})();
+
 /* ---- report ---- */
 console.log('\n================= RESULTS =================');
 const pad = function (s, n) { s = String(s); return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); };

@@ -44,6 +44,28 @@ window.SQG_VOICE = (function () {
 
   function supported() { return !!Rec; }
 
+  /* ---- Quote-type enablement (admin setting cfg.enabledQuoteTypes) ----
+     A spoken command that targets a quote type the admin has turned off is
+     skipped, with a "<type> — not enabled" note in the live applied feedback.
+     Mirrors the pure helpers in app.js (kept local so this file stays standalone
+     for the /tests harness, matching the existing isRenOnly/clampPct duplication). */
+  var CURRENT_TYPE_ORDER = ['addon', 'ren', 'addonren'];
+  function enabledTypes() {
+    var e = (state.cfg && state.cfg.enabledQuoteTypes) || {};
+    var out = { new: !!e.new, addon: !!e.addon, ren: !!e.ren, addonren: !!e.addonren };
+    if (!out.new && !out.addon && !out.ren && !out.addonren) out.new = true;
+    return out;
+  }
+  function typeEnabled(key) { return !!enabledTypes()[key]; }
+  function enabledCurrentKeys() { var e = enabledTypes(); return CURRENT_TYPE_ORDER.filter(function (k) { return e[k]; }); }
+  var SKIP_LABEL = {
+    new: 'Net new — not enabled',
+    current: 'Current customer — not enabled',
+    addon: 'Add-on — not enabled',
+    ren: 'Renewal — not enabled',
+    addonren: 'Add-on + renewal — not enabled',
+  };
+
   function setVoice(patch) {
     state.voice = Object.assign({ on: false, interim: '', finalText: '', error: '', heard: '', applied: [] }, state.voice || {}, patch || {});
     render();
@@ -512,6 +534,7 @@ window.SQG_VOICE = (function () {
     };
 
     cmds.forEach(function (c) {
+      var pushLabel = c.label; // overridden to a skip label for disabled quote types
       if (c.type === 'lineQty') {
         // qty null = a bare product mention: ensure the line exists, but never
         // overwrite a quantity the user already has (or one said elsewhere).
@@ -528,9 +551,27 @@ window.SQG_VOICE = (function () {
       else if (c.type === 'support') { patch.supportAll = c.value; touched.selling = 1; }
       else if (c.type === 'uplift') { patch.uplift = true; if (c.value != null) patch.upliftPct = clampPct(c.value, 10); touched.selling = 1; }
       else if (c.type === 'term') { if (c.years != null) patch.years = c.years; if (c.months != null) patch.months = c.months; touched.deal = 1; }
-      else if (c.type === 'customerType') { patch.customerType = c.value; touched.deal = 1; }
-      else if (c.type === 'dealType') { patch.customerType = 'current'; patch.dealType = c.value; touched.deal = 1; }
-      labels.push(c.label);
+      else if (c.type === 'customerType') {
+        if (c.value === 'new') {
+          if (typeEnabled('new')) { patch.customerType = 'new'; touched.deal = 1; }
+          else pushLabel = SKIP_LABEL.new; // net-new turned off — skip
+        } else { // 'current' — needs at least one enabled current type
+          var ck = enabledCurrentKeys();
+          if (ck.length) {
+            patch.customerType = 'current';
+            // Land on an enabled current deal type (keep the one being set if it's
+            // enabled, otherwise the first enabled current type).
+            var dtNow = (patch.dealType != null) ? patch.dealType : q.dealType;
+            if (ck.indexOf(dtNow) === -1) patch.dealType = ck[0];
+            touched.deal = 1;
+          } else pushLabel = SKIP_LABEL.current;
+        }
+      }
+      else if (c.type === 'dealType') {
+        if (typeEnabled(c.value)) { patch.customerType = 'current'; patch.dealType = c.value; touched.deal = 1; }
+        else pushLabel = SKIP_LABEL[c.value] || (c.value + ' — not enabled'); // type turned off — skip
+      }
+      labels.push(pushLabel);
     });
     if (lines) patch.lines = lines;
     if (renew) patch.renewLines = renew;

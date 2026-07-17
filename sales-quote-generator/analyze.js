@@ -1182,6 +1182,41 @@ window.SQG_ANALYZE = (function () {
     return null;
   }
 
+  /* ---- Quote-type enablement (admin setting cfg.enabledQuoteTypes) ----
+     Findings that would switch the quote to a disabled type — and renewal-line
+     findings when no renewal-capable type is enabled — are dropped before the
+     review card renders, with a note appended when anything was hidden. Mirrors
+     the pure helpers in app.js (kept local so analyze.js stays standalone for the
+     /tests harness, matching the existing isRenOnly/clampPct duplication). */
+  var QT_CURRENT_ORDER = ['addon', 'ren', 'addonren'];
+  var QT_DROP_NOTE = 'Some suggestions were hidden because those quote types are turned off in Settings.';
+  var qtRuleDropped = 0; // set by buildFindings so run() can note rule-path drops
+  function qtEnabled() {
+    var e = (state.cfg && state.cfg.enabledQuoteTypes) || {};
+    var out = { new: !!e.new, addon: !!e.addon, ren: !!e.ren, addonren: !!e.addonren };
+    if (!out.new && !out.addon && !out.ren && !out.addonren) out.new = true;
+    return out;
+  }
+  function qtCurrentKeys() { var e = qtEnabled(); return QT_CURRENT_ORDER.filter(function (k) { return e[k]; }); }
+  function qtRenewalCapable() { var e = qtEnabled(); return !!(e.ren || e.addonren); }
+  function qtFindingAllowed(f) {
+    var e = qtEnabled();
+    if (f.field === 'customerType') return f.value === 'new' ? e.new : qtCurrentKeys().length > 0;
+    if (f.field === 'dealType') return !!e[f.value];
+    if (f.field === 'renewLine') return qtRenewalCapable();
+    return true;
+  }
+  function qtFilterFindings(list) {
+    var kept = [], dropped = 0;
+    (list || []).forEach(function (f) { if (qtFindingAllowed(f)) kept.push(f); else dropped++; });
+    return { findings: kept, dropped: dropped };
+  }
+  function qtAppendDropNote(note, dropped) {
+    if (!dropped) return note;
+    if (note && note.indexOf(QT_DROP_NOTE) > -1) return note;
+    return note ? (note + ' ' + QT_DROP_NOTE) : QT_DROP_NOTE;
+  }
+
   function buildFindings(raw) {
     var q = state.quote, cfg = state.cfg, out = [];
     if (!raw) return out;
@@ -1251,7 +1286,11 @@ window.SQG_ANALYZE = (function () {
       }
     });
 
-    return out;
+    // Drop findings for disabled quote types (renewal lines when no renewal-capable
+    // type is enabled); record the count so run() can note it on the review card.
+    var filtered = qtFilterFindings(out);
+    qtRuleDropped = filtered.dropped;
+    return filtered.findings;
   }
 
   /* =========================================================================
@@ -1508,7 +1547,12 @@ window.SQG_ANALYZE = (function () {
       });
     });
 
-    return { findings: out, note: note };
+    // Drop findings for disabled quote types (customerType/dealType that resolve to
+    // an off type; renewal lines when no renewal-capable type is enabled) and note
+    // the hide so the review card explains why the suggestion isn't shown.
+    var filtered = qtFilterFindings(out);
+    if (filtered.dropped > 0) note = qtAppendDropNote(note, filtered.dropped);
+    return { findings: filtered.findings, note: note };
   }
 
   /* Show the AI findings, then supplement with any rule-based finding the AI
@@ -1771,7 +1815,7 @@ window.SQG_ANALYZE = (function () {
         var pageText = buildSnapshotText((res[1] || []).map(function (r) { return r && r.result; }), raw);
         var catalog = state.cfg.products.map(function (p) { return { id: p.id, name: p.name, unit: p.unit }; });
 
-        var fallback = function () { if (stale()) return; analyzeActive = false; showFindings(ruleFindings, raw, tab, ruleNote(raw, ruleFindings)); };
+        var fallback = function () { if (stale()) return; analyzeActive = false; showFindings(ruleFindings, raw, tab, qtAppendDropNote(ruleNote(raw, ruleFindings), qtRuleDropped)); };
 
         // No AI transport available → behave exactly like the original tool.
         if (!(window.SQG_SHEETS && typeof window.SQG_SHEETS.analyzePage === 'function') || !pageText) {
@@ -1783,7 +1827,7 @@ window.SQG_ANALYZE = (function () {
           var ai = buildAiFindings(data);
           if (ai.findings.length) {
             var merged = mergeAiRule(ai.findings, ruleFindings); // supplement, never drop
-            showFindings(merged, raw, tab, ai.note || ruleNote(raw, ruleFindings));
+            showFindings(merged, raw, tab, qtAppendDropNote(ai.note || ruleNote(raw, ruleFindings), qtRuleDropped));
           } else {
             fallback(); // AI returned nothing usable → rule-based detection
           }
