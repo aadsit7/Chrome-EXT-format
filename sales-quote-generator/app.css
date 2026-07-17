@@ -35,7 +35,10 @@
   --shadow-lg: 0 12px 32px rgba(23, 29, 43, 0.10);
   --shadow-sheet: 0 -18px 48px rgba(23, 29, 43, 0.22);
 
-  --dock-h: 64px;
+  /* Total height of the fixed bottom dock. Grew when the iOS-style icon toolbar
+     (Analyze · New quote · Speak) was added above the total + "Create quote" row,
+     so the scroll area's bottom padding and the toast offset both clear it. */
+  --dock-h: 152px;
 }
 
 /* ---- Base ---- */
@@ -288,6 +291,64 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .sqg-dock-sub .save { color: var(--green-600); font-weight: 600; }
 .sqg-dock-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
 .sqg-dock-actions .ds-btn { white-space: nowrap; }
+
+/* ---- Dock icon toolbar (iPhone-style dock: Analyze · New quote · Speak) ---- */
+.sqg-dock-toolbar {
+  max-width: 640px; margin: 0 auto;
+  padding: 11px 20px 6px;
+  display: flex; align-items: flex-start; justify-content: space-around; gap: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sqg-dock-icon {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  background: none; border: none; padding: 2px 4px; margin: 0; cursor: pointer;
+  font: inherit; color: inherit; -webkit-tap-highlight-color: transparent;
+}
+.sqg-dock-icon-circle {
+  width: 50px; height: 50px; border-radius: 50%; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface-card); color: var(--text-primary);
+  border: 1px solid var(--border-subtle); box-shadow: var(--shadow-sm);
+  transition: transform 140ms, background 140ms, box-shadow 140ms, border-color 140ms, color 140ms;
+}
+.sqg-dock-icon-circle svg { display: block; }
+.sqg-dock-icon-label {
+  font-size: 10.5px; font-weight: 600; line-height: 1.2; color: var(--text-secondary);
+  white-space: nowrap;
+}
+/* Hover / press — subtle iOS-style lift on the circle */
+.sqg-dock-icon:hover:not(:disabled) .sqg-dock-icon-circle {
+  background: var(--surface-hover); border-color: var(--border-strong);
+  transform: translateY(-1px); box-shadow: var(--shadow-lg);
+}
+.sqg-dock-icon:active:not(:disabled) .sqg-dock-icon-circle { transform: scale(0.94); }
+/* Keyboard focus ring on the circle (matches the app's focus treatment) */
+.sqg-dock-icon:focus-visible { outline: none; }
+.sqg-dock-icon:focus-visible .sqg-dock-icon-circle {
+  box-shadow: var(--focus-ring); border-color: var(--border-accent);
+}
+/* Accent (mic) — the one primary, accent-colored button */
+.sqg-dock-icon.accent .sqg-dock-icon-circle {
+  background: var(--accent); color: #fff; border-color: transparent;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.30);
+}
+.sqg-dock-icon.accent:hover:not(:disabled) .sqg-dock-icon-circle {
+  background: var(--blue-700); border-color: transparent; box-shadow: 0 6px 16px rgba(37, 99, 235, 0.34);
+}
+.sqg-dock-icon.accent .sqg-dock-icon-label { color: var(--text-accent); }
+/* Listening — mic active: red pulse + stop glyph (mirrors .sqg-mic-btn.listening) */
+.sqg-dock-icon.listening .sqg-dock-icon-circle {
+  background: #dc2626; color: #fff; border-color: transparent;
+  box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45); animation: sqg-mic-pulse 1.4s ease-out infinite;
+}
+.sqg-dock-icon.listening:hover:not(:disabled) .sqg-dock-icon-circle { background: #c81e1e; }
+.sqg-dock-icon.listening .sqg-dock-icon-label { color: #dc2626; }
+/* Locked / disabled — same dimmed, non-interactive look the inline buttons used */
+.sqg-dock-icon:disabled, .sqg-dock-icon.sqg-locked { cursor: not-allowed; }
+.sqg-dock-icon:disabled .sqg-dock-icon-circle, .sqg-dock-icon.sqg-locked .sqg-dock-icon-circle {
+  opacity: 0.45; box-shadow: none; transform: none; animation: none;
+}
+.sqg-dock-icon:disabled .sqg-dock-icon-label, .sqg-dock-icon.sqg-locked .sqg-dock-icon-label { opacity: 0.55; }
 
 /* ---- Quote details sheet ---- */
 .sqg-scrim {
