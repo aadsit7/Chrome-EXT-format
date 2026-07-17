@@ -204,31 +204,36 @@ window.SQG_VOICE = (function () {
       var pcts = [];
       while ((pm = pctRx.exec(t))) pcts.push({ val: parseFloat(pm[1]), start: pm.index, end: pm.index + pm[0].length });
       pcts.forEach(function (p) {
-        // Classify by the NEAREST keyword on EITHER side of the % (within ~40
-        // chars before OR after), so "fifteen percent discount", "discount of
-        // fifteen percent" and "15% margin" all classify correctly. Nearest
-        // wins; on a tie the prior precedence (margin > uplift > extra) is kept.
+        // Classify by the NEAREST PRECEDING keyword (unchanged from before, so
+        // every phrase that classified correctly still classifies identically).
+        // ONLY when there is no preceding keyword in range do we fall back to the
+        // ~40 chars AFTER the % ("fifteen percent discount", "15% margin"), so a
+        // percentage whose own keyword precedes it can never be hijacked by the
+        // next clause's keyword (e.g. "partner margin 20 percent, extra discount
+        // 5 percent" keeps 20% as the margin and 5% as the extra discount).
         var pre = t.slice(Math.max(0, p.start - 40), p.start);
         var post = t.slice(p.end, Math.min(t.length, p.end + 40));
-        var nearest = function (re) {
-          var d = Infinity, m, rx = new RegExp(re, 'g');
-          while ((m = rx.exec(pre))) d = Math.min(d, pre.length - m.index);   // chars from a preceding match → %
-          rx = new RegExp(re, 'g');
-          while ((m = rx.exec(post))) d = Math.min(d, m.index + 1);           // chars from % → a following match
-          return d;
-        };
-        var dMargin = nearest('\\bmargin\\b');
-        var dUplift = nearest('\\b(?:increase|uplift|escalat\\w*)\\b');
-        var dExtra = nearest('\\b(?:extra|additional|discount|sweetener)\\b');
-        var dPartner = nearest('\\b(?:partner|reseller)\\b');
-        var cands = [
-          { f: 'margin', d: dMargin, pri: 3 },
-          { f: 'uplift', d: dUplift, pri: 2 },
-          { f: 'extra', d: dExtra, pri: 1 },
-        ];
-        var field = 'extra', best = Infinity, bestPri = -1;
-        cands.forEach(function (c) { if (c.d < best || (c.d === best && c.pri > bestPri)) { best = c.d; bestPri = c.pri; field = c.f; } });
-        if (best === Infinity) field = (dPartner !== Infinity) ? 'margin' : 'extra';
+        var lastIdx = function (re) { var m, last = -1, rx = new RegExp(re, 'g'); while ((m = rx.exec(pre))) last = m.index; return last; };
+        var firstIdx = function (re) { var m = new RegExp(re).exec(post); return m ? m.index : -1; };
+        var iMargin = lastIdx('\\bmargin\\b');
+        var iUplift = lastIdx('\\b(?:increase|uplift|escalat\\w*)\\b');
+        var iExtra = lastIdx('\\b(?:extra|additional|discount|sweetener)\\b');
+        var iPartner = lastIdx('\\b(?:partner|reseller)\\b');
+        var field = 'extra', best = -1;
+        if (iMargin > best) { best = iMargin; field = 'margin'; }
+        if (iUplift > best) { best = iUplift; field = 'uplift'; }
+        if (iExtra > best) { best = iExtra; field = 'extra'; }
+        if (best < 0) {
+          // No preceding keyword — classify by the nearest FOLLOWING keyword.
+          var jMargin = firstIdx('\\bmargin\\b');
+          var jUplift = firstIdx('\\b(?:increase|uplift|escalat\\w*)\\b');
+          var jExtra = firstIdx('\\b(?:extra|additional|discount|sweetener)\\b');
+          var jbest = Infinity;
+          if (jExtra >= 0 && jExtra < jbest) { jbest = jExtra; field = 'extra'; }
+          if (jUplift >= 0 && jUplift < jbest) { jbest = jUplift; field = 'uplift'; }
+          if (jMargin >= 0 && jMargin < jbest) { jbest = jMargin; field = 'margin'; }
+          if (jbest === Infinity) field = iPartner >= 0 ? 'margin' : 'extra';
+        }
         if (field === 'margin') commands.push({ type: 'partner', margin: p.val, label: 'Partner margin → ' + p.val + '%' });
         else if (field === 'uplift') commands.push({ type: 'uplift', value: p.val, label: 'Annual increase → ' + p.val + '%' });
         else commands.push({ type: 'pct', field: 'extraPct', value: p.val, label: 'Extra discount → ' + p.val + '%' });
@@ -343,13 +348,22 @@ window.SQG_VOICE = (function () {
         if (numBound) { var di = rest.search(/\b(?:\d|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)\b/); if (di >= 0) end = Math.min(end, vStart + di); }
         return end;
       }
-      // Order of operations: blank phrase-level matches ("new customer",
-      // "current/existing customer", partner phrases) in the keyword-scan copy
+      // Order of operations: blank phrase-level matches in the keyword-scan copy
       // BEFORE the scalar field scan, so the word "customer" inside "it's a new
       // customer" can never be mistaken for the start of a customer-name field.
+      // The "<type> customer" phrases END in the "customer" keyword, so they are
+      // blanked ONLY when no real name follows — "new customer Globex Industries"
+      // and "current customer is Acme Corp" must still fill the name.
+      var NAME_AHEAD = /^\s*(?:is|are|=|:|equals|to|-|—)?\s*[A-Z]/;
+      [/\bnew customer\b/g, /\bcurrent customer\b/g, /\bexisting customer\b/g].forEach(function (re) {
+        work.replace(re, function (match, offset) {
+          if (!NAME_AHEAD.test(raw.slice(offset + match.length))) blankWork(offset, offset + match.length);
+          return match;
+        });
+      });
+      // These carry no scalar field keyword, so they are always safe to blank.
       var PHRASE_BLANKS = [
-        /\bnet[- ]?new\b/g, /\bnew customer\b/g, /\bcurrent customer\b/g,
-        /\bexisting customer\b/g, /\bcurrent account\b/g, /\bsell through\b/g,
+        /\bnet[- ]?new\b/g, /\bcurrent account\b/g, /\bsell through\b/g,
         /\b(?:through|via)\s+(?:a\s+)?(?:partner|reseller)\b/g,
         /\bpartner (?:deal|pricing|discount)\b/g, /\breseller deal\b/g,
       ];
@@ -393,6 +407,10 @@ window.SQG_VOICE = (function () {
           var rest = orig.slice(vStart);
           var pi = rest.search(/[.!?]/); if (pi >= 0) end = Math.min(end, vStart + pi);
           var wi = rest.search(/\b(?:with|at|plus|and)\b/); if (wi >= 0) end = Math.min(end, vStart + wi);
+          // Also stop at any run of digits — valueEnd's number boundary only
+          // catches single digits and spelled numbers, so a bare "3000" ("quote
+          // for 3000 endpoints") would otherwise be swallowed into the name.
+          var ni = rest.search(/\d/); if (ni >= 0) end = Math.min(end, vStart + ni);
           return end;
         };
         var TRIGGERS = [

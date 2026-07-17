@@ -1310,10 +1310,12 @@ window.SQG_ANALYZE = (function () {
   /* Turn the Apps Script's structured response into review-card findings.
      Every returned field maps to a finding so the user previews it before Apply;
      nothing is written here. Returns { findings, note }. */
-  function buildAiFindings(data) {
+  function buildAiFindings(data, opts) {
     var out = [], note = null;
     if (!data || typeof data !== 'object') return { findings: out, note: note };
     var q = state.quote;
+    var voice = !!(opts && opts.voice); // "Speak to fill" — a spoken product may carry no quantity
+    var defLineQty = function (prod) { var min = (state.cfg && state.cfg.rules && state.cfg.rules.minUsers) || 250; return prod.unit === 'user' ? min : 1000; };
     var S = function (x) { return (x == null ? '' : String(x)).replace(/\s+/g, ' ').trim(); };
 
     if (S(data.customer)) out.push(scalarFinding('customer', 'Customer / company', S(data.customer), S(data.customer), q.customer));
@@ -1403,13 +1405,18 @@ window.SQG_ANALYZE = (function () {
       // Resolve by id OR name OR partial name (the AI may return either). Fall
       // back to any name-ish field the model used instead of productId.
       var prod = resolveCatalogProduct(li.productId) || resolveCatalogProduct(li.name) || resolveCatalogProduct(li.product);
-      if (!prod) return; // drop only if it resolves to nothing …
+      if (!prod) return; // drop only if it resolves to nothing
       var qty = parseInt(li.qty, 10);
-      if (!isFinite(qty) || qty <= 0) return; // … or the quantity is missing / <= 0
+      var qtyless = !isFinite(qty) || qty <= 0;
+      // Page mode: a line needs a real quantity. Voice mode: a rep may name a
+      // product with no number ("selling Application Workspace to Amazon"), so
+      // keep it and seed the app's own new-line default (user sets the real qty).
+      if (qtyless) { if (!voice) return; qty = defLineQty(prod); }
       var curL = q.lines.find(function (l) { return l.productId === prod.id; });
       out.push({
         field: 'lineQty', productId: prod.id, qty: qty, checked: true,
-        label: prod.name + ' — quantity', display: qty.toLocaleString('en-US') + ' ' + unitWord(prod),
+        label: prod.name + ' — quantity',
+        display: qty.toLocaleString('en-US') + ' ' + unitWord(prod) + (qtyless ? ' (starting quantity)' : ''),
         replaces: curL ? int(curL.qty).toLocaleString('en-US') + ' ' + unitWord(prod) : null,
       });
     });
@@ -1475,7 +1482,7 @@ window.SQG_ANALYZE = (function () {
     // "voice" mode → the server treats the text as conversational quote dictation
     // (see APPS-SCRIPT-UPGRADE.txt) and returns the extended deal/discount schema.
     window.SQG_SHEETS.analyzePage(text, catalog, 'voice').then(function (data) {
-      var ai = buildAiFindings(data);
+      var ai = buildAiFindings(data, { voice: true });
       if (ai.findings.length) {
         state.analyze = {
           findings: ai.findings, title: '', url: '', note: ai.note || null,
