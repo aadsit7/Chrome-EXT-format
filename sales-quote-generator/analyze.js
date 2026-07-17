@@ -102,6 +102,37 @@ window.SQG_ANALYZE = (function () {
       var norm = function (s) { return (s == null ? '' : String(s)).replace(/\s+/g, ' ').trim(); };
       var low = function (s) { return norm(s).toLowerCase(); };
       var esc = function (s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); };
+
+      /* Lightning renders hover-action buttons ("Preview", "Edit") next to record
+         names; skip them at capture so an action label never sits adjacent to a
+         value. Self-contained (runs serialized in the tab). */
+      var ACTION_WORDS = { preview: 1, edit: 1, change: 1, refresh: 1, 'view all': 1, 'show all': 1, 'show more': 1, 'more actions': 1 };
+      var isActionOnly = function (t) { return !!ACTION_WORDS[low(t)]; };
+      var isActionEl = function (el) {
+        try {
+          if (!el || el.nodeType !== 1) return false;
+          if (el.tagName === 'BUTTON' || /^lightning-button/i.test(el.tagName || '')) return true;
+          var role = (el.getAttribute && (el.getAttribute('role') || '') || '').toLowerCase();
+          if (role === 'button') return true;
+          return isActionOnly(el.textContent);
+        } catch (e) { return false; }
+      };
+      // textContent with action buttons / role="button" / action-only nodes
+      // excluded, so a hover "Preview"/"Edit" can't fuse onto the value beside it.
+      var valText = function (el) {
+        try {
+          if (!el) return '';
+          if (!el.childNodes || !el.childNodes.length) return isActionEl(el) ? '' : norm(el.textContent);
+          var parts = [];
+          var w = function (n) {
+            if (n.nodeType === 3) { parts.push(n.nodeValue); return; }
+            if (n.nodeType !== 1 || isActionEl(n)) return;
+            for (var i = 0; i < n.childNodes.length; i++) w(n.childNodes[i]);
+          };
+          w(el);
+          return norm(parts.join(' '));
+        } catch (e) { return norm(el.textContent); }
+      };
       var EMAIL_RX = /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/;
       var MONEY_RX = /\$\s?([0-9][0-9,]*(?:\.[0-9]{1,2})?)/;
 
@@ -160,6 +191,7 @@ window.SQG_ANALYZE = (function () {
       var pairs = [];
       var addPair = function (l, v) {
         l = norm(l); v = norm(v);
+        if (isActionOnly(l) || isActionOnly(v)) return; // never capture a bare action label
         if (l && v && l.length <= 60 && v.length <= 200) pairs.push({ label: l, value: v });
       };
 
@@ -325,7 +357,7 @@ window.SQG_ANALYZE = (function () {
           if (!valEl) valEl = container.querySelector('.slds-form-element__control');
         }
         if (!valEl && labelEl.nextElementSibling) valEl = labelEl.nextElementSibling;
-        return valEl ? norm(valEl.textContent) : '';
+        return valEl ? valText(valEl) : '';
       };
 
       /* Build Salesforce label/value pairs from Lightning + Classic layouts. */
@@ -396,7 +428,7 @@ window.SQG_ANALYZE = (function () {
       var sfHeaderTitle = function () {
         var els = document.querySelectorAll('.slds-page-header__title, .entityNameTitle');
         for (var i = 0; i < els.length; i++) {
-          var t = norm(els[i].textContent);
+          var t = valText(els[i]);
           if (t && t.length <= 80) return t;
         }
         return null;
@@ -410,10 +442,10 @@ window.SQG_ANALYZE = (function () {
         var a = cell.querySelector ? cell.querySelector('a[title], a, [title]') : null;
         if (a) {
           if (a.getAttribute && a.getAttribute('title')) t = norm(a.getAttribute('title'));
-          if (!t) t = norm(a.textContent);
+          if (!t) t = valText(a);
         }
         if (!t && cell.getAttribute && cell.getAttribute('title')) t = norm(cell.getAttribute('title'));
-        if (!t) t = norm(cell.textContent);
+        if (!t) t = valText(cell);
         return t;
       };
 
@@ -748,6 +780,19 @@ window.SQG_ANALYZE = (function () {
             return r === 'grid' || r === 'table' || r === 'treegrid';
           } catch (e) { return false; }
         };
+        /* Hover-action buttons ("Preview", "Edit") sit next to record names; skip
+           them so an action label never lands adjacent to a captured value. */
+        var ACTION_WORDS = { preview: 1, edit: 1, change: 1, refresh: 1, 'view all': 1, 'show all': 1, 'show more': 1, 'more actions': 1 };
+        var isActionOnly = function (t) { return !!ACTION_WORDS[norm(t).toLowerCase()]; };
+        var isActionEl = function (el) {
+          try {
+            if (!el || el.nodeType !== 1) return false;
+            if (el.tagName === 'BUTTON' || /^lightning-button/i.test(el.tagName || '')) return true;
+            var role = (el.getAttribute && (el.getAttribute('role') || '') || '').toLowerCase();
+            if (role === 'button') return true;
+            return isActionOnly(el.textContent);
+          } catch (e) { return false; }
+        };
 
         /* Salesforce detection (same markers the rule-based extractor uses). */
         var isSf = false;
@@ -810,6 +855,7 @@ window.SQG_ANALYZE = (function () {
 
         var addField = function (label, val) {
           label = norm(label).replace(/\s*[:：]\s*$/, ''); val = norm(val);
+          if (isActionOnly(label) || isActionOnly(val)) return; // never a bare action label
           if (!(label && val && label !== val && label.length <= 60 && val.length <= 300)) return;
           var line = label + ': ' + val;
           if (seenField[line]) return; // dedup repeated label→value pairs across panels/frames
@@ -868,6 +914,7 @@ window.SQG_ANALYZE = (function () {
             var el = ch;
             if (SKIP_TAGS[el.tagName]) continue;
             if (isChrome(el)) continue;
+            if (isActionEl(el)) continue; // skip buttons / role=button / action-only nodes
             // Salesforce: exclude noise sections entirely; tag other sections so
             // the payload can be assembled in priority order.
             var prevSection = curSection;
@@ -980,6 +1027,14 @@ window.SQG_ANALYZE = (function () {
      Panel side — merge frames, then turn the raw extraction into findings.
      ========================================================================= */
   function normS(s) { return (s == null ? '' : String(s)).replace(/\s+/g, ' ').trim(); }
+
+  /* Strip leading/trailing Salesforce UI action words ("Insight Preview" →
+     "Insight") from an extracted scalar, via the shared cleaner. Looked up at
+     call time so load order can't matter; identity if the cleaner is absent. */
+  function scrubEdge(s) {
+    var fn = (typeof window !== 'undefined' && window.SQG_CLEAN && window.SQG_CLEAN.scrubEdges);
+    return fn ? fn(s) : (s == null ? s : String(s));
+  }
 
   /* Merge per-frame results, preferring the frame with the most matches; fill
      any gaps from the remaining frames (handles Classic-in-Lightning iframes). */
@@ -1131,12 +1186,13 @@ window.SQG_ANALYZE = (function () {
     var q = state.quote, cfg = state.cfg, out = [];
     if (!raw) return out;
 
-    if (raw.customer) out.push(scalarFinding('customer', 'Customer / company', raw.customer, raw.customer, q.customer));
+    var custV = scrubEdge(raw.customer);
+    if (custV) out.push(scalarFinding('customer', 'Customer / company', custV, custV, q.customer));
     if (raw.email) out.push(scalarFinding('email', 'Contact email', raw.email, raw.email, q.email));
 
     // Account Name stays the customer; the reseller/partner is a separate company.
-    var partner = raw.partnerCompany || raw.billTo;
-    if (partner && (!raw.customer || normS(partner) !== normS(raw.customer))) {
+    var partner = scrubEdge(raw.partnerCompany || raw.billTo);
+    if (partner && (!custV || normS(partner) !== normS(custV))) {
       out.push(scalarFinding('partnerCompany', 'Reseller / partner company', partner, partner, q.partnerCompany));
     }
 
@@ -1316,16 +1372,23 @@ window.SQG_ANALYZE = (function () {
     var q = state.quote;
     var S = function (x) { return (x == null ? '' : String(x)).replace(/\s+/g, ' ').trim(); };
 
-    if (S(data.customer)) out.push(scalarFinding('customer', 'Customer / company', S(data.customer), S(data.customer), q.customer));
-    if (S(data.contactName)) out.push(scalarFinding('billingContact', 'Billing contact', S(data.contactName), S(data.contactName), q.billingContact));
+    // Scrub leading/trailing UI action words from every extracted scalar (a
+    // captured "Insight Preview" becomes "Insight"); email is not a scalar name.
+    var aiCust = scrubEdge(S(data.customer));
+    if (aiCust) out.push(scalarFinding('customer', 'Customer / company', aiCust, aiCust, q.customer));
+    var aiContact = scrubEdge(S(data.contactName));
+    if (aiContact) out.push(scalarFinding('billingContact', 'Billing contact', aiContact, aiContact, q.billingContact));
     if (S(data.email)) out.push(scalarFinding('email', 'Contact email', S(data.email), S(data.email), q.email));
-    if (S(data.partnerCompany)) {
-      out.push(scalarFinding('partnerCompany', 'Reseller / partner company', S(data.partnerCompany), S(data.partnerCompany), q.partnerCompany));
+    var aiPartner = scrubEdge(S(data.partnerCompany));
+    if (aiPartner) {
+      out.push(scalarFinding('partnerCompany', 'Reseller / partner company', aiPartner, aiPartner, q.partnerCompany));
       note = 'Reseller detected — turn on Partner pricing in “Who’s it for?” if this should be a partner deal (left off because it changes pricing).';
     }
     if (S(data.partnerEmail)) out.push(scalarFinding('partnerEmail', 'Reseller / partner email', S(data.partnerEmail), S(data.partnerEmail), q.partnerEmail));
-    if (S(data.billToAddress)) out.push(scalarFinding('billToAddress', 'Bill-to address', S(data.billToAddress), S(data.billToAddress), q.billToAddress));
-    if (S(data.shipToAddress)) out.push(scalarFinding('shipToAddress', 'Ship-to address', S(data.shipToAddress), S(data.shipToAddress), q.shipToAddress));
+    var aiBillAddr = scrubEdge(S(data.billToAddress));
+    if (aiBillAddr) out.push(scalarFinding('billToAddress', 'Bill-to address', aiBillAddr, aiBillAddr, q.billToAddress));
+    var aiShipAddr = scrubEdge(S(data.shipToAddress));
+    if (aiShipAddr) out.push(scalarFinding('shipToAddress', 'Ship-to address', aiShipAddr, aiShipAddr, q.shipToAddress));
 
     var iso = parseDate(S(data.quoteExpirationDate));
     if (iso) {

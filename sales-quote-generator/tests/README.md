@@ -3,7 +3,9 @@
 This folder is **not** part of the shipped Chrome extension — `manifest.json`
 never references it, so it has no effect on the packaged side panel. It exists
 to prove the upgraded `analyze.js` extraction **and** the `voice.js` live parser
-work against the scenarios each feature targets.
+work against the scenarios each feature targets, **plus** that the flow-based PDF
+layout (`pdf.js`) and the value-cleaning guards (`clean.js` + `voice.js` +
+`analyze.js` + `app.js`) hold for both direct and partner quotes.
 
 ## What it checks
 
@@ -35,12 +37,30 @@ customer = Amazon, extra discount = 15, customer type = new), a label-first
 fixture that must still parse identically (additive-only guard), `quote for
 Costco, …`, partner-margin phrasing, and a renewal phrasing.
 
+### `layout.test.js` — flow-based one-page PDF (Bug 1)
+
+Drives `window.SQG_PDF._layoutProbe` (the logo's `chrome.runtime.getURL` call is
+stubbed) with six quotes — a minimal direct quote, a direct quote with a long
+customer name + long addresses, a partner quote with all partner fields long, a
+partner quote at max product lines, a partner renewal, and a quote with a 60+
+character email — and asserts, off the recorded glyph boxes, **one-page fit, zero
+overlapping text bounding boxes, and zero column overflows** for every one.
+
+### `cleaning.test.js` — value cleaning (Bugs 2 & 3)
+
+Drives the shipped cleaning code at each checkpoint with the exact broken strings
+from the attached quote: `voice.js` (sentence-fragment customer → "Amazon"; fused
+email → one valid email + partnerEmail), `analyze.js` ("Insight Preview" →
+"Insight"), and the `app.js` PDF meta guard (`SQG_CLEAN.cleanMeta`: "Gulfstream
+Aerospace Corp." unchanged, hand-typed "Preview Inc" with no sourceUrl unchanged,
+invalid email blanked).
+
 ## Run it
 
 ```bash
 cd sales-quote-generator/tests
 npm install        # installs jsdom (dev-only) for the DOM-driven checks
-npm test           # runs analyze.test.js then voice.test.js
+npm test           # runs analyze / voice / cleaning / layout
 ```
 
 Both files also run without `npm install`: `voice.test.js` needs nothing, and
