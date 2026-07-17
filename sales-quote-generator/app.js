@@ -1622,6 +1622,19 @@ function renderSettings() {
   return main;
 }
 
+/* Action API for voice commands (voice.js) — lets "Speak to fill" drive the same
+   capabilities as the buttons: create/new quote, show the quote details sheet,
+   open settings, and expand/collapse a section. Each goes through the normal
+   state + render path, exactly like a click. Defined here (after everything) so
+   the helpers it calls already exist. */
+window.SQG_APP = {
+  createQuote: function () { try { const v = computeView(); makeCreateQuote(v, buildQuoteData(v))(); } catch (e) {} },
+  promptNewQuote: function () { if (state.view !== 'calc') return; state.newQuotePrompt = true; render(); },
+  showSheet: function (open) { if (state.view !== 'calc') return; state.sheet = !!open; render(); },
+  openSettings: function () { if (state.view === 'calc') { state.pwPrompt = true; render(); } },
+  setSection: function (key, open) { if (state.sections && Object.prototype.hasOwnProperty.call(state.sections, key)) { state.sections[key] = !!open; render(); } },
+};
+
 /* ---------------- Boot ---------------- */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && state.pwPrompt) { state.pwPrompt = false; render(); }

@@ -160,8 +160,40 @@ window.SQG_VOICE = (function () {
       return M[f] || f;
     }
 
+    /* Action / navigation commands (not field fills). NON-idempotent (scroll,
+       create quote, …) so callers run them once per spoken phrase, never on a
+       full-transcript re-parse. */
+    function detectActions(text) {
+      var t = ' ' + low(text) + ' ';
+      var a = [];
+      if (/\bscroll\w*\s+(?:to\s+)?(?:the\s+)?top\b|\bgo to (?:the )?top\b|\btop of (?:the )?(?:page|form|quote)\b/.test(t)) a.push({ action: 'scrollTop', label: 'Scroll to top' });
+      else if (/\bscroll\w*\s+(?:to\s+)?(?:the\s+)?bottom\b|\bgo to (?:the )?bottom\b|\bbottom of (?:the )?(?:page|form|quote)\b/.test(t)) a.push({ action: 'scrollBottom', label: 'Scroll to bottom' });
+      else if (/\b(?:scroll\w*\s+down|page down|further down|keep scrolling)\b/.test(t)) a.push({ action: 'scrollDown', label: 'Scroll down' });
+      else if (/\b(?:scroll\w*\s+up|page up|back up)\b/.test(t)) a.push({ action: 'scrollUp', label: 'Scroll up' });
+      if (/\banaly[sz]e\w*\s+(?:this\s+|the\s+|current\s+)?(?:page|screen|tab|website|site)\b|\bscan\s+(?:this\s+|the\s+)?(?:page|screen)\b|\bread\s+(?:this\s+|the\s+)?page\b/.test(t)) a.push({ action: 'analyze', label: 'Analyze this page' });
+      if (/\b(?:new quote|start over|start a new quote|clear (?:the )?(?:form|quote)|reset (?:the )?(?:form|quote)|start fresh|start again|blank quote)\b/.test(t)) a.push({ action: 'newQuote', label: 'New quote' });
+      else if (/\b(?:create|generate|make|download|build|finish|finalize|complete|export)\s+(?:the\s+|this\s+|a\s+|my\s+)?quote\b|\bdownload (?:the )?(?:pdf|quote)\b|\bgenerate (?:the )?pdf\b/.test(t)) a.push({ action: 'createQuote', label: 'Create quote' });
+      if (/\b(?:show|open|view|see|expand|pull up)\s+(?:the\s+)?(?:details|breakdown|summary|full quote|quote details|totals?)\b/.test(t)) a.push({ action: 'showDetails', label: 'Show quote details' });
+      else if (/\b(?:hide|close|collapse|dismiss)\s+(?:the\s+)?(?:details|breakdown|summary|totals?)\b/.test(t)) a.push({ action: 'hideDetails', label: 'Hide quote details' });
+      if (/\b(?:open|show|go to)\s+(?:the\s+)?settings\b|\bopen (?:the )?pricing settings\b/.test(t)) a.push({ action: 'openSettings', label: 'Open settings' });
+      var SEC = [
+        { key: 'deal', re: /(?:kind of deal|deal section|the deal|deal card)/ },
+        { key: 'selling', re: /(?:products? section|what are you selling|selling section|the products|products card)/ },
+        { key: 'discounts', re: /(?:discounts? section|the discounts|discounts card)/ },
+        { key: 'who', re: /(?:who'?s it for|customer section|who section|who card)/ },
+      ];
+      var openVerb = /\b(?:expand|open|show|unfold)\b/, closeVerb = /\b(?:collapse|close|hide|fold)\b/;
+      SEC.forEach(function (s) {
+        if (!s.re.test(t)) return;
+        if (closeVerb.test(t)) a.push({ action: 'section', key: s.key, open: false, label: 'Collapse ' + s.key });
+        else if (openVerb.test(t)) a.push({ action: 'section', key: s.key, open: true, label: 'Expand ' + s.key });
+      });
+      return a;
+    }
+
     function parse(text, catalog) {
       var commands = [];
+      var actions = detectActions(text);
       var t = ' ' + replaceNumberWords(low(text)) + ' ';
       t = t.replace(/\bpercent(?:age)?\b/g, '%').replace(/\bdollars?\b/g, ' ');
       function blank(s, e) { t = t.slice(0, s) + t.slice(s, e).replace(/[^ ]/g, ' ') + t.slice(e); }
@@ -297,7 +329,7 @@ window.SQG_VOICE = (function () {
         }
       });
 
-      return { commands: commands, recognized: commands.length > 0 };
+      return { commands: commands, actions: actions, recognized: commands.length > 0 || actions.length > 0 };
     }
 
     return { parse: parse };
@@ -368,6 +400,59 @@ window.SQG_VOICE = (function () {
     else render();
   }
 
+  /* ---- action / navigation commands (run once per spoken phrase) ---- */
+  function scrollBy(dir) {
+    try {
+      var amount = Math.round((window.innerHeight || 600) * 0.85) * dir;
+      window.scrollBy({ top: amount, left: 0, behavior: 'smooth' });
+    } catch (e) {
+      try { var el = document.scrollingElement || document.documentElement || document.body; el.scrollTop += dir * 320; } catch (e2) {}
+    }
+  }
+  function scrollTo(pos) {
+    try {
+      var el = document.scrollingElement || document.documentElement || document.body;
+      var top = pos ? (el.scrollHeight || 999999) : 0;
+      window.scrollTo({ top: top, left: 0, behavior: 'smooth' });
+    } catch (e) {}
+  }
+  // Turn voice off cleanly (no editable recap) so another feature can take over.
+  function handoff() {
+    if (recog) { try { recog.onend = null; recog.onerror = null; recog.stop(); } catch (e) {} recog = null; }
+    setVoice({ on: false, interim: '', heard: '', applied: [] });
+  }
+
+  // Execute the actions parsed from a single phrase. Returns true if an action
+  // ended the voice session (so the caller should stop processing this phrase).
+  function runActions(segmentText) {
+    var res = parser.parse(segmentText, catalog());
+    var acts = res.actions || [];
+    if (!acts.length) return false;
+    var APP = window.SQG_APP || {};
+    var ended = false;
+    acts.forEach(function (act) {
+      switch (act.action) {
+        case 'scrollDown': scrollBy(1); flash('Scrolling down', 'ok'); break;
+        case 'scrollUp': scrollBy(-1); flash('Scrolling up', 'ok'); break;
+        case 'scrollTop': scrollTo(0); flash('Top of the form', 'ok'); break;
+        case 'scrollBottom': scrollTo(1); flash('Bottom of the form', 'ok'); break;
+        case 'analyze':
+          // Hand off to "Analyze this page" (mutually exclusive with voice).
+          handoff(); ended = true;
+          if (window.SQG_ANALYZE && typeof window.SQG_ANALYZE.run === 'function') window.SQG_ANALYZE.run();
+          break;
+        case 'createQuote': flash('Creating quote…', 'ok'); if (typeof APP.createQuote === 'function') APP.createQuote(); break;
+        case 'newQuote': if (typeof APP.promptNewQuote === 'function') APP.promptNewQuote(); break;
+        case 'showDetails': if (typeof APP.showSheet === 'function') APP.showSheet(true); break;
+        case 'hideDetails': if (typeof APP.showSheet === 'function') APP.showSheet(false); break;
+        case 'openSettings': handoff(); ended = true; if (typeof APP.openSettings === 'function') APP.openSettings(); break;
+        case 'section': if (typeof APP.setSection === 'function') APP.setSection(act.key, act.open); break;
+      }
+    });
+    if (!ended) render(); // reflect any state change (sheet, section) while still listening
+    return ended;
+  }
+
   /* ---- lifecycle ---- */
   function stop() {
     var wasOn = !!(state.voice && state.voice.on);
@@ -400,16 +485,21 @@ window.SQG_VOICE = (function () {
       recog.interimResults = true;
 
       recog.onresult = function (ev) {
-        var interim = '', sawFinal = false;
+        var interim = '', newFinal = '', sawFinal = false;
         for (var i = ev.resultIndex; i < ev.results.length; i++) {
           var r = ev.results[i];
           var tt = (r[0] && r[0].transcript) ? r[0].transcript : '';
-          if (r.isFinal) { finalText = (finalText + ' ' + tt).replace(/\s+/g, ' ').trim(); sawFinal = true; }
+          if (r.isFinal) { finalText = (finalText + ' ' + tt).replace(/\s+/g, ' ').trim(); newFinal += ' ' + tt; sawFinal = true; }
           else interim += tt;
         }
         interim = interim.replace(/\s+/g, ' ').trim();
-        if (sawFinal) applyLive(finalText, interim);       // parse full transcript + fill live
-        else setVoice({ on: true, interim: interim, finalText: finalText });
+        if (sawFinal) {
+          // Actions run from the NEW phrase only (fire-once); field fills re-read
+          // the whole transcript (idempotent). Actions first, so an "analyze this
+          // page" hand-off can take over before we bother rendering fields.
+          if (runActions(newFinal)) return;   // an action ended the session (e.g. analyze)
+          applyLive(finalText, interim);       // parse full transcript + fill live
+        } else setVoice({ on: true, interim: interim, finalText: finalText });
       };
 
       recog.onerror = function (ev) {
@@ -492,7 +582,7 @@ window.SQG_VOICE = (function () {
         h('span', { class: 'sqg-voice-dot' }),
         h('div', { class: 'sqg-voice-live-texts' },
           h('span', { class: 'sqg-voice-live-label' }, applied.length ? 'Listening — filling live' : 'Listening…'),
-          h('span', { class: 'sqg-voice-text' }, txt || 'Try: “Right Click Tools 2,500 endpoints, partner margin 20 percent, two year term.”')
+          h('span', { class: 'sqg-voice-text' }, txt || 'Fields: “Right Click Tools 2,500 endpoints, partner margin 20 percent, two year term.” Commands: “scroll down”, “analyze this page”, “show details”, “create quote”.')
         )));
     var c = chips(applied);
     if (c) panel.append(c);
@@ -531,6 +621,6 @@ window.SQG_VOICE = (function () {
     stop: stop, isListening: function () { return !!(state.voice && state.voice.on); },
     _start: start, _stop: stop, _transcript: transcript, _reapply: reapply,
     _parse: function (text) { return parser.parse(text, catalog()); },
-    _applyLive: applyLive, _buildPatch: buildPatch,
+    _applyLive: applyLive, _buildPatch: buildPatch, _runActions: runActions,
   };
 })();
