@@ -1035,33 +1035,26 @@ window.SQG_ANALYZE = (function () {
     return card;
   }
 
+  /* The output surface for the two "fill the form" features, shown at the top of
+     the scrollable content. The trigger buttons themselves (Analyze / Speak to
+     fill) now live in the bottom icon dock (buildDockToolbar in app.js); this only
+     renders the live-listening strip, the "here's what I heard" review box, and the
+     analyze review/apply card. Returns null when there's nothing to show so no empty
+     spacer is left at the top. */
   function bar() {
     var wrap = h('div', { class: 'sqg-analyze-wrap' });
-    var ico = h('span', { class: 'sqg-analyze-ico' });
-    ico.innerHTML = SVG_SCAN;
-    // Locked out while "Speak to fill" is listening — only one runs at a time.
-    var voiceOn = !!(window.SQG_VOICE && typeof window.SQG_VOICE.isListening === 'function' && window.SQG_VOICE.isListening());
-    var analyzeBtn = h('button', {
-      class: 'sqg-analyze-btn' + (voiceOn ? ' sqg-locked' : ''), type: 'button', onClick: run,
-      disabled: voiceOn ? 'disabled' : null,
-      title: voiceOn ? 'Stop “Speak to fill” first — only one runs at a time' : 'Read the current tab and suggest quote fields',
-    }, ico, h('span', null, 'Analyze this page'));
-
-    // Sit the "Speak to fill" mic button next to "Analyze this page" — both fill
-    // the form for you. The mic button hides itself when voice isn't supported.
-    var micBtn = (window.SQG_VOICE && typeof window.SQG_VOICE.button === 'function') ? window.SQG_VOICE.button() : null;
-    wrap.append(micBtn ? h('div', { class: 'sqg-fill-row' }, analyzeBtn, micBtn) : analyzeBtn);
+    var any = false;
 
     var strip = (window.SQG_VOICE && typeof window.SQG_VOICE.liveStrip === 'function') ? window.SQG_VOICE.liveStrip() : null;
-    if (strip) wrap.append(strip);
+    if (strip) { wrap.append(strip); any = true; }
 
     // Editable "here's what I heard" confirmation — shown after listening stops,
     // before the words are sent to the AI (voice.js owns its state).
     var vreview = (window.SQG_VOICE && typeof window.SQG_VOICE.reviewBox === 'function') ? window.SQG_VOICE.reviewBox() : null;
-    if (vreview) wrap.append(vreview);
+    if (vreview) { wrap.append(vreview); any = true; }
 
-    if (state.analyze) wrap.append(reviewCard());
-    return wrap;
+    if (state.analyze) { wrap.append(reviewCard()); any = true; }
+    return any ? wrap : null;
   }
 
   /* ---- tab access + injection ---- */

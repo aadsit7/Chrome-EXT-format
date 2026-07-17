@@ -301,6 +301,13 @@ const SVG_X_MD = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" st
 const SVG_X_SM = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
 const SVG_CHEVRON_UP = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>';
 const SVG_FILE_PLUS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>';
+/* Dock-toolbar glyphs (20px). Presentational markup only — the handlers still
+   live in analyze.js (run) and voice.js (toggle). Scan mirrors SVG_SCAN in
+   analyze.js; mic/stop mirror SVG_MIC/SVG_STOP in voice.js. */
+const SVG_SCAN_DOCK = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"></path><path d="M17 3h2a2 2 0 0 1 2 2v2"></path><path d="M21 17v2a2 2 0 0 1-2 2h-2"></path><path d="M7 21H5a2 2 0 0 1-2-2v-2"></path><circle cx="12" cy="12" r="3"></circle><path d="m16 16-1.9-1.9"></path></svg>';
+const SVG_FILE_PLUS_DOCK = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>';
+const SVG_MIC_DOCK = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>';
+const SVG_STOP_DOCK = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5"></rect></svg>';
 
 function iconButton(name, size, onClick, ariaLabel) {
   const btn = h('button', { class: 'ds-iconbtn ds-iconbtn-' + size, type: 'button', 'aria-label': ariaLabel, title: ariaLabel, onClick });
@@ -366,9 +373,8 @@ function render() {
   const iconSlot = document.getElementById('header-icon-slot');
   iconSlot.textContent = '';
   if (!gate) {
-    if (view === 'calc') {
-      iconSlot.append(iconButton('newquote', 'md', () => { state.newQuotePrompt = true; render(); }, 'Start a new quote'));
-    }
+    // "New quote" moved to the bottom icon dock (see buildDockToolbar); the
+    // header keeps only the settings / close icon.
     iconSlot.append(iconButton(
       view === 'calc' ? 'settings' : 'x', 'md',
       () => {
@@ -547,7 +553,7 @@ function renderCalc() {
   const s = calcSummaries(v);
   const frag = document.createDocumentFragment();
   const main = h('main', { class: 'sqg-main' });
-  if (window.SQG_ANALYZE) main.append(window.SQG_ANALYZE.bar(v));
+  if (window.SQG_ANALYZE) { const abar = window.SQG_ANALYZE.bar(v); if (abar) main.append(abar); }
   main.append(
     accordionSection('deal', 'What kind of deal?', s.deal, sectionDeal(v)),
     accordionSection('selling', 'What are you selling?', s.selling, sectionSelling(v)),
@@ -1281,6 +1287,81 @@ function makeCreateQuote(v, data) {
 }
 
 /* ---- Bottom dock: running total + Create quote ---- */
+/* One circular dock button (iOS-dock style) — a round icon on top, a tiny text
+   label underneath. Pure presentation; every caller passes an existing handler.
+   `disabled` reuses the same lock look the old inline buttons used (.sqg-locked). */
+function dockIcon(opts) {
+  const circle = h('span', { class: 'sqg-dock-icon-circle' });
+  circle.innerHTML = opts.icon;
+  const btn = h('button', {
+    class: 'sqg-dock-icon'
+      + (opts.accent ? ' accent' : '')
+      + (opts.listening ? ' listening' : '')
+      + (opts.disabled ? ' sqg-locked' : ''),
+    type: 'button',
+    'aria-label': opts.ariaLabel,
+    title: opts.ariaLabel,
+    'aria-pressed': opts.pressed != null ? (opts.pressed ? 'true' : 'false') : null,
+    disabled: opts.disabled ? 'disabled' : null,
+    onClick: opts.onClick,
+  }, circle, h('span', { class: 'sqg-dock-icon-label' }, opts.label));
+  return btn;
+}
+
+/* The iPhone-style bottom dock row: Analyze · New quote · Speak. Each icon fires
+   the SAME existing handler the old triggers used — analyze's run(), the new-quote
+   reset prompt, and voice's toggle() — and reuses the existing mutual-exclusion
+   lock checks (SQG_VOICE.isListening / SQG_ANALYZE.isRunning). The mic hides itself
+   when the browser has no speech recognition, exactly as before. */
+function buildDockToolbar() {
+  const voice = window.SQG_VOICE;
+  const analyze = window.SQG_ANALYZE;
+  const listening = !!(voice && typeof voice.isListening === 'function' && voice.isListening());
+  const analyzing = !!(analyze && typeof analyze.isRunning === 'function' && analyze.isRunning());
+  const voiceSupported = !!(voice && typeof voice.supported === 'function' && voice.supported());
+  const speakLocked = analyzing && !listening; // mic locked while analyze runs (same rule as voice.js button())
+
+  const row = h('div', { class: 'sqg-dock-toolbar', role: 'group', 'aria-label': 'Quote actions' });
+
+  // Analyze this page — same run() action; locked while "Speak to fill" is listening.
+  row.append(dockIcon({
+    icon: SVG_SCAN_DOCK,
+    label: 'Analyze',
+    ariaLabel: listening
+      ? 'Stop “Speak to fill” first — only one runs at a time'
+      : 'Analyze this page',
+    disabled: listening,
+    onClick: () => { if (analyze && typeof analyze.run === 'function') analyze.run(); },
+  }));
+
+  // New quote — same action the old header icon used (confirmation modal follows).
+  row.append(dockIcon({
+    icon: SVG_FILE_PLUS_DOCK,
+    label: 'New quote',
+    ariaLabel: 'Start a new quote',
+    onClick: () => { state.newQuotePrompt = true; render(); },
+  }));
+
+  // Speak to fill — the accent-colored mic; hidden when voice is unsupported,
+  // locked while an analyze is running, and shows the stop glyph while listening.
+  if (voiceSupported) {
+    row.append(dockIcon({
+      icon: listening ? SVG_STOP_DOCK : SVG_MIC_DOCK,
+      label: listening ? 'Stop' : 'Speak',
+      ariaLabel: speakLocked
+        ? 'Analyzing the page… wait for it to finish'
+        : (listening ? 'Stop listening (fields fill live as you speak)' : 'Speak to fill'),
+      accent: true,
+      listening: listening,
+      pressed: listening,
+      disabled: speakLocked,
+      onClick: () => { if (voice && typeof voice.toggle === 'function') voice.toggle(); },
+    }));
+  }
+
+  return row;
+}
+
 function buildDock(v) {
   const data = buildQuoteData(v);
   const summary = h('button', {
@@ -1303,6 +1384,7 @@ function buildDock(v) {
   );
 
   return h('div', { class: 'sqg-dock', id: 'sqg-dock' },
+    buildDockToolbar(),
     h('div', { class: 'sqg-dock-inner' },
       summary,
       h('div', { class: 'sqg-dock-actions' },
