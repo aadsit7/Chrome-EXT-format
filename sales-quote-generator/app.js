@@ -89,11 +89,11 @@ function defaultQuote() {
     sourceUrl: '', aiSummary: '',
     billToAddress: '', shipToAddress: '', billingContact: '',
     paymentMethod: 'Credit Card, ACH/Wire, Check', paymentTerms: 'Net 120', currency: 'USD', autoRenewal: false,
-    lines: [{ id: 'l1', productId: 'rct', qty: 1000 }],
+    lines: [], // start empty — the user adds products (no default Right Click Tools)
     years: 1, months: 12, partner: false, customerType: 'new', dealType: 'addon', marginNewPct: 20, marginRenPct: 15, extraPct: 0, supportAll: false,
     coTermDate: new Date(Date.now() + 182 * 864e5).toISOString().slice(0, 10),
     existing: [],
-    renewLines: [{ id: 'r1', productId: 'rct', qty: 1000, price: 12500 }],
+    renewLines: [], // start empty for renewals too
     uplift: false, upliftPct: 3,
   };
 }
@@ -838,6 +838,11 @@ function sectionSelling(v) {
     }
     section.append(list);
 
+    // Empty state — no products chosen yet (the quote starts empty by design).
+    if (m.lines.length === 0) {
+      section.append(h('p', { class: 'sqg-empty-hint' }, 'No products yet — add one below to start your quote.'));
+    }
+
     // + Add product menu
     const inQuote = new Set(q.lines.map((l) => l.productId));
     const addPills = cfg.products.filter((p) => !inQuote.has(p.id));
@@ -883,6 +888,9 @@ function sectionSelling(v) {
     }
   } else {
     // Renewal-only rows
+    if ((q.renewLines || []).length === 0) {
+      section.append(h('p', { class: 'sqg-empty-hint' }, 'No renewing products yet — add one below.'));
+    }
     for (const rl of (q.renewLines || [])) {
       const p = cfg.products.find((x) => x.id === rl.productId) || cfg.products[0] || { name: '?', unit: 'endpoint' };
       section.append(h('div', { class: 'sqg-stack-row' },
@@ -1254,6 +1262,7 @@ function makeCreateQuote(v, data) {
     // On a validation miss, expand the section that holds the offending field so
     // the error message always points at something the user can see and fix.
     if (m.needsDate && !m.addonValid) { state.sections.deal = true; flash('Pick the customer’s renewal date (a future date) first', 'warn'); return; }
+    if (!m.isRenOnly && (!q.lines || q.lines.length === 0)) { state.sections.selling = true; flash('Add at least one product to the quote first', 'warn'); return; }
     if (m.isRenOnly && ((q.renewLines || []).length === 0 || (q.renewLines || []).some((x) => !(+x.price > 0)))) { state.sections.selling = true; flash('Enter the amount per year for each renewing product', 'warn'); return; }
     if (partnerActive && !q.partnerCompany.trim()) { state.sections.who = true; flash('Add the partner company (bill to) in “Who’s it for?”', 'warn'); return; }
     if (!q.customer.trim()) { state.sections.who = true; flash('Add a customer name in “Who’s it for?” first', 'warn'); return; }

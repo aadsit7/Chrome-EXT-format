@@ -37,6 +37,7 @@ window.SQG_VOICE = (function () {
 
   var recog = null;    // the active SpeechRecognition instance, or null
   var finalText = '';  // accumulated final transcript for the current session
+  var manualStop = false; // true when the user (or a hand-off) ended the session
 
   var SVG_MIC = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>';
   var SVG_STOP = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5"></rect></svg>';
@@ -418,7 +419,8 @@ window.SQG_VOICE = (function () {
   }
   // Turn voice off cleanly (no editable recap) so another feature can take over.
   function handoff() {
-    if (recog) { try { recog.onend = null; recog.onerror = null; recog.stop(); } catch (e) {} recog = null; }
+    manualStop = true;
+    teardown();
     setVoice({ on: false, interim: '', heard: '', applied: [] });
   }
 
@@ -453,80 +455,124 @@ window.SQG_VOICE = (function () {
     return ended;
   }
 
-  /* ---- lifecycle ---- */
-  function stop() {
-    var wasOn = !!(state.voice && state.voice.on);
+  /* ---- lifecycle ----
+     Robustness against "sticky / won't turn on": the LIVE recognizer object
+     (`recog`) is the single source of truth. Every path that ends a session
+     fully tears the recognizer down AND flips state.voice.on off, so the flag
+     can never desync from reality; toggle() keys off `recog`, not the flag, so a
+     stale flag can never block starting; and start() force-tears-down any
+     lingering recognizer (instead of bailing) and retries once on the transient
+     InvalidStateError browsers throw when a prior session hasn't fully ended. */
+
+  // Detach handlers and abort the recognizer so it can never fire again.
+  function teardown() {
+    if (!recog) return;
+    try { recog.onresult = null; recog.onerror = null; recog.onend = null; recog.onstart = null; } catch (e) {}
+    try { recog.abort(); } catch (e) { try { recog.stop(); } catch (e2) {} }
+    recog = null;
+  }
+
+  // A listening session ended (manual stop, hand-off, or the service ended on
+  // its own): show the editable recap if anything was heard.
+  function finalizeSession() {
     var text = transcript();
-    if (recog) { try { recog.onend = null; recog.onerror = null; recog.stop(); } catch (e) {} recog = null; }
-    if (!wasOn) { setVoice({ on: false, interim: '' }); return; }
     var applied = (state.voice && state.voice.applied) || [];
     if (!text && !applied.length) {
       setVoice({ on: false, interim: '', heard: '' });
       flash('Didn’t catch anything — tap the microphone and try again', 'warn');
       return;
     }
-    // Everything was applied live; keep the transcript editable for corrections.
-    setVoice({ on: false, interim: '', heard: text });
+    setVoice({ on: false, interim: '', heard: text }); // keep transcript editable for corrections
     if (applied.length) flash('Filled ' + applied.length + ' field' + (applied.length > 1 ? 's' : '') + ' from your voice', 'ok');
+  }
+
+  function stop() {
+    var wasActive = !!recog || !!(state.voice && state.voice.on);
+    manualStop = true;
+    teardown();
+    if (!wasActive) { setVoice({ on: false, interim: '' }); return; }
+    finalizeSession();
+  }
+
+  function beginRecognition() {
+    recog = new Rec();
+    recog.lang = 'en-US';
+    recog.continuous = true;
+    recog.interimResults = true;
+
+    recog.onstart = function () { manualStop = false; setVoice({ on: true }); }; // confirm the mic is truly live
+
+    recog.onresult = function (ev) {
+      var interim = '', newFinal = '', sawFinal = false;
+      for (var i = ev.resultIndex; i < ev.results.length; i++) {
+        var r = ev.results[i];
+        var tt = (r[0] && r[0].transcript) ? r[0].transcript : '';
+        if (r.isFinal) { finalText = (finalText + ' ' + tt).replace(/\s+/g, ' ').trim(); newFinal += ' ' + tt; sawFinal = true; }
+        else interim += tt;
+      }
+      interim = interim.replace(/\s+/g, ' ').trim();
+      if (sawFinal) {
+        // Actions run from the NEW phrase only (fire-once); field fills re-read
+        // the whole transcript (idempotent). Actions first, so an "analyze this
+        // page" hand-off can take over before we bother rendering fields.
+        if (runActions(newFinal)) return;   // an action ended the session (e.g. analyze)
+        applyLive(finalText, interim);       // parse full transcript + fill live
+      } else setVoice({ on: true, interim: interim, finalText: finalText });
+    };
+
+    recog.onerror = function (ev) {
+      var code = ev && ev.error;
+      // "aborted" is what a deliberate teardown/restart raises — not a user error.
+      if (code === 'aborted') { return; }
+      var msg = code === 'not-allowed' || code === 'service-not-allowed'
+          ? 'Microphone blocked — allow mic access for the extension and try again'
+        : code === 'no-speech' ? 'Didn’t hear anything — tap the microphone and try again'
+        : code === 'audio-capture' ? 'No microphone found — check your mic and try again'
+        : 'Voice input error — try again';
+      manualStop = true; // the following onend must not be treated as an unexpected drop
+      teardown();
+      setVoice({ on: false, interim: '', heard: '', error: msg });
+      flash(msg, 'warn');
+    };
+
+    recog.onend = function () {
+      recog = null;
+      if (manualStop) { manualStop = false; return; } // we ended it on purpose
+      // The service ended on its own (silence/focus) while we thought we were on:
+      // finalize cleanly so the button never sticks on "Listening".
+      if (state.voice && state.voice.on) finalizeSession();
+    };
+
+    recog.start(); // may throw InvalidStateError if a prior session is still ending
   }
 
   function start() {
     if (!supported()) { flash('Voice input isn’t supported in this browser', 'warn'); return; }
-    if (recog) return;
-    // Mutual exclusion — cancel any page analysis (in-flight or its shown review
-    // card) so "Analyze this page" can never run alongside "Speak to fill".
+    // Mutual exclusion — cancel any page analysis so the two never overlap.
     if (window.SQG_ANALYZE && typeof window.SQG_ANALYZE.cancel === 'function') window.SQG_ANALYZE.cancel();
     if (state.analyze) { state.analyze = null; }
+    teardown();           // never bail on a stale recognizer — replace it
     finalText = '';
+    manualStop = false;
+    setVoice({ on: true, interim: '', finalText: '', error: '', heard: '', applied: [] });
     try {
-      recog = new Rec();
-      recog.lang = 'en-US';
-      recog.continuous = true;
-      recog.interimResults = true;
-
-      recog.onresult = function (ev) {
-        var interim = '', newFinal = '', sawFinal = false;
-        for (var i = ev.resultIndex; i < ev.results.length; i++) {
-          var r = ev.results[i];
-          var tt = (r[0] && r[0].transcript) ? r[0].transcript : '';
-          if (r.isFinal) { finalText = (finalText + ' ' + tt).replace(/\s+/g, ' ').trim(); newFinal += ' ' + tt; sawFinal = true; }
-          else interim += tt;
-        }
-        interim = interim.replace(/\s+/g, ' ').trim();
-        if (sawFinal) {
-          // Actions run from the NEW phrase only (fire-once); field fills re-read
-          // the whole transcript (idempotent). Actions first, so an "analyze this
-          // page" hand-off can take over before we bother rendering fields.
-          if (runActions(newFinal)) return;   // an action ended the session (e.g. analyze)
-          applyLive(finalText, interim);       // parse full transcript + fill live
-        } else setVoice({ on: true, interim: interim, finalText: finalText });
-      };
-
-      recog.onerror = function (ev) {
-        var code = ev && ev.error;
-        var msg = code === 'not-allowed' || code === 'service-not-allowed'
-            ? 'Microphone blocked — allow mic access for the extension and try again'
-          : code === 'no-speech' ? 'Didn’t hear anything — tap the microphone and try again'
-          : code === 'audio-capture' ? 'No microphone found — check your mic and try again'
-          : 'Voice input error — try again';
-        recog = null;
-        setVoice({ on: false, interim: '', error: msg });
-        flash(msg, 'warn');
-      };
-
-      recog.onend = function () { recog = null; if (state.voice && state.voice.on) stop(); };
-
-      setVoice({ on: true, interim: '', finalText: '', error: '', heard: '', applied: [] });
-      recog.start();
-      flash('Listening… say products & quantities, discounts, term, customer', 'ok');
+      beginRecognition();
+      flash('Listening… say products, discounts, term, customer — or a command', 'ok');
     } catch (e) {
+      // Transient InvalidStateError (a prior session still ending) — retry once.
       recog = null;
-      setVoice({ on: false });
-      flash('Couldn’t start the microphone — try again', 'warn');
+      try {
+        setTimeout(function () {
+          if (!(state.voice && state.voice.on)) return; // user gave up meanwhile
+          try { beginRecognition(); }
+          catch (e2) { teardown(); setVoice({ on: false }); flash('Couldn’t start the microphone — tap the mic again', 'warn'); }
+        }, 250);
+      } catch (e3) { setVoice({ on: false }); flash('Couldn’t start the microphone — tap the mic again', 'warn'); }
     }
   }
 
-  function toggle() { if (state.voice && state.voice.on) stop(); else start(); }
+  // Toggle keyed off the REAL recognizer, so a stale flag can never block start.
+  function toggle() { if (recog) stop(); else start(); }
 
   // Re-apply an edited transcript (correction path after stopping).
   function reapply(text) {
