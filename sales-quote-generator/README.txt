@@ -77,30 +77,38 @@ USING THE TOOL
   frame and the results are merged. Any other (non-Salesforce) website
   falls back to the generic rule-based detection described above.
 - "Speak to fill" (the microphone button next to "Analyze this page")
-  lets you dictate the quote instead of typing it. Tap it and the button
-  turns red and starts listening; say the details in plain language — for
-  example, "The customer is Acme Corporation, contact Jane Doe, email
-  jane at acme dot com, they want two thousand endpoints of Right Click
-  Tools on a two-year term." A "Listening…" indicator and the words
-  appear live as you speak. Tap the button again (or stop talking) to
-  finish — nothing is sent yet. Instead the transcript is shown in an
-  editable box titled "Here's what I heard — fix anything, then fill", so
-  you can correct a misheard product name or number before it's parsed.
-  Only when you press "Fill from this" is the (possibly edited) text run
-  through the SAME advanced AI analysis as "Analyze this page": it figures
-  out which field each spoken value belongs to (customer, billing contact,
-  email, reseller / partner, bill-to and ship-to addresses, quote
-  expiration, currency, subscription term, and catalog products with
-  quantities) and shows them in the same review card — so you get two
-  chances to catch a mistake: the transcript edit and the card preview.
-  As always, nothing is written until you press Apply, and a detected
-  reseller only fills the partner fields with a note (it never flips
-  Partner pricing). If the mic is blocked or nothing is heard you get a
-  short message and the button resets — it's never left stuck listening.
-  Speech is transcribed by the browser's built-in Web Speech API using
-  the standard microphone permission prompt — allow mic access the first
-  time. If your browser has no speech support the microphone button
-  simply doesn't appear.
+  fills the form LIVE as you speak. Tap it and the button turns red and
+  starts listening; say values in plain language and each field updates
+  the moment it's recognized — a "Listening — filling live" panel shows
+  the running transcript and a green chip for every field just filled.
+  It understands, in any order and combined in one breath:
+    • products + quantity — "Right Click Tools 2,500 endpoints",
+      "Application Workspace 500 users", "set Insights to 3,000"
+      (adds the product if it isn't in the quote yet)
+    • discounts — "partner margin 20 percent", "extra discount 5 percent",
+      "annual increase 3 percent", "premium support"
+    • term & type — "two year term", "eighteen month term", "net new",
+      "current customer", "renewal", "add-on and renewal"
+    • text fields — "customer is Acme Corporation", "contact Jane Doe",
+      "email jane at acme dot com", "partner company Reseller Inc",
+      "prepared by …", "currency euros", "payment terms Net 30"
+  Number words ("twenty five hundred", "two thousand five hundred",
+  "seven point five percent") are understood. The section holding each
+  field opens automatically as it fills, so you watch it happen. Because
+  the whole running transcript is re-read on every phrase, correcting a
+  value is as simple as saying it again — the latest wins (e.g. say "Right
+  Click Tools 3,000 endpoints" to overwrite an earlier 2,500). Applied
+  changes go through the form exactly like a manual edit — visible, saved,
+  and reversible — and the pricing engine recomputes every total.
+  Tap the button again (or stop talking) to stop; the transcript is kept
+  in an editable box so you can fix a misheard word and press "Re-apply".
+  If the mic is blocked or nothing is heard you get a short message and
+  the button resets — it's never left stuck listening. Speech is
+  transcribed by the browser's built-in Web Speech API using the standard
+  microphone permission prompt — allow mic access the first time; the
+  transcription accuracy depends on your mic and surroundings, which is
+  why every change is shown live and stays editable. If your browser has
+  no speech support the microphone button simply doesn't appear.
 - The "New quote" button (the page-with-a-plus icon in the header, next
   to the gear) starts a fresh quote: it clears every field and resets
   the calculator to its defaults with a new quote number. Because this
@@ -240,15 +248,19 @@ analyze.js      "Analyze this page" — read-only page extraction. Captures a
                 AI read, and maps the returned fields into the review card;
                 falls back to the built-in rule-based Salesforce/generic
                 detection, then apply-through-setQ. Also exposes
-                fillFromText(), used by voice.js to route dictated text
-                through the same AI analysis + review card
-voice.js        "Speak to fill" — the microphone button and voice input.
-                Transcribes speech with the browser's Web Speech API and
-                hands the transcript to analyze.js's fillFromText(), so
-                dictation flows through the same AI field-routing and review
-                card as "Analyze this page". No new permissions (uses the
-                browser's standard mic prompt); hides itself when the
-                browser has no speech support
+                fillFromText() (an AI-analysis + review-card entry point)
+voice.js        "Speak to fill" — LIVE voice input. Transcribes speech with
+                the browser's Web Speech API and, on every finalized phrase,
+                re-reads the whole running transcript with a deterministic,
+                local command parser (number words, product-name matching,
+                discounts, term, customer/deal type, and scalar text fields)
+                and applies each recognized value to the matching field
+                immediately via setQ — no network round-trip. Re-saying a
+                value corrects it (latest wins); the section being filled
+                opens so the change is visible; after stopping, the
+                transcript stays editable for a "Re-apply". No new
+                permissions (uses the browser's standard mic prompt); hides
+                itself when the browser has no speech support
 sheets.js       Shared-database + AI network calls to the Apps Script web
                 app: saveQuote (auto-run by "Create quote"; sends the user
                 object + computed totals/line prices, returns the AI note),
