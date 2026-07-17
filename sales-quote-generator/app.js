@@ -78,7 +78,85 @@ function defaults() {
     defaultYears: 1,
     allowProration: false,
     settingsPassword: '2026',
+    // Admin setting: which quote types users may pick. Four independent on/off
+    // entries. DEFAULT — only net-new is on; the three current-customer types are
+    // off. Existing installs whose saved cfg lacks this key inherit this same
+    // default via Object.assign(defaults(), d.cfg) on load, and "Reset to default
+    // pricing" restores it like every other cfg field.
+    enabledQuoteTypes: { new: true, addon: false, ren: false, addonren: false },
   };
+}
+
+/* ---------------- Quote-type enablement (admin setting) ----------------
+   The four quote types and how they map onto the quote's (customerType, dealType):
+     new       → customerType 'new'
+     addon     → customerType 'current', dealType 'addon'
+     ren       → customerType 'current', dealType 'ren'
+     addonren  → customerType 'current', dealType 'addonren'
+   These pure helpers are the single source of truth used by the calculator UI,
+   the settings toggles, the load/new-quote clamp, and (mirrored) by voice.js and
+   analyze.js. They read only the passed cfg, so they're trivially testable. */
+const QUOTE_TYPE_ORDER = ['new', 'addon', 'ren', 'addonren'];
+const CURRENT_TYPE_ORDER = ['addon', 'ren', 'addonren'];
+
+function normalizeEnabledTypes(cfg) {
+  const e = (cfg && cfg.enabledQuoteTypes) || {};
+  const out = { new: !!e.new, addon: !!e.addon, ren: !!e.ren, addonren: !!e.addonren };
+  // Never let the set be empty — a cfg with everything off falls back to net-new,
+  // matching the guardrail (at least one type is always available).
+  if (!out.new && !out.addon && !out.ren && !out.addonren) out.new = true;
+  return out;
+}
+function quoteTypeKey(customerType, dealType) {
+  if (customerType !== 'current') return 'new';
+  return CURRENT_TYPE_ORDER.indexOf(dealType) > -1 ? dealType : 'addon';
+}
+function isTypeEnabled(cfg, customerType, dealType) {
+  return !!normalizeEnabledTypes(cfg)[quoteTypeKey(customerType, dealType)];
+}
+function enabledCurrentKeys(cfg) {
+  const e = normalizeEnabledTypes(cfg);
+  return CURRENT_TYPE_ORDER.filter((k) => e[k]);
+}
+// The clamp target for a disabled combination: net-new if enabled, else the first
+// enabled current type in order addon > ren > addonren.
+function fallbackType(cfg) {
+  const e = normalizeEnabledTypes(cfg);
+  if (e.new) return 'new';
+  const k = CURRENT_TYPE_ORDER.find((x) => e[x]);
+  return k || 'new';
+}
+// Given a quote's (customerType, dealType), return the fields to use so the quote
+// is always an ENABLED type. changed=true when the input combination was disabled.
+function clampQuoteType(cfg, customerType, dealType) {
+  if (isTypeEnabled(cfg, customerType, dealType)) {
+    return { customerType, dealType, key: quoteTypeKey(customerType, dealType), changed: false };
+  }
+  const key = fallbackType(cfg);
+  return key === 'new'
+    ? { customerType: 'new', dealType, key, changed: true }
+    : { customerType: 'current', dealType: key, key, changed: true };
+}
+function renewalCapableEnabled(cfg) {
+  const e = normalizeEnabledTypes(cfg);
+  return !!(e.ren || e.addonren);
+}
+function quoteTypeLabel(key) {
+  return key === 'new' ? 'Net new customer'
+    : key === 'addon' ? 'Current customer — Add-on'
+    : key === 'ren' ? 'Current customer — Renewal'
+    : key === 'addonren' ? 'Current customer — Add-on + renewal'
+    : key;
+}
+// Guardrail-aware toggle: returns { ok, enabledQuoteTypes }. Turning off the LAST
+// enabled type is rejected (ok=false) so at least one is always available.
+function toggleEnabledType(cfg, key, on) {
+  const cur = normalizeEnabledTypes(cfg);
+  if (!on && cur[key] && QUOTE_TYPE_ORDER.filter((k) => cur[k]).length <= 1) {
+    return { ok: false, enabledQuoteTypes: cur };
+  }
+  const next = Object.assign({}, cur); next[key] = !!on;
+  return { ok: true, enabledQuoteTypes: next };
 }
 
 function defaultQuote() {
@@ -106,7 +184,7 @@ function defaultQuote() {
    Kept in memory only (not persisted) so every reload starts in this clean state. */
 function defaultSections() { return { deal: true, selling: true, discounts: false, who: false }; }
 
-const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, newQuotePrompt: false, billingOpen: false, registerGate: false, sections: defaultSections(), voice: { on: false, interim: '', finalText: '', error: '', heard: '' } };
+const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, newQuotePrompt: false, billingOpen: false, registerGate: false, sections: defaultSections(), voice: { on: false, interim: '', finalText: '', error: '', heard: '' }, pendingClampToast: '' };
 let toastTimer = null;
 
 try {
@@ -115,6 +193,16 @@ try {
     const d = JSON.parse(raw);
     state.cfg = Object.assign(defaults(), d.cfg || {});
     state.quote = Object.assign(defaultQuote(), d.quote || {});
+    // A restored in-progress quote may be a type the admin has since turned off
+    // (or an install migrating to the new default where only net-new is on).
+    // Clamp it to an enabled type and queue a one-time toast shown right after
+    // the first render (flash() isn't safe until the DOM boots below).
+    const clamped = clampQuoteType(state.cfg, state.quote.customerType, state.quote.dealType);
+    if (clamped.changed) {
+      state.quote.customerType = clamped.customerType;
+      state.quote.dealType = clamped.dealType;
+      state.pendingClampToast = 'Quote type no longer available — switched to ' + quoteTypeLabel(clamped.key);
+    }
   }
 } catch (e) { /* ignore corrupt storage */ }
 
@@ -610,6 +698,10 @@ function buildPasswordModal() {
 /* ---- New quote: reset every field to a fresh, empty quote ---- */
 function newQuote() {
   state.quote = defaultQuote(); // fresh number + cleared fields, exactly like first launch
+  // A fresh quote defaults to net-new; if net-new is turned off, clamp to the
+  // first enabled current type so the new quote is always a valid enabled type.
+  const c = clampQuoteType(state.cfg, state.quote.customerType, state.quote.dealType);
+  if (c.changed) { state.quote.customerType = c.customerType; state.quote.dealType = c.dealType; }
   state.newQuotePrompt = false;
   state.sheet = false;
   state.addMenu = false;
@@ -651,23 +743,40 @@ function sectionDeal(v) {
   const { cfg, q, m, prorated, years, months, coTermMo, termsSorted, isRen } = v;
   const col = h('div', { class: 'sqg-col' });
 
-  // Customer type
-  const custSegs = [
-    { label: 'Net new customer', active: !m.isCurrent, onPick: () => setQ({ customerType: 'new' }) },
-    { label: 'Current customer', active: m.isCurrent, onPick: () => setQ({ customerType: 'current' }) },
-  ];
-  col.append(h('div', { class: 'sqg-field' },
-    h('span', { class: 'sqg-field-label' }, 'Customer type'),
-    h('div', { class: 'sqg-seg-wrap' }, custSegs.map((s) => segButton(s)))
-  ));
+  // Which quote types the admin has enabled (see Settings → Quote types). Only
+  // enabled options are rendered — disabled ones are hidden, not grayed out.
+  const enabled = normalizeEnabledTypes(cfg);
+  const curKeys = enabledCurrentKeys(cfg); // enabled current types, in addon>ren>addonren order
 
-  // Deal type (current customers only)
-  if (m.isCurrent) {
-    const dealSegs = [
-      { label: 'Add-on', active: m.isCoterm, onPick: () => setQ({ dealType: 'addon' }) },
-      { label: 'Renewal', active: isRen, onPick: () => setQ({ dealType: 'ren' }) },
-      { label: 'Add-on + renewal', active: m.addonRenew, onPick: () => setQ({ dealType: 'addonren' }) },
+  // Customer type — shown only when BOTH net-new and at least one current type
+  // are offered. If only net-new is enabled, the choice is implicit (net-new) and
+  // the whole picker is hidden.
+  if (enabled.new && curKeys.length >= 1) {
+    // Picking "Current" lands on an enabled deal type — the one already set if it
+    // is enabled, otherwise the first enabled current type.
+    const curDeal = curKeys.indexOf(q.dealType) > -1 ? q.dealType : curKeys[0];
+    const custSegs = [
+      { label: 'Net new customer', active: !m.isCurrent, onPick: () => setQ({ customerType: 'new' }) },
+      { label: 'Current customer', active: m.isCurrent, onPick: () => setQ({ customerType: 'current', dealType: curDeal }) },
     ];
+    col.append(h('div', { class: 'sqg-field' },
+      h('span', { class: 'sqg-field-label' }, 'Customer type'),
+      h('div', { class: 'sqg-seg-wrap' }, custSegs.map((s) => segButton(s)))
+    ));
+  }
+
+  // Deal type — shown only for current customers AND only when more than one
+  // current type is enabled (a single enabled current type is implied, so its
+  // sub-picker is hidden). Only enabled deal-type options are rendered.
+  if (m.isCurrent && curKeys.length >= 2) {
+    const dealDefs = [
+      { key: 'addon', label: 'Add-on', active: m.isCoterm },
+      { key: 'ren', label: 'Renewal', active: isRen },
+      { key: 'addonren', label: 'Add-on + renewal', active: m.addonRenew },
+    ].filter((d) => enabled[d.key]);
+    const dealSegs = dealDefs.map((d) => ({
+      label: d.label, active: d.active, onPick: () => setQ({ customerType: 'current', dealType: d.key }),
+    }));
     col.append(h('div', { class: 'sqg-field' },
       h('span', { class: 'sqg-field-label' }, 'Deal type'),
       h('div', { class: 'sqg-seg-wrap' }, dealSegs.map((s) => segButton(s, '12px')))
@@ -1533,6 +1642,43 @@ function renderSettings() {
       })));
   main.append(accessSection);
 
+  /* Quote types — which deal types users may pick in the calculator. Toggling one
+     off hides it everywhere (UI, voice, analyze). At least one must stay on. */
+  const enabledTypes = normalizeEnabledTypes(cfg);
+  const qtRows = [
+    { key: 'new', label: 'Net new customer' },
+    { key: 'addon', label: 'Current customer — Add-on' },
+    { key: 'ren', label: 'Current customer — Renewal' },
+    { key: 'addonren', label: 'Current customer — Add-on + renewal' },
+  ];
+  const qtSection = h('section', { class: 'sqg-set-card' },
+    h('div', { style: 'padding-bottom: 2px;' },
+      h('h2', null, 'Quote types'),
+      h('p', { style: 'margin: 3px 0 0; font-size: 12.5px; color: var(--text-secondary);' },
+        'Users only see the quote types turned on here.')));
+  qtRows.forEach((row, i) => {
+    qtSection.append(h('div', { class: 'sqg-rule-row', style: i === qtRows.length - 1 ? 'border-bottom: none;' : null },
+      h('div', { class: 'sqg-rule-titles' },
+        h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, row.label)),
+      switchEl(!!enabledTypes[row.key], (e) => {
+        const res = toggleEnabledType(cfg, row.key, e.target.checked);
+        if (!res.ok) {
+          // Guardrail — at least one type must stay on. flash() re-renders, which
+          // snaps the toggle back to on (state is unchanged) and shows the reason.
+          flash('At least one quote type must stay on', 'warn');
+          return;
+        }
+        // Persist the new set and, if the active quote is now a disabled type,
+        // clamp it so returning to the calculator lands on a valid type.
+        state.cfg = Object.assign({}, state.cfg, { enabledQuoteTypes: res.enabledQuoteTypes });
+        const c = clampQuoteType(state.cfg, state.quote.customerType, state.quote.dealType);
+        if (c.changed) state.quote = Object.assign({}, state.quote, { customerType: c.customerType, dealType: c.dealType });
+        persist();
+        render();
+      })));
+  });
+  main.append(qtSection);
+
   /* Products */
   const prodSection = h('section', { class: 'sqg-set-card' },
     h('div', { class: 'sqg-set-head' },
@@ -1718,7 +1864,14 @@ function renderSettings() {
 
   /* Footer actions */
   main.append(h('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;' },
-    h('button', { class: 'sqg-link-btn', type: 'button', onClick: () => { state.cfg = defaults(); persist(); render(); } }, 'Reset to default pricing'),
+    h('button', { class: 'sqg-link-btn', type: 'button', onClick: () => {
+      state.cfg = defaults();
+      // Reset restores the default quote-type set (only net-new on) too; clamp the
+      // active quote so it stays a valid enabled type.
+      const c = clampQuoteType(state.cfg, state.quote.customerType, state.quote.dealType);
+      if (c.changed) state.quote = Object.assign({}, state.quote, { customerType: c.customerType, dealType: c.dealType });
+      persist(); render();
+    } }, 'Reset to default pricing'),
     dsButton('Back to calculator', 'primary', 'md', false, () => { state.view = 'calc'; render(); })));
 
   return main;
@@ -1739,11 +1892,32 @@ window.SQG_APP = {
   // own setQ/render follows). Used by the AI review path (analyze.js) so applied
   // deal/discount/support values land in a section the user can see.
   openSections: function (keys) { if (!state.sections) return; (keys || []).forEach(function (k) { if (Object.prototype.hasOwnProperty.call(state.sections, k)) state.sections[k] = true; }); },
+  // Quote-type enablement helpers — exposed for the /tests harness (and available
+  // to any future caller). The extension itself uses the top-level functions.
+  defaults: defaults,
+  quoteTypes: {
+    normalize: normalizeEnabledTypes,
+    key: quoteTypeKey,
+    isEnabled: isTypeEnabled,
+    currentKeys: enabledCurrentKeys,
+    clamp: clampQuoteType,
+    toggle: toggleEnabledType,
+    fallback: fallbackType,
+    renewalCapable: renewalCapableEnabled,
+    label: quoteTypeLabel,
+  },
 };
 
-/* ---------------- Boot ---------------- */
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && state.pwPrompt) { state.pwPrompt = false; render(); }
-  else if (e.key === 'Escape' && state.sheet) { state.sheet = false; render(); }
-});
-render();
+/* ---------------- Boot ----------------
+   Guarded so the file can also be loaded head-less (the /tests harness drives the
+   exported helpers under Node with no DOM); in the extension the side-panel root
+   always exists, so this runs exactly as before. */
+if (typeof document !== 'undefined' && document.getElementById && document.getElementById('screen-root')) {
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.pwPrompt) { state.pwPrompt = false; render(); }
+    else if (e.key === 'Escape' && state.sheet) { state.sheet = false; render(); }
+  });
+  render();
+  // One-time notice when a restored quote was clamped to an enabled type.
+  if (state.pendingClampToast) { const msg = state.pendingClampToast; state.pendingClampToast = ''; flash(msg, 'warn'); }
+}

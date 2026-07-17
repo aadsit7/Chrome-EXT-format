@@ -40,7 +40,10 @@ function freshQuote() {
 }
 global.int = function (n) { n = Number(String(n).replace(/[^0-9]/g, '')); return isFinite(n) ? Math.max(0, Math.floor(n)) : 0; };
 global.fmt = function (n) { return '$' + Math.round(n).toLocaleString('en-US'); };
-global.state = { quote: freshQuote(), cfg: { products: CATALOG, rules: { maxExtra: 50, minUsers: 250 } }, sections: { deal: false, selling: false, discounts: false, who: false } };
+/* enabledQuoteTypes all-on here so the existing analyze checks (which exercise
+   renewal + current-customer findings) behave exactly as before; the Task-(d)
+   check below flips it to net-new-only to prove disabled findings are dropped. */
+global.state = { quote: freshQuote(), cfg: { products: CATALOG, rules: { maxExtra: 50, minUsers: 250 }, enabledQuoteTypes: { new: true, addon: true, ren: true, addonren: true } }, sections: { deal: false, selling: false, discounts: false, who: false } };
 global.window = {};
 /* Stubs so the panel-side apply path (applyFindings → setQ) runs under Node. */
 let __uid = 0;
@@ -178,6 +181,31 @@ function runExtendedAiPath(label, data, expectFindings, expectQuote, opts) {
   });
 }
 
+/* ==================== QUOTE-TYPE ENABLEMENT (Task d) ====================
+   With only net-new enabled, _buildAiFindings must drop findings that set a
+   disabled type (customerType "current", any dealType) and any renewal-line
+   finding, while keeping unrelated findings and appending the "hidden" note. */
+function runQuoteTypeDrop() {
+  console.log('\n── Quote types OFF (only net-new) — disabled findings dropped ──');
+  const saved = global.state.cfg.enabledQuoteTypes;
+  global.state.cfg.enabledQuoteTypes = { new: true, addon: false, ren: false, addonren: false };
+  global.state.quote = freshQuote();
+  const res = A._buildAiFindings({
+    customer: 'Globex', customerType: 'current', dealType: 'ren',
+    renewLines: [{ productId: 'rct', qty: 20000, currentAnnualPrice: 50000 }],
+    lines: [{ productId: 'aw', qty: 500 }],
+  });
+  const has = function (field) { return res.findings.some(function (f) { return f.field === field; }); };
+  checkAbsent('Quote-type drop', 'customerType dropped', has('customerType') ? 'present' : null);
+  checkAbsent('Quote-type drop', 'dealType dropped', has('dealType') ? 'present' : null);
+  checkAbsent('Quote-type drop', 'renewLine dropped', has('renewLine') ? 'present' : null);
+  checkEq('Quote-type drop', 'customer kept', true, has('customer'));
+  checkEq('Quote-type drop', 'lineQty (aw) kept', true, has('lineQty'));
+  checkEq('Quote-type drop', 'hidden note appended', true, !!(res.note && res.note.indexOf('turned off in Settings') > -1));
+  if (res.note) console.log('  note: ' + res.note);
+  global.state.cfg.enabledQuoteTypes = saved; // restore all-on
+}
+
 /* ============================ SNAPSHOT (Task 1) ============================ */
 async function runSnapshot(label, html, url, mustContain, mustExclude, orderBefore, orderAfter) {
   console.log('\n── ' + label + ' — prioritized AI snapshot ──');
@@ -249,6 +277,11 @@ async function runSnapshot(label, html, url, mustContain, mustExclude, orderBefo
     { customer: 'Amazon', customerType: 'new', extraPct: 15 },
     { customer: 'Amazon', customerType: 'new', extraPct: 15, lines: { productId: 'aw', qty: 250 } },
     { voice: true });
+
+  // Task (d) — with only net-new enabled, AI findings that set a disabled type
+  // (customerType "current", dealType "ren") AND renewal-line findings are dropped
+  // before the review card renders; other findings and the "hidden" note survive.
+  runQuoteTypeDrop();
 
   await runSnapshot('NEW BUSINESS snapshot', fx.NEW_BUSINESS_HTML, fx.NEW_BUSINESS_URL,
     ['== QUOTE INFORMATION ==', 'Application Workspace', 'Endpoint Tier'], [], 'QUOTE INFORMATION', 'ACCOUNT DETAILS');
