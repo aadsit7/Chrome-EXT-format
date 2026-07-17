@@ -388,6 +388,9 @@ window.SQG_VOICE = (function () {
   function start() {
     if (!supported()) { flash('Voice input isn’t supported in this browser', 'warn'); return; }
     if (recog) return;
+    // Mutual exclusion — cancel any page analysis (in-flight or its shown review
+    // card) so "Analyze this page" can never run alongside "Speak to fill".
+    if (window.SQG_ANALYZE && typeof window.SQG_ANALYZE.cancel === 'function') window.SQG_ANALYZE.cancel();
     if (state.analyze) { state.analyze = null; }
     finalText = '';
     try {
@@ -457,9 +460,12 @@ window.SQG_VOICE = (function () {
   function button() {
     if (!supported()) return null;
     var on = !!(state.voice && state.voice.on);
+    // Locked out while "Analyze this page" is running — only one runs at a time.
+    var analyzing = !on && window.SQG_ANALYZE && typeof window.SQG_ANALYZE.isRunning === 'function' && window.SQG_ANALYZE.isRunning();
     var btn = h('button', {
-      class: 'sqg-mic-btn' + (on ? ' listening' : ''), type: 'button',
-      title: on ? 'Stop listening (fields fill live as you speak)' : 'Speak to fill the form live (uses your browser’s speech recognition)',
+      class: 'sqg-mic-btn' + (on ? ' listening' : '') + (analyzing ? ' sqg-locked' : ''), type: 'button',
+      disabled: analyzing ? 'disabled' : null,
+      title: analyzing ? 'Analyzing the page… wait for it to finish' : (on ? 'Stop listening (fields fill live as you speak)' : 'Speak to fill the form live (uses your browser’s speech recognition)'),
       'aria-pressed': on ? 'true' : 'false', onClick: toggle,
     });
     var ico = h('span', { class: 'sqg-mic-ico' });
@@ -522,6 +528,7 @@ window.SQG_VOICE = (function () {
 
   return {
     button: button, liveStrip: liveStrip, reviewBox: reviewBox, toggle: toggle, supported: supported,
+    stop: stop, isListening: function () { return !!(state.voice && state.voice.on); },
     _start: start, _stop: stop, _transcript: transcript, _reapply: reapply,
     _parse: function (text) { return parser.parse(text, catalog()); },
     _applyLive: applyLive, _buildPatch: buildPatch,

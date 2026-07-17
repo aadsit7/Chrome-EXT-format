@@ -465,6 +465,10 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .sqg-analyze-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .sqg-analyze-ico { display: inline-flex; }
 .sqg-analyze-ico svg { display: block; }
+/* Locked-out state: the other fill feature is running (only one at a time) */
+.sqg-analyze-btn.sqg-locked, .sqg-mic-btn.sqg-locked,
+.sqg-analyze-btn:disabled, .sqg-mic-btn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+.sqg-analyze-btn.sqg-locked:hover { background: var(--surface-accent-soft); }
 
 .sqg-analyze-card { border-color: var(--border-default); box-shadow: var(--shadow-sm); }
 .sqg-analyze-head { margin-bottom: 8px; }

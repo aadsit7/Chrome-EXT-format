@@ -49,6 +49,16 @@ window.SQG_ANALYZE = (function () {
 
   var SF_LAZY_NOTE = 'No products list visible — scroll to the Products section in Salesforce and analyze again.';
 
+  /* Mutual exclusion with "Speak to fill": only one of the two fill features may
+     be active at a time. analyzeSeq is bumped whenever a new analyze starts OR a
+     voice session starts (via cancel()), which invalidates any in-flight analyze
+     so its result can never surface while the user is dictating. analyzeActive is
+     true while an analyze is running, and locks the mic button. */
+  var analyzeSeq = 0;
+  var analyzeActive = false;
+  function cancelAnalyze() { analyzeSeq++; analyzeActive = false; if (state.analyze) state.analyze = null; }
+  function analyzeRunning() { return analyzeActive; }
+
   /* =========================================================================
      Extraction — runs INSIDE the page via chrome.scripting.executeScript
      (allFrames: true, so it runs once per frame). Must be fully self-contained
@@ -1029,9 +1039,12 @@ window.SQG_ANALYZE = (function () {
     var wrap = h('div', { class: 'sqg-analyze-wrap' });
     var ico = h('span', { class: 'sqg-analyze-ico' });
     ico.innerHTML = SVG_SCAN;
+    // Locked out while "Speak to fill" is listening — only one runs at a time.
+    var voiceOn = !!(window.SQG_VOICE && typeof window.SQG_VOICE.isListening === 'function' && window.SQG_VOICE.isListening());
     var analyzeBtn = h('button', {
-      class: 'sqg-analyze-btn', type: 'button', onClick: run,
-      title: 'Read the current tab and suggest quote fields',
+      class: 'sqg-analyze-btn' + (voiceOn ? ' sqg-locked' : ''), type: 'button', onClick: run,
+      disabled: voiceOn ? 'disabled' : null,
+      title: voiceOn ? 'Stop “Speak to fill” first — only one runs at a time' : 'Read the current tab and suggest quote fields',
     }, ico, h('span', null, 'Analyze this page'));
 
     // Sit the "Speak to fill" mic button next to "Analyze this page" — both fill
@@ -1088,14 +1101,26 @@ window.SQG_ANALYZE = (function () {
   }
 
   function run() {
-    if (state.analyze) { state.analyze = null; render(); }
+    // Mutual exclusion — "Speak to fill" and "Analyze this page" never run at the
+    // same time. If the user is dictating, stop that first.
+    if (window.SQG_VOICE && typeof window.SQG_VOICE.isListening === 'function' && window.SQG_VOICE.isListening()) {
+      if (typeof window.SQG_VOICE.stop === 'function') window.SQG_VOICE.stop();
+    }
+    var mySeq = ++analyzeSeq;                       // invalidated if voice starts or a newer analyze runs
+    var stale = function () { return mySeq !== analyzeSeq; };
+
+    if (state.analyze) { state.analyze = null; }
     if (!(typeof chrome !== 'undefined' && chrome.scripting && chrome.tabs)) {
       flash('Page analysis isn’t available in this context', 'warn');
       return;
     }
+    analyzeActive = true; render();                 // lock the mic while analyzing
     getActiveTab().then(function (tab) {
+      if (stale()) return;
       if (!tab || !tab.id || blockedUrl(tab.url)) {
+        analyzeActive = false;
         flash('This page can’t be analyzed — open a normal website tab and try again', 'warn');
+        render();
         return;
       }
       flash('Analyzing this page…', 'ok');
@@ -1112,18 +1137,21 @@ window.SQG_ANALYZE = (function () {
       var pSnap = chrome.scripting.executeScript({ target: target, func: snapshotPage });
 
       return Promise.all([pRule, pSnap.catch(function () { return []; })]).then(function (res) {
+        if (stale()) return;                        // a voice session (or newer analyze) superseded us
         var raw = mergeFrames((res[0] || []).map(function (r) { return r && r.result; }));
         var ruleFindings = raw ? buildFindings(raw) : [];
         var pageText = buildSnapshotText((res[1] || []).map(function (r) { return r && r.result; }), raw);
         var catalog = state.cfg.products.map(function (p) { return { id: p.id, name: p.name, unit: p.unit }; });
 
-        var fallback = function () { showFindings(ruleFindings, raw, tab, ruleNote(raw, ruleFindings)); };
+        var fallback = function () { if (stale()) return; analyzeActive = false; showFindings(ruleFindings, raw, tab, ruleNote(raw, ruleFindings)); };
 
         // No AI transport available → behave exactly like the original tool.
         if (!(window.SQG_SHEETS && typeof window.SQG_SHEETS.analyzePage === 'function') || !pageText) {
           fallback(); return;
         }
         return window.SQG_SHEETS.analyzePage(pageText, catalog).then(function (data) {
+          if (stale()) return;
+          analyzeActive = false;
           var ai = buildAiFindings(data);
           if (ai.findings.length) {
             var merged = mergeAiRule(ai.findings, ruleFindings); // supplement, never drop
@@ -1134,12 +1162,16 @@ window.SQG_ANALYZE = (function () {
         }).catch(fallback); // AI call failed → rule-based detection
       });
     }).catch(function () {
+      if (stale()) return;
+      analyzeActive = false;
       flash('This page can’t be analyzed — try a different tab', 'warn');
+      render();
     });
   }
 
   return {
     bar: bar, run: run, applyFindings: applyFindings, fillFromText: fillFromText,
+    cancel: cancelAnalyze, isRunning: analyzeRunning,
     _extract: extractQuoteInfo, _snapshot: snapshotPage, _parseDate: parseDate,
     _buildFindings: buildFindings, _buildAiFindings: buildAiFindings, _resolveCatalogProduct: resolveCatalogProduct,
     _buildSnapshotText: buildSnapshotText, _mergeAiRule: mergeAiRule, _mergeFrames: mergeFrames,
