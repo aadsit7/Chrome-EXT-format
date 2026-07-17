@@ -31,8 +31,39 @@ window.SQG_ANALYZE = (function () {
   var CUST_LABELS = ['customer', 'account name', 'account', 'company name', 'company', 'client', 'organization', 'organisation', 'end customer'];
   var BILL_LABELS = ['bill to', 'bill-to', 'billto', 'billing company', 'billing', 'invoice to', 'sold to', 'reseller', 'partner', 'distributor'];
   var EMAIL_LABELS = ['email', 'e-mail', 'contact email', 'contact'];
-  var QTY_LABELS = ['quantity', 'qty', 'endpoints', 'devices', 'users', 'seats', 'licenses', 'licences', 'nodes'];
-  var DATE_LABELS = ['renewal date', 'renews on', 'renews', 'renewal', 'expiration date', 'expiration', 'expires', 'end date', 'term end', 'contract end'];
+  var QTY_LABELS = ['quantity', 'qty', 'endpoints', 'devices', 'users', 'seats', 'licenses', 'licences', 'nodes', 'current device count', 'maximum device count'];
+  var DATE_LABELS = ['renewal date', 'renews on', 'renews', 'renewal', 'expiration date', 'expiration', 'expires', 'end date', 'term end', 'contract end', 'close date', 'license start date', 'license expiration date', 'renewal month date', 'start date'];
+
+  /* Salesforce-specific label groups, used by the rule-based extractor to apply
+     the field vocabulary + precedence rules from the two real Opportunity pages
+     (Quote Information / Products on new business; Renewals + Subscription
+     Information + Partner/Reseller on renewals). Kept here so both the in-page
+     extractor and the panel-side finding builder read from one source. */
+  var SF_LABELS = {
+    account: ['account name', 'account'],
+    accountExclude: ['owner', 'number', 'site', 'type', 'source', 'currency', 'record', 'id', 'status', 'stage', 'parent', 'plan', 'team'],
+    partner: ['partner/reseller', 'partner / reseller', 'partner reseller', 'reseller', 'partner', 'distributor'],
+    // Renewal date precedence: license-expiration / end-date beat renewal-month,
+    // and Close Date is only a last-resort fallback (it's a sales forecast).
+    dateLicenseExpiration: ['license expiration date', 'license expiry date', 'license expiry'],
+    dateEnd: ['end date', 'term end', 'contract end'],
+    dateRenewalMonth: ['renewal month date', 'renewal date', 'renews on', 'renews'],
+    dateClose: ['close date'],
+    quoteExpiration: ['quote expiration date'],
+    // Quantity precedence: Subscription/Renewals panel > related-list > device count.
+    qtyPanel: ['quantity', 'qty'],
+    qtyDevice: ['current device count', 'maximum device count new', 'maximum device count'],
+    term: ['subscription term'],
+    subscriptionType: ['subscription type'],
+    arrUpForRenewal: ['arr up for renewal'],
+    recordType: ['opportunity record type', 'record type'],
+    products: ['product(s)', 'products', 'product'],
+    // Context-only values that must never be read as a quantity.
+    endpointTier: ['endpoint tier'],
+    // Field labels that mark a renewal-type opportunity / its panels.
+    renewalMarkers: ['arr up for renewal', 'renewal month date', 'license expiration date', 'renewal arr', 'tcv up for renewal', 'net change (arr)', 'contraction arr', 'renewal opportunity'],
+    subscriptionMarkers: ['subscription term', 'subscription type', 'billing frequency', 'license start date'],
+  };
 
   /* Catalog keyword -> default product id. Matched loosely, case-insensitively.
      Resolved against the live catalog (state.cfg.products) at build time so a
@@ -47,7 +78,8 @@ window.SQG_ANALYZE = (function () {
 
   var SVG_SCAN = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"></path><path d="M17 3h2a2 2 0 0 1 2 2v2"></path><path d="M21 17v2a2 2 0 0 1-2 2h-2"></path><path d="M7 21H5a2 2 0 0 1-2-2v-2"></path><circle cx="12" cy="12" r="3"></circle><path d="m16 16-1.9-1.9"></path></svg>';
 
-  var SF_LAZY_NOTE = 'No products list visible — scroll to the Products section in Salesforce and analyze again.';
+  var SF_LAZY_NOTE = 'No products are visible — open or scroll to the Products related list in Salesforce, then Analyze again.';
+  var SF_RENEWAL_NOTE = 'This looks like a renewal, but the Renewals / Subscription Information section wasn’t on screen — open that tab in Salesforce, then Analyze again.';
 
   /* Mutual exclusion with "Speak to fill": only one of the two fill features may
      be active at a time. analyzeSeq is bumped whenever a new analyze starts OR a
@@ -76,10 +108,16 @@ window.SQG_ANALYZE = (function () {
       var notEmailNum = function (v) {
         return v.length >= 2 && v.length <= 80 && !EMAIL_RX.test(v) && !/^[\d.,%$\s]+$/.test(v);
       };
+      /* Money: strip a leading currency word/symbol ("USD 133,000.00", "$94,410")
+         and thousands commas, then read the amount. */
       var parseMoney = function (s) {
-        var m = String(s).match(MONEY_RX);
-        if (!m) return null;
-        var n = parseFloat(m[1].replace(/,/g, ''));
+        if (s == null) return null;
+        var str = String(s);
+        var m = str.match(MONEY_RX);
+        if (m) { var n0 = parseFloat(m[1].replace(/,/g, '')); return isFinite(n0) ? n0 : null; }
+        var m2 = str.replace(/\b(usd|eur|gbp|cad|aud)\b/gi, ' ').match(/(-?[0-9][0-9,]*(?:\.[0-9]+)?)/);
+        if (!m2) return null;
+        var n = parseFloat(m2[1].replace(/,/g, ''));
         return isFinite(n) ? n : null;
       };
       var looksDatey = function (s) {
@@ -91,6 +129,31 @@ window.SQG_ANALYZE = (function () {
         if (!m) return null;
         var n = parseInt(m[1].replace(/,/g, ''), 10);
         return (isFinite(n) && n >= 1 && n <= 100000000) ? n : null;
+      };
+      /* Quantity: strip commas / "USD"; reject ranges ("1,001 - 5,000" = Endpoint
+         Tier, context only), money and dates. Accepts Salesforce's "20,000.00". */
+      var parseQty = function (s) {
+        if (s == null) return null;
+        var str = norm(s);
+        if (!str) return null;
+        if (/\d[\d,\.]*\s*[-–—]\s*\d/.test(str)) return null; // a RANGE (Endpoint Tier), never a quantity
+        // Reject money/percent and real dates (slash dates / month names). A plain
+        // decimal like "10,000.00" is a valid Salesforce quantity, so don't use the
+        // date heuristic here (it would trip on the decimal point).
+        if (/\$|%/.test(str) || /\d\/\d/.test(str) || /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(str)) return null;
+        var m = str.replace(/\b(usd|eur|gbp|cad|aud)\b/gi, ' ').replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+        if (!m) return null;
+        var n = Math.round(parseFloat(m[0]));
+        return (isFinite(n) && n >= 1 && n <= 100000000) ? n : null;
+      };
+      /* Subscription term: Salesforce stores it as a decimal ("12.000000000000");
+         also handles "12 months" / "12". Returns whole months. */
+      var parseTermMonths = function (s) {
+        if (s == null) return null;
+        var m = String(s).replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
+        if (!m) return null;
+        var n = Math.round(parseFloat(m[1]));
+        return (isFinite(n) && n >= 1 && n <= 240) ? n : null;
       };
 
       /* ---- label/value pairs from structured markup (generic) ---- */
@@ -323,17 +386,6 @@ window.SQG_ANALYZE = (function () {
         return null;
       };
 
-      /* Renewal date: labels containing Renewal / Contract End / End Date /
-         Expiration with a date value. "Close Date" is explicitly NOT a renewal. */
-      var sfFindRenewalDate = function (sfPairs) {
-        for (var i = 0; i < sfPairs.length; i++) {
-          var l = low(sfPairs[i].label), v = sfPairs[i].value;
-          if (l.indexOf('close') > -1) continue;
-          if (/(renewal|contract end|end date|expiration|expires)/.test(l) && /\d/.test(v)) return v;
-        }
-        return null;
-      };
-
       /* Lightning page-header title (used as customer only on Account records). */
       var sfEntity = function () {
         var m = (location.pathname || '').match(/\/lightning\/r\/([A-Za-z_]+)\//);
@@ -350,25 +402,43 @@ window.SQG_ANALYZE = (function () {
         return null;
       };
 
+      /* Salesforce truncates grid cells ("Application Wo…"); the full name lives in
+         the cell's link/title attribute, so prefer that over the visible text. */
+      var cellFullText = function (cell) {
+        if (!cell) return '';
+        var t = '';
+        var a = cell.querySelector ? cell.querySelector('a[title], a, [title]') : null;
+        if (a) {
+          if (a.getAttribute && a.getAttribute('title')) t = norm(a.getAttribute('title'));
+          if (!t) t = norm(a.textContent);
+        }
+        if (!t && cell.getAttribute && cell.getAttribute('title')) t = norm(cell.getAttribute('title'));
+        if (!t) t = norm(cell.textContent);
+        return t;
+      };
+
       /* Related-list product tables parsed by column headers. Returns matched
-         product lines plus whether any product-style table was present at all. */
+         product lines, whether any product-style table was present at all, and the
+         first subscription-term value seen (new-business grids carry the term in a
+         "Subscription Term" column instead of a record-detail field). */
       var sfProductTables = function () {
-        var out = [], sawTable = false;
-        var tables = document.querySelectorAll('table');
+        var out = [], sawTable = false, tableTerm = null;
+        var tables = document.querySelectorAll('table, [role="grid"], [role="table"], [role="treegrid"]');
         for (var t = 0; t < tables.length; t++) {
           var table = tables[t];
-          var heads = table.querySelectorAll('thead th, thead td');
+          var heads = table.querySelectorAll('thead th, thead td, [role="columnheader"]');
           if (!heads.length) {
             var fr = table.querySelector('tr');
             if (fr) { var ths = fr.querySelectorAll('th'); if (ths.length) heads = ths; }
           }
           if (!heads || !heads.length) continue;
 
-          var prodIdx = -1, qtyIdx = -1, priceIdx = -1, priceRank = -1;
+          var prodIdx = -1, qtyIdx = -1, priceIdx = -1, priceRank = -1, termIdx = -1;
           for (var hI = 0; hI < heads.length; hI++) {
             var htext = low(heads[hI].getAttribute && heads[hI].getAttribute('title') ? heads[hI].getAttribute('title') : heads[hI].textContent);
             if (prodIdx < 0 && /\b(product name|product|line item|item|asset name|asset)\b/.test(htext)) prodIdx = hI;
             if (qtyIdx < 0 && /\b(quantity|qty)\b/.test(htext)) qtyIdx = hI;
+            if (termIdx < 0 && /(subscription term|\bterm\b)/.test(htext)) termIdx = hI;
             var pr = -1;
             if (/annual price/.test(htext)) pr = 3;
             else if (/total price/.test(htext)) pr = 2;
@@ -380,44 +450,188 @@ window.SQG_ANALYZE = (function () {
           sawTable = true;
 
           var bodyRows = table.querySelectorAll('tbody tr');
-          if (!bodyRows.length) bodyRows = table.querySelectorAll('tr');
+          if (!bodyRows.length) bodyRows = table.querySelectorAll('tr, [role="row"]');
           for (var r = 0; r < bodyRows.length; r++) {
-            var rowCells = bodyRows[r].querySelectorAll('th, td');
+            var rowCells = bodyRows[r].querySelectorAll('th, td, [role="gridcell"], [role="cell"], [role="rowheader"]');
             if (!rowCells.length || rowCells.length <= prodIdx) continue;
-            var pname = norm(rowCells[prodIdx].textContent);
+            var pname = cellFullText(rowCells[prodIdx]);
             var key = matchKey(pname);
+            if (termIdx >= 0 && rowCells[termIdx] && tableTerm == null) {
+              var tv = parseTermMonths(norm(rowCells[termIdx].textContent));
+              if (tv != null) tableTerm = tv;
+            }
             if (!key) continue;
-            var qty = (qtyIdx >= 0 && rowCells[qtyIdx]) ? leadCount(norm(rowCells[qtyIdx].textContent)) : null;
-            var price = (priceIdx >= 0 && rowCells[priceIdx]) ? parseMoney(norm(rowCells[priceIdx].textContent)) : null;
+            var qty = (qtyIdx >= 0 && rowCells[qtyIdx]) ? parseQty(cellFullText(rowCells[qtyIdx])) : null;
+            var price = (priceIdx >= 0 && rowCells[priceIdx]) ? parseMoney(cellFullText(rowCells[priceIdx])) : null;
             out.push({ key: key, qty: qty, price: price });
           }
         }
-        return { products: out, sawTable: sawTable };
+        return { products: out, sawTable: sawTable, term: tableTerm };
+      };
+
+      /* Contact Roles related list: prefer the row flagged Primary for the
+         contact name / email / phone (falls back to the first row). */
+      var sfContactRoles = function () {
+        var res = { name: null, email: null, phone: null };
+        var tables = document.querySelectorAll('table, [role="grid"], [role="table"], [role="treegrid"]');
+        for (var t = 0; t < tables.length; t++) {
+          var table = tables[t];
+          var heads = table.querySelectorAll('thead th, thead td, [role="columnheader"]');
+          if (!heads.length) { var fr = table.querySelector('tr'); if (fr) heads = fr.querySelectorAll('th'); }
+          if (!heads || !heads.length) continue;
+          var nameIdx = -1, emailIdx = -1, phoneIdx = -1, primaryIdx = -1;
+          for (var h = 0; h < heads.length; h++) {
+            var ht = low(heads[h].getAttribute && heads[h].getAttribute('title') ? heads[h].getAttribute('title') : heads[h].textContent);
+            if (nameIdx < 0 && /(contact name|\bname\b)/.test(ht)) nameIdx = h;
+            if (emailIdx < 0 && /email/.test(ht)) emailIdx = h;
+            if (phoneIdx < 0 && /phone/.test(ht)) phoneIdx = h;
+            if (primaryIdx < 0 && /primary/.test(ht)) primaryIdx = h;
+          }
+          if (nameIdx < 0 || primaryIdx < 0) continue; // not a contact-roles grid
+          var rows = table.querySelectorAll('tbody tr');
+          if (!rows.length) rows = table.querySelectorAll('tr, [role="row"]');
+          var firstRow = null, primaryRow = null;
+          for (var r = 0; r < rows.length; r++) {
+            var cells = rows[r].querySelectorAll('th, td, [role="gridcell"], [role="cell"], [role="rowheader"]');
+            if (cells.length <= nameIdx) continue;
+            var nm = cellFullText(cells[nameIdx]);
+            if (!nm || nm.length > 80) continue;
+            if (!firstRow) firstRow = cells;
+            var pc = cells[primaryIdx], isPrimary = false;
+            if (pc) {
+              var cbx = pc.querySelector ? pc.querySelector('input[type="checkbox"]') : null;
+              if (cbx && cbx.checked) isPrimary = true;
+              if (!isPrimary && pc.querySelector && pc.querySelector('[aria-checked="true"], [data-checked="true"]')) isPrimary = true;
+              if (!isPrimary && /\b(true|yes)\b|✓|✔/i.test(norm(pc.textContent))) isPrimary = true;
+              if (!isPrimary && pc.querySelector && pc.querySelector('img[alt*="rue"], img[alt*="heck"], img[alt*="es"]')) isPrimary = true;
+            }
+            if (isPrimary && !primaryRow) primaryRow = cells;
+          }
+          var pick = primaryRow || firstRow;
+          if (pick) {
+            res.name = (nameIdx >= 0 && pick[nameIdx]) ? cellFullText(pick[nameIdx]) : null;
+            var em = (emailIdx >= 0 && pick[emailIdx]) ? cellFullText(pick[emailIdx]) : '';
+            var emm = em.match(EMAIL_RX); res.email = emm ? emm[0] : null;
+            var ph = (phoneIdx >= 0 && pick[phoneIdx]) ? cellFullText(pick[phoneIdx]) : '';
+            res.phone = (ph && /\d/.test(ph)) ? ph : null;
+            return res;
+          }
+        }
+        return res;
+      };
+
+      /* Scored value lookup over SF pairs by a list of candidate labels. */
+      var sfByLabels = function (sfPairs, labels, validate) {
+        var best = null, bestScore = 0;
+        for (var i = 0; i < sfPairs.length; i++) {
+          var l = low(sfPairs[i].label), v = sfPairs[i].value;
+          if (validate && !validate(v)) continue;
+          var score = 0;
+          for (var q = 0; q < labels.length; q++) {
+            var key = labels[q];
+            if (l === key) score = Math.max(score, 3);
+            else if (l.indexOf(key) === 0) score = Math.max(score, 2);
+            else if (l.indexOf(key) > -1) score = Math.max(score, 1);
+          }
+          if (score > bestScore) { bestScore = score; best = v; }
+        }
+        return best;
+      };
+      var sfHasAny = function (sfPairs, labels) {
+        for (var i = 0; i < sfPairs.length; i++) {
+          var l = low(sfPairs[i].label);
+          for (var q = 0; q < labels.length; q++) if (l.indexOf(labels[q]) > -1) return true;
+        }
+        return false;
+      };
+      var hasDate = function (v) { return !!v && /\d/.test(v) && !/\d[\d,\.]*\s*[-–—]\s*\d/.test(v); };
+
+      /* Parse a semicolon/comma-separated "Product(s)" field against the catalog. */
+      var parseProductsField = function (str) {
+        var outp = [], seen = {};
+        if (!str) return outp;
+        String(str).split(/[;,\n]/).forEach(function (part) {
+          var k = matchKey(part);
+          if (k && !seen[k]) { seen[k] = 1; outp.push({ key: k, qty: null, price: null }); }
+        });
+        return outp;
       };
 
       /* ---- Assemble the result for this frame ---- */
       var result;
       if (isSalesforce) {
+        var SL = cfg.sfLabels || {};
         var sfPairs = buildSfPairs();
-        var customer = sfFind(sfPairs, ['account name', 'account'], ['owner', 'number', 'site', 'type', 'source', 'currency', 'record', 'id', 'status', 'stage', 'parent'], notEmailNum);
+
+        /* Customer = Account Name (never the partner/reseller). */
+        var customer = sfFind(sfPairs, SL.account || ['account name', 'account'], SL.accountExclude || ['owner', 'number', 'site', 'type', 'source', 'currency', 'record', 'id', 'status', 'stage', 'parent'], notEmailNum);
         if (!customer && sfEntity() === 'Account') customer = sfHeaderTitle();
         if (!customer) customer = findByLabels(cfg.custLabels, notEmailNum); // generic backstop
-        var billTo = sfFind(sfPairs, ['bill to name', 'bill to', 'billing account', 'bill-to name', 'sold to'], null, notEmailNum);
-        var email = sfFindEmail(sfPairs) || findEmail();
-        var renewalDateRaw = sfFindRenewalDate(sfPairs);
+
+        /* Partner/Reseller — Account Name stays the customer even when present. */
+        var partnerCompany = sfByLabels(sfPairs, SL.partner || ['partner/reseller', 'reseller', 'partner'], notEmailNum);
+        var subscriptionType = sfByLabels(sfPairs, SL.subscriptionType || ['subscription type']);
+        var isReseller = !!(subscriptionType && /reseller/i.test(subscriptionType));
+
+        var contact = sfContactRoles();
+        var email = contact.email || sfFindEmail(sfPairs) || findEmail();
+
+        /* Renewal-date candidates, kept separate so the panel side can apply the
+           precedence rule (License Expiration / End Date > Renewal Month > Close). */
+        var renewalDates = {
+          licenseExpiration: sfByLabels(sfPairs, SL.dateLicenseExpiration || ['license expiration date'], hasDate),
+          endDate: sfByLabels(sfPairs, SL.dateEnd || ['end date'], hasDate),
+          renewalMonth: sfByLabels(sfPairs, SL.dateRenewalMonth || ['renewal month date', 'renewal date'], hasDate),
+          closeDate: sfByLabels(sfPairs, SL.dateClose || ['close date'], hasDate),
+        };
+        var renewalDateRaw = renewalDates.licenseExpiration || renewalDates.endDate || renewalDates.renewalMonth || renewalDates.closeDate || null;
+        var quoteExpirationRaw = sfByLabels(sfPairs, SL.quoteExpiration || ['quote expiration date'], hasDate);
+
+        var termMonths = parseTermMonths(sfByLabels(sfPairs, SL.term || ['subscription term']));
+        var arrUpForRenewal = parseMoney(sfByLabels(sfPairs, SL.arrUpForRenewal || ['arr up for renewal']));
+
         var tbl = sfProductTables();
+        if (termMonths == null) termMonths = tbl.term; // new-business grids carry the term
+
+        /* Products: related-list lines first; if none, the semicolon Product(s) field. */
+        var productsField = sfByLabels(sfPairs, SL.products || ['product(s)', 'products']);
+        var products = tbl.products;
+        if ((!products || !products.length) && productsField) products = parseProductsField(productsField);
+
+        /* Quantity candidates by source (never Endpoint Tier — it's a range). */
+        var qtyPanel = parseQty(sfByLabels(sfPairs, SL.qtyPanel || ['quantity', 'qty']));
+        var qtyProduct = null;
+        for (var pi = 0; pi < (tbl.products || []).length; pi++) { if (tbl.products[pi].qty != null) { qtyProduct = tbl.products[pi].qty; break; } }
+        var qtyDevice = parseQty(sfByLabels(sfPairs, SL.qtyDevice || ['current device count', 'maximum device count']));
+
+        var recordType = sfByLabels(sfPairs, SL.recordType || ['opportunity record type']);
+        var renewalsSeen = sfHasAny(sfPairs, SL.renewalMarkers || ['arr up for renewal', 'renewal month date', 'license expiration date']);
+        var subscriptionSeen = sfHasAny(sfPairs, SL.subscriptionMarkers || ['subscription term', 'subscription type', 'billing frequency']);
+        var isRenewal = /renewal/i.test(recordType || '') || isReseller || renewalsSeen || subscriptionSeen || /renew/i.test(document.title || '');
 
         result = {
           source: 'salesforce',
           title: document.title || '',
           url: location.href || '',
+          isRenewal: isRenewal,
           customer: customer,
-          billTo: billTo,
+          partnerCompany: partnerCompany || null,
+          billTo: partnerCompany || null, // legacy alias (older merge/snapshot paths)
+          subscriptionType: subscriptionType || null,
           email: email,
+          contactName: contact.name || null,
+          contactPhone: contact.phone || null,
+          renewalDates: renewalDates,
           renewalDateRaw: renewalDateRaw,
-          products: tbl.products,
+          quoteExpirationRaw: quoteExpirationRaw || null,
+          qty: { panel: qtyPanel, product: qtyProduct, device: qtyDevice },
+          termMonths: termMonths,
+          arrUpForRenewal: arrUpForRenewal,
+          products: products,
+          productsField: productsField || null,
           qtyValues: [],
-          productsSeen: tbl.sawTable || tbl.products.length > 0,
+          productsSeen: tbl.sawTable || (products && products.length > 0),
+          sectionsSeen: { products: tbl.sawTable, renewals: renewalsSeen, subscription: subscriptionSeen },
         };
       } else {
         result = {
@@ -434,10 +648,13 @@ window.SQG_ANALYZE = (function () {
         };
       }
 
+      var q = result.qty || {};
+      var anyQty = (q.panel != null || q.product != null || q.device != null) ? 1 : 0;
       result.matchCount =
-        (result.customer ? 1 : 0) + (result.billTo ? 1 : 0) + (result.email ? 1 : 0) +
+        (result.customer ? 1 : 0) + (result.partnerCompany || result.billTo ? 1 : 0) + (result.email ? 1 : 0) +
         (result.renewalDateRaw ? 1 : 0) + (result.products ? result.products.length : 0) +
-        (result.qtyValues ? result.qtyValues.length : 0);
+        (result.qtyValues ? result.qtyValues.length : 0) + anyQty +
+        (result.termMonths ? 1 : 0) + (result.contactName ? 1 : 0);
       return result;
     } catch (e) {
       return { error: String((e && e.message) || e) };
@@ -532,9 +749,55 @@ window.SQG_ANALYZE = (function () {
           } catch (e) { return false; }
         };
 
+        /* Salesforce detection (same markers the rule-based extractor uses). */
+        var isSf = false;
+        try {
+          isSf = !!(document.querySelector('.slds-form-element__label, .test-id__field-label, one-record-home-flexipage2, records-record-layout-item, force-record-layout-section, .slds-page-header, td.labelCol'))
+            || /(lightning\.force\.com|my\.salesforce\.com|salesforce\.com|force\.com|visualforce\.com)/i.test((location && location.hostname) || '');
+        } catch (e) { isSf = false; }
+
+        /* Section priority + noise, from the two real Opportunity pages. Noise
+           sections (Stage / Field History, System Information, Activity, Chatter,
+           Feed, Notes, Files) drown the signal and are excluded entirely. */
+        var NOISE_RX = /stage history|field history|system information|activity|chatter|feed|notes|files|news history/i;
+        var priorityOf = function (title) {
+          var t = String(title).toLowerCase();
+          if (/quote information/.test(t)) return 0;
+          if (/renewal/.test(t)) return 1;
+          if (/subscription/.test(t)) return 2;
+          if (/product/.test(t)) return 3;
+          if (/opportunity information|opportunity detail/.test(t)) return 4;
+          if (/contact role|contacts/.test(t)) return 5;
+          if (/account detail|account information/.test(t)) return 6;
+          return 8;
+        };
+        var isSectionContainer = function (el) {
+          try {
+            var tag = el.tagName || '';
+            if (tag === 'ARTICLE' || tag === 'RECORDS-RECORD-LAYOUT-SECTION' || tag === 'FORCE-RELATED-LIST-CARD' || tag === 'FLEXIPAGE-COMPONENT2') return true;
+            var cls = (el.className && String(el.className)) || '';
+            return /slds-card|forcePageBlockSection|forcePageBlock\b|cardContainer|slds-section/i.test(cls);
+          } catch (e) { return false; }
+        };
+        var sectionTitleOf = function (el) {
+          try {
+            if (!el.querySelector) return '';
+            var te = el.querySelector('.slds-card__header-title, .test-id__section-header-title, .slds-section__title, [class*="section-title"], [class*="cardTitle"], legend, h1, h2, h3');
+            if (te) { var t = norm(te.textContent); if (t && t.length <= 60) return t; }
+          } catch (e) {}
+          return '';
+        };
+
         var recordParts = [], tableParts = [], fieldParts = [];
         var seen = {}, seenCount = 0, recordChars = 0;
         var RECORD_CAP = 24000;
+
+        // Named-section buckets (Salesforce) + global field dedup.
+        var sections = {}, sectionOrder = [], curSection = 'Other', seenField = {};
+        var noteSection = function (title) {
+          if (!sections[title]) { sections[title] = { fields: [], tables: [], priority: priorityOf(title) }; sectionOrder.push(title); }
+          curSection = title;
+        };
 
         var pushText = function (t) {
           t = norm(t);
@@ -546,9 +809,22 @@ window.SQG_ANALYZE = (function () {
         };
 
         var addField = function (label, val) {
-          if (fieldParts.length > 400) return;
           label = norm(label).replace(/\s*[:：]\s*$/, ''); val = norm(val);
-          if (label && val && label !== val && label.length <= 60 && val.length <= 300) fieldParts.push(label + ': ' + val);
+          if (!(label && val && label !== val && label.length <= 60 && val.length <= 300)) return;
+          var line = label + ': ' + val;
+          if (seenField[line]) return; // dedup repeated label→value pairs across panels/frames
+          seenField[line] = 1;
+          if (fieldParts.length <= 400) fieldParts.push(line);
+          if (isSf && sections[curSection]) sections[curSection].fields.push(line);
+        };
+
+        var cellText = function (cell) {
+          try {
+            var a = cell.querySelector ? cell.querySelector('a[title], a, [title]') : null;
+            if (a) { var tt = a.getAttribute && a.getAttribute('title'); if (tt) return norm(tt); var lt = norm(a.textContent); if (lt) return lt; }
+            var ct = cell.getAttribute && cell.getAttribute('title'); if (ct) return norm(ct);
+          } catch (e) {}
+          return norm(cell.textContent);
         };
 
         var dumpGrid = function (g) {
@@ -569,11 +845,15 @@ window.SQG_ANALYZE = (function () {
               var cells = rows[r].querySelectorAll('th, td, [role="gridcell"], [role="cell"], [role="rowheader"]');
               if (!cells.length) continue;
               var vals = [];
-              for (var c = 0; c < cells.length; c++) vals.push(norm(cells[c].textContent));
+              for (var c = 0; c < cells.length; c++) vals.push(cellText(cells[c])); // prefer link/title over truncated cell text
               var joined = vals.join(' | ');
               if (norm(joined.replace(/\|/g, ''))) { lines.push(joined); count++; }
             }
-            if (lines.length > (headers.length ? 1 : 0)) tableParts.push(lines.join('\n'));
+            if (lines.length > (headers.length ? 1 : 0)) {
+              var block = lines.join('\n');
+              tableParts.push(block);
+              if (isSf && sections[curSection]) sections[curSection].tables.push(block);
+            }
           } catch (e) {}
         };
 
@@ -588,7 +868,17 @@ window.SQG_ANALYZE = (function () {
             var el = ch;
             if (SKIP_TAGS[el.tagName]) continue;
             if (isChrome(el)) continue;
-            if (isGrid(el)) { dumpGrid(el); if (el.shadowRoot) dumpGrid(el.shadowRoot); continue; }
+            // Salesforce: exclude noise sections entirely; tag other sections so
+            // the payload can be assembled in priority order.
+            var prevSection = curSection;
+            if (isSf && isSectionContainer(el)) {
+              var title = sectionTitleOf(el);
+              if (title) {
+                if (NOISE_RX.test(title)) continue; // skip the whole subtree
+                noteSection(title);
+              }
+            }
+            if (isGrid(el)) { dumpGrid(el); if (el.shadowRoot) dumpGrid(el.shadowRoot); curSection = prevSection; continue; }
             try {
               if (el.classList && (el.classList.contains('slds-form-element__label') || el.classList.contains('test-id__field-label'))) {
                 var container = el.closest ? el.closest('.slds-form-element') : null;
@@ -609,6 +899,7 @@ window.SQG_ANALYZE = (function () {
             } catch (e) {}
             if (el.shadowRoot) walk(el.shadowRoot, depth + 1);
             walk(el, depth + 1);
+            curSection = prevSection; // leaving this container
           }
         };
 
@@ -619,13 +910,31 @@ window.SQG_ANALYZE = (function () {
         if (document.title) head.push('Title: ' + norm(document.title));
         if (typeof location !== 'undefined' && location.href) head.push('URL: ' + location.href);
 
+        // Assemble the prioritized, section-ordered payload (Salesforce only).
+        var prioritized = '';
+        if (isSf && sectionOrder.length) {
+          var ordered = sectionOrder.slice().sort(function (a, b) { return sections[a].priority - sections[b].priority; });
+          var blocks = [];
+          for (var so = 0; so < ordered.length; so++) {
+            var name = ordered[so], sec = sections[name];
+            if (!sec.fields.length && !sec.tables.length) continue;
+            var body = sec.fields.join('\n');
+            if (sec.tables.length) body += (body ? '\n' : '') + sec.tables.join('\n');
+            blocks.push('== ' + name.toUpperCase() + ' ==\n' + body);
+          }
+          prioritized = blocks.join('\n\n');
+        }
+
         return {
           record: recordParts.join('\n'),
           tables: tableParts.join('\n\n'),
           fields: head.concat(fieldParts).join('\n'),
+          prioritized: prioritized,
+          source: isSf ? 'salesforce' : 'generic',
+          url: (typeof location !== 'undefined' && location.href) || '',
         };
       } catch (e) {
-        return { record: '', tables: '', fields: '', error: String((e && e.message) || e) };
+        return { record: '', tables: '', fields: '', prioritized: '', error: String((e && e.message) || e) };
       }
     };
 
@@ -681,9 +990,31 @@ window.SQG_ANALYZE = (function () {
     var base = Object.assign({}, ok[0]);
     for (var i = 1; i < ok.length; i++) {
       var f = ok[i];
-      ['customer', 'billTo', 'email', 'renewalDateRaw'].forEach(function (k) {
+      ['customer', 'billTo', 'partnerCompany', 'subscriptionType', 'email', 'contactName', 'contactPhone',
+        'renewalDateRaw', 'quoteExpirationRaw', 'productsField', 'termMonths', 'arrUpForRenewal'].forEach(function (k) {
         if (!base[k] && f[k]) base[k] = f[k];
       });
+      if (f.isRenewal) base.isRenewal = true;
+      // Merge renewal-date candidates label-by-label so the strongest one survives.
+      if (f.renewalDates) {
+        base.renewalDates = base.renewalDates || {};
+        ['licenseExpiration', 'endDate', 'renewalMonth', 'closeDate'].forEach(function (k) {
+          if (!base.renewalDates[k] && f.renewalDates[k]) base.renewalDates[k] = f.renewalDates[k];
+        });
+      }
+      // Merge quantity candidates by source, preferring the higher-priority source.
+      if (f.qty) {
+        base.qty = base.qty || { panel: null, product: null, device: null };
+        ['panel', 'product', 'device'].forEach(function (k) {
+          if (base.qty[k] == null && f.qty[k] != null) base.qty[k] = f.qty[k];
+        });
+      }
+      if (f.sectionsSeen) {
+        base.sectionsSeen = base.sectionsSeen || {};
+        ['products', 'renewals', 'subscription'].forEach(function (k) {
+          if (f.sectionsSeen[k]) base.sectionsSeen[k] = true;
+        });
+      }
       if ((!base.products || !base.products.length) && f.products && f.products.length) base.products = f.products;
       if (f.qtyValues && f.qtyValues.length) base.qtyValues = (base.qtyValues || []).concat(f.qtyValues);
       if (f.source === 'salesforce') base.source = 'salesforce';
@@ -767,31 +1098,90 @@ window.SQG_ANALYZE = (function () {
     };
   }
 
+  /* Renewal-date precedence (Task 3): License Expiration / End Date beat Renewal
+     Month Date, which beats Close Date. Close Date is a sales forecast, so it's
+     only used as a last resort and the finding says so. Generic pages (no candidate
+     map) fall through to raw.renewalDateRaw. Returns { iso, fromClose } or null. */
+  function pickRenewalDate(raw) {
+    var d = (raw && raw.renewalDates) || {};
+    var order = [
+      { v: d.licenseExpiration, close: false }, { v: d.endDate, close: false },
+      { v: d.renewalMonth, close: false }, { v: d.closeDate, close: true },
+      { v: raw && raw.renewalDateRaw, close: false },
+    ];
+    for (var i = 0; i < order.length; i++) {
+      var iso = parseDate(order[i].v);
+      if (iso) return { iso: iso, fromClose: order[i].close };
+    }
+    return null;
+  }
+
+  /* Quantity precedence (Task 3): Renewals/Subscription panel > Products
+     related-list > Account Current Device Count. Never Endpoint Tier. */
+  function primaryQty(raw) {
+    var q = raw && raw.qty;
+    if (!q) return null;
+    if (q.panel != null) return q.panel;
+    if (q.product != null) return q.product;
+    if (q.device != null) return q.device;
+    return null;
+  }
+
   function buildFindings(raw) {
     var q = state.quote, cfg = state.cfg, out = [];
+    if (!raw) return out;
 
     if (raw.customer) out.push(scalarFinding('customer', 'Customer / company', raw.customer, raw.customer, q.customer));
     if (raw.email) out.push(scalarFinding('email', 'Contact email', raw.email, raw.email, q.email));
-    if (raw.billTo && (!raw.customer || normS(raw.billTo) !== normS(raw.customer))) {
-      out.push(scalarFinding('partnerCompany', 'Partner company (bill-to)', raw.billTo, raw.billTo, q.partnerCompany));
+
+    // Account Name stays the customer; the reseller/partner is a separate company.
+    var partner = raw.partnerCompany || raw.billTo;
+    if (partner && (!raw.customer || normS(partner) !== normS(raw.customer))) {
+      out.push(scalarFinding('partnerCompany', 'Reseller / partner company', partner, partner, q.partnerCompany));
     }
-    var isoDate = parseDate(raw.renewalDateRaw);
-    if (isoDate) {
-      var f = scalarFinding('coTermDate', "Customer's renewal date", isoDate, fmtDate(isoDate), q.coTermDate);
+
+    var rd = pickRenewalDate(raw);
+    if (rd) {
+      var label = rd.fromClose ? "Customer's renewal date (from Close Date — sales forecast)" : "Customer's renewal date";
+      var f = scalarFinding('coTermDate', label, rd.iso, fmtDate(rd.iso), q.coTermDate);
       if (f.replaces) f.replaces = fmtDate(q.coTermDate);
       out.push(f);
     }
 
-    resolveProducts(raw.products, raw.qtyValues).forEach(function (p) {
+    // Subscription term (Salesforce decimal "12.000000000000" → 12 months).
+    var tm = parseInt(raw.termMonths, 10);
+    if (isFinite(tm) && tm > 0) {
+      var yrs = Math.max(1, Math.round(tm / 12));
+      out.push({
+        field: 'term', months: tm, years: yrs, checked: true, label: 'Subscription term',
+        display: tm + ' month' + (tm === 1 ? '' : 's') + ' (' + yrs + ' year' + (yrs === 1 ? '' : 's') + ')',
+        replaces: (q.months && q.months !== tm) ? (q.months + ' months') : null,
+      });
+    }
+
+    // Feed the precedence-chosen quantity into the resolver so a single product
+    // with no line quantity (a renewal from the Product(s) field) still fills.
+    var qvals = [];
+    var pq = primaryQty(raw);
+    if (pq != null) qvals.push(pq);
+    if (raw.qtyValues) qvals = qvals.concat(raw.qtyValues);
+
+    var isRen = !!raw.isRenewal;
+    var resolved = resolveProducts(raw.products, qvals);
+    resolved.forEach(function (p) {
       var prod = cfg.products.find(function (x) { return x.id === p.key; });
       if (!prod) return;
-      if (p.price != null) {
+      // On a renewal, "ARR up for Renewal" is what the customer pays today; use it
+      // as the current renewal-line price when the single line has no price of its own.
+      var price = p.price;
+      if (isRen && price == null && raw.arrUpForRenewal != null && resolved.length === 1) price = raw.arrUpForRenewal;
+      if (price != null) {
         var curR = (q.renewLines || []).find(function (l) { return l.productId === prod.id; });
         var parts = [];
         if (p.qty != null) parts.push(int(p.qty).toLocaleString('en-US') + ' ' + unitWord(prod));
-        parts.push(fmt(p.price) + '/yr');
+        parts.push(fmt(price) + '/yr');
         out.push({
-          field: 'renewLine', productId: prod.id, qty: p.qty, price: p.price, checked: true,
+          field: 'renewLine', productId: prod.id, qty: p.qty, price: price, checked: true,
           label: prod.name + ' — renewal', display: parts.join(' · '),
           replaces: curR ? ((curR.qty ? int(curR.qty).toLocaleString('en-US') + ' · ' : '') + fmt(Math.max(0, +curR.price || 0)) + '/yr') : null,
         });
@@ -812,37 +1202,108 @@ window.SQG_ANALYZE = (function () {
      AI path — assemble the request text and map the response into findings.
      ========================================================================= */
 
-  /* Merge the per-frame snapshots into one text blob, then fold in the
-     rule-based extraction (belt and suspenders) so the AI gets the richest
-     possible input. Structured parts (fields, tables) come first; free page
-     text fills the remainder up to a ~12000-char cap. */
+  /* Rough section priority for a single "Label: value" line, so that on
+     Salesforce the highest-value fields survive the payload cap even when the
+     in-page section grouping isn't available. Lower = more important. */
+  function fieldRank(line) {
+    var t = String(line).toLowerCase();
+    if (/^(created by|last modified|deployment type|commission pool)\b/.test(t) || /stage history|field history|system information/.test(t)) return 90;
+    if (/quote|total price|volume discount|real discount|discount from list|amended terms|purchase order|primary quote|total real list/.test(t)) return 0;
+    if (/renewal|arr up for renewal|license expiration|renewal month|renewal arr|tcv up for renewal|net change|contraction|\bmrr\b|days to close/.test(t)) return 1;
+    if (/subscription term|subscription type|billing frequency|license start|start date|end date|contract|\bquantity\b|product\(s\)/.test(t)) return 2;
+    if (/opportunity|forecast|\bstage\b|close date|\bamount\b|price book|partner\/reseller|reseller|primary contact|owner|expansion/.test(t)) return 4;
+    if (/contact|email|phone|\brole\b|primary/.test(t)) return 5;
+    if (/account name|industry|website|support plan|endpoint tier|current device count/.test(t)) return 6;
+    return 7;
+  }
+  function rankFieldLines(text) {
+    var lines = String(text).split('\n').filter(function (l) { return l.trim(); });
+    return lines
+      .map(function (l, i) { return { l: l, i: i, r: (/^(title:|url:|==)/i.test(l.trim()) ? -1 : fieldRank(l)) }; })
+      .sort(function (a, b) { return a.r - b.r || a.i - b.i; })
+      .map(function (x) { return x.l; })
+      .join('\n');
+  }
+  /* Drop repeated Label: value lines (across panels and frames); keep headers. */
+  function dedupePairLines(text) {
+    var seen = {}, out = [];
+    String(text).split('\n').forEach(function (l) {
+      var t = l.trim();
+      var isHeader = !t || /^(==|##|source:|url:|title:)/i.test(t);
+      if (!isHeader && t.indexOf(':') > -1) { if (seen[t]) return; seen[t] = 1; }
+      out.push(l);
+    });
+    return out.join('\n');
+  }
+
+  /* Merge the per-frame snapshots into one text blob, then fold in the rule-based
+     extraction (belt and suspenders) so the AI gets the richest possible input.
+     On Salesforce the payload is PRIORITIZED — a SOURCE line, the page URL, the
+     rule-based DETECTED summary, then the in-page section-ordered capture (Quote
+     Information / Renewals / Subscription / Products / … with noise excluded) —
+     and only THEN capped at ~24000 chars, so high-value sections are never the
+     ones truncated. Non-Salesforce pages keep the original structure. */
   function buildSnapshotText(snaps, rawRule) {
     var ok = (snaps || []).filter(function (s) { return s && !s.error; });
-    var fields = [], tables = [], record = [];
+    var CAP = 24000;
+    var isSf = !!(rawRule && rawRule.source === 'salesforce') || ok.some(function (s) { return s.source === 'salesforce' || s.prioritized; });
+    var url = (rawRule && rawRule.url) || '';
+    var prioritized = [], fields = [], tables = [], record = [];
     ok.forEach(function (s) {
+      if (!url && s.url) url = s.url;
+      if (s.prioritized) prioritized.push(s.prioritized);
       if (s.fields) fields.push(s.fields);
       if (s.tables) tables.push(s.tables);
       if (s.record) record.push(s.record);
     });
+
     var ruleLines = [];
     if (rawRule) {
       if (rawRule.customer) ruleLines.push('Account/Customer: ' + rawRule.customer);
-      if (rawRule.billTo) ruleLines.push('Bill To / Reseller: ' + rawRule.billTo);
+      var partner = rawRule.partnerCompany || rawRule.billTo;
+      if (partner) ruleLines.push('Partner/Reseller: ' + partner);
+      if (rawRule.subscriptionType) ruleLines.push('Subscription Type: ' + rawRule.subscriptionType);
+      if (rawRule.isRenewal) ruleLines.push('Opportunity Type: Renewal');
+      if (rawRule.contactName) ruleLines.push('Primary Contact: ' + rawRule.contactName);
       if (rawRule.email) ruleLines.push('Contact Email: ' + rawRule.email);
-      if (rawRule.renewalDateRaw) ruleLines.push('Renewal/End Date: ' + rawRule.renewalDateRaw);
+      if (rawRule.contactPhone) ruleLines.push('Contact Phone: ' + rawRule.contactPhone);
+      var rd = rawRule.renewalDates || {};
+      if (rd.licenseExpiration) ruleLines.push('License Expiration Date: ' + rd.licenseExpiration);
+      if (rd.endDate) ruleLines.push('End Date: ' + rd.endDate);
+      if (rd.renewalMonth) ruleLines.push('Renewal Month Date: ' + rd.renewalMonth);
+      if (rd.closeDate) ruleLines.push('Close Date (sales forecast, not the renewal date): ' + rd.closeDate);
+      if (!rawRule.renewalDates && rawRule.renewalDateRaw) ruleLines.push('Renewal/End Date: ' + rawRule.renewalDateRaw);
+      if (rawRule.termMonths) ruleLines.push('Subscription Term (months): ' + rawRule.termMonths);
+      if (rawRule.arrUpForRenewal != null) ruleLines.push('ARR up for Renewal: ' + rawRule.arrUpForRenewal);
+      var pq = rawRule.qty ? (rawRule.qty.panel != null ? rawRule.qty.panel : (rawRule.qty.product != null ? rawRule.qty.product : rawRule.qty.device)) : null;
+      if (pq != null) ruleLines.push('Quantity: ' + pq);
+      if (rawRule.productsField) ruleLines.push('Product(s) field: ' + rawRule.productsField);
       (rawRule.products || []).forEach(function (p) {
         if (!p || !p.key) return;
         var prod = state.cfg.products.find(function (x) { return x.id === p.key; });
         ruleLines.push('Product: ' + (prod ? prod.name : p.key) + (p.qty != null ? ' · qty ' + p.qty : '') + (p.price != null ? ' · $' + p.price : ''));
       });
     }
+
     var parts = [];
-    if (fields.length) parts.push('== FIELDS ==\n' + fields.join('\n'));
-    if (tables.length) parts.push('== RELATED LISTS ==\n' + tables.join('\n\n'));
-    if (ruleLines.length) parts.push('== DETECTED (rule-based) ==\n' + ruleLines.join('\n'));
-    if (record.length) parts.push('== PAGE TEXT ==\n' + record.join('\n'));
-    var text = parts.join('\n\n');
-    if (text.length > 12000) text = text.slice(0, 12000);
+    if (isSf) {
+      var head = 'SOURCE: Salesforce Opportunity record';
+      if (url) head += '\nURL: ' + url;
+      parts.push(head);
+      if (ruleLines.length) parts.push('== DETECTED (rule-based) ==\n' + ruleLines.join('\n'));
+      if (prioritized.length) parts.push(prioritized.join('\n\n'));
+      else if (fields.length) parts.push('== FIELDS ==\n' + rankFieldLines(fields.join('\n')));
+      if (tables.length) parts.push('== RELATED LISTS ==\n' + tables.join('\n\n'));
+      if (record.length) parts.push('== PAGE TEXT ==\n' + record.join('\n'));
+    } else {
+      if (url) parts.push('URL: ' + url);
+      if (fields.length) parts.push('== FIELDS ==\n' + fields.join('\n'));
+      if (tables.length) parts.push('== RELATED LISTS ==\n' + tables.join('\n\n'));
+      if (ruleLines.length) parts.push('== DETECTED (rule-based) ==\n' + ruleLines.join('\n'));
+      if (record.length) parts.push('== PAGE TEXT ==\n' + record.join('\n'));
+    }
+    var text = dedupePairLines(parts.join('\n\n'));
+    if (text.length > CAP) text = text.slice(0, CAP);
     return text;
   }
 
@@ -874,6 +1335,17 @@ window.SQG_ANALYZE = (function () {
     }
     if (S(data.currency)) out.push(scalarFinding('currency', 'Currency', S(data.currency), S(data.currency), q.currency));
 
+    // Renewal date (the customer's renewal / co-term date) — the server returns it
+    // already resolved by the precedence rules; map it to the same field the
+    // rule-based path fills. (data.contactPhone and any other extras it may return
+    // are ignored gracefully — there's no quote field for them.)
+    var riso = parseDate(S(data.renewalDate));
+    if (riso) {
+      var rf = scalarFinding('coTermDate', "Customer's renewal date", riso, fmtDate(riso), q.coTermDate);
+      if (rf.replaces) rf.replaces = fmtDate(q.coTermDate);
+      out.push(rf);
+    }
+
     var tm = parseInt(data.termMonths, 10);
     if (isFinite(tm) && tm > 0) {
       var yrs = Math.max(1, Math.round(tm / 12));
@@ -897,6 +1369,30 @@ window.SQG_ANALYZE = (function () {
         field: 'lineQty', productId: prod.id, qty: qty, checked: true,
         label: prod.name + ' — quantity', display: qty.toLocaleString('en-US') + ' ' + unitWord(prod),
         replaces: curL ? int(curL.qty).toLocaleString('en-US') + ' ' + unitWord(prod) : null,
+      });
+    });
+
+    // Renewal lines (renewal opportunities) — map to the SAME renewLine finding
+    // shape the rule-based path produces, so a renewal fills through the AI path
+    // too. currentAnnualPrice is what the customer pays today (ARR up for Renewal).
+    (Array.isArray(data.renewLines) ? data.renewLines : []).forEach(function (li) {
+      if (!li) return;
+      var prod = resolveCatalogProduct(li.productId) || resolveCatalogProduct(li.name) || resolveCatalogProduct(li.product);
+      if (!prod) return;
+      var rqty = parseInt(li.qty, 10);
+      var hasQty = isFinite(rqty) && rqty > 0;
+      var rawPrice = (li.currentAnnualPrice != null) ? li.currentAnnualPrice : (li.price != null ? li.price : (li.annualPrice != null ? li.annualPrice : null));
+      var rprice = (rawPrice == null) ? NaN : parseFloat(String(rawPrice).replace(/[^0-9.\-]/g, ''));
+      var hasPrice = isFinite(rprice) && rprice >= 0;
+      if (!hasQty && !hasPrice) return;
+      var curR = (q.renewLines || []).find(function (l) { return l.productId === prod.id; });
+      var parts = [];
+      if (hasQty) parts.push(rqty.toLocaleString('en-US') + ' ' + unitWord(prod));
+      if (hasPrice) parts.push(fmt(rprice) + '/yr');
+      out.push({
+        field: 'renewLine', productId: prod.id, qty: hasQty ? rqty : null, price: hasPrice ? rprice : null, checked: true,
+        label: prod.name + ' — renewal', display: parts.join(' · ') || prod.name,
+        replaces: curR ? ((curR.qty ? int(curR.qty).toLocaleString('en-US') + ' · ' : '') + fmt(Math.max(0, +curR.price || 0)) + '/yr') : null,
       });
     });
 
@@ -1087,10 +1583,19 @@ window.SQG_ANALYZE = (function () {
     render();
   }
 
-  /* The rule-based fallback note (Salesforce products still loading). */
+  /* Salesforce only renders panels/tabs that are open, so after an analyze we tell
+     the user which section to open when a key one was absent from the snapshot:
+       • a renewal-type page with no Renewals / Subscription section captured, or
+       • no Products visible at all.
+     The analyzer stays strictly read-only — it never opens anything itself. */
   function ruleNote(raw, ruleFindings) {
+    if (!raw || raw.source !== 'salesforce') return null;
     var hasProducts = (ruleFindings || []).some(function (f) { return f.field === 'renewLine' || f.field === 'lineQty'; });
-    return (raw && raw.source === 'salesforce' && !hasProducts && !raw.productsSeen) ? SF_LAZY_NOTE : null;
+    var ss = raw.sectionsSeen || {};
+    var msgs = [];
+    if (raw.isRenewal && !ss.renewals && !ss.subscription) msgs.push(SF_RENEWAL_NOTE);
+    if (!hasProducts && !raw.productsSeen) msgs.push(SF_LAZY_NOTE);
+    return msgs.length ? msgs.join(' ') : null;
   }
 
   function run() {
@@ -1125,6 +1630,7 @@ window.SQG_ANALYZE = (function () {
         args: [{
           custLabels: CUST_LABELS, billLabels: BILL_LABELS, emailLabels: EMAIL_LABELS,
           qtyLabels: QTY_LABELS, dateLabels: DATE_LABELS, productTerms: PRODUCT_KEYMAP,
+          sfLabels: SF_LABELS,
         }],
       });
       var pSnap = chrome.scripting.executeScript({ target: target, func: snapshotPage });
@@ -1168,5 +1674,7 @@ window.SQG_ANALYZE = (function () {
     _extract: extractQuoteInfo, _snapshot: snapshotPage, _parseDate: parseDate,
     _buildFindings: buildFindings, _buildAiFindings: buildAiFindings, _resolveCatalogProduct: resolveCatalogProduct,
     _buildSnapshotText: buildSnapshotText, _mergeAiRule: mergeAiRule, _mergeFrames: mergeFrames,
+    _pickRenewalDate: pickRenewalDate, _primaryQty: primaryQty, _resolveProducts: resolveProducts,
+    _ruleNote: ruleNote, _sfLabels: SF_LABELS,
   };
 })();
