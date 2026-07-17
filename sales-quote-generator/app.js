@@ -84,6 +84,11 @@ function defaults() {
     // default via Object.assign(defaults(), d.cfg) on load, and "Reset to default
     // pricing" restores it like every other cfg field.
     enabledQuoteTypes: { new: true, addon: false, ren: false, addonren: false },
+    // Admin setting: show the "Analyze this page" button in the bottom dock.
+    // DEFAULT — hidden. Existing installs inherit this default via
+    // Object.assign(defaults(), d.cfg) on load, and "Reset to default pricing"
+    // restores it like every other cfg field.
+    showAnalyze: false,
   };
 }
 
@@ -1443,16 +1448,19 @@ function buildDockToolbar() {
 
   const row = h('div', { class: 'sqg-dock-toolbar', role: 'group', 'aria-label': 'Quote actions' });
 
-  // Analyze this page — same run() action; locked while "Speak to fill" is listening.
-  row.append(dockIcon({
-    icon: SVG_SCAN_DOCK,
-    label: 'Analyze',
-    ariaLabel: listening
-      ? 'Stop “Speak to fill” first — only one runs at a time'
-      : 'Analyze this page',
-    disabled: listening,
-    onClick: () => { if (analyze && typeof analyze.run === 'function') analyze.run(); },
-  }));
+  // Analyze this page — same run() action; locked while "Speak to fill" is
+  // listening. Hidden unless the admin turns it on in Settings (default off).
+  if (state.cfg && state.cfg.showAnalyze) {
+    row.append(dockIcon({
+      icon: SVG_SCAN_DOCK,
+      label: 'Analyze',
+      ariaLabel: listening
+        ? 'Stop “Speak to fill” first — only one runs at a time'
+        : 'Analyze this page',
+      disabled: listening,
+      onClick: () => { if (analyze && typeof analyze.run === 'function') analyze.run(); },
+    }));
+  }
 
   // New quote — same action the old header icon used (confirmation modal follows).
   row.append(dockIcon({
@@ -1818,6 +1826,11 @@ function renderSettings() {
       h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Allow prorated terms'),
       h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, 'Reps quote any length from 6 to 60 months with a slider')),
     switchEl(!!cfg.allowProration, (e) => setCfg({ allowProration: e.target.checked }))));
+  rulesSection.append(h('div', { class: 'sqg-rule-row', style: 'border-bottom: none;' },
+    h('div', { class: 'sqg-rule-titles' },
+      h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Show Analyze button'),
+      h('span', { style: 'font-size: 12.5px; color: var(--text-secondary);' }, 'Show the “Analyze this page” button in the bottom toolbar')),
+    switchEl(!!cfg.showAnalyze, (e) => setCfg({ showAnalyze: e.target.checked }))));
   rulesSection.append(h('div', { class: 'sqg-rule-row', style: 'border-bottom: none; padding-top: 0; padding-bottom: 14px;' },
     h('div', { class: 'sqg-rule-titles' },
       h('span', { style: 'font-size: 13.5px; font-weight: 600;' }, 'Default billing term'),
