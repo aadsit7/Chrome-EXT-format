@@ -1,21 +1,21 @@
 /* ---- Design tokens (clean light theme, side-panel first) ---- */
 :root {
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-display: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
 
-  --surface-page: #f2f3f7;
+  --surface-page: var(--bg);
   --surface-card: #ffffff;
-  --surface-sunken: #eef0f5;
-  --surface-hover: #f6f8fc;
-  --surface-accent-soft: #e8f0fe;
+  --surface-sunken: var(--card);
+  --surface-hover: var(--card);
+  --surface-accent-soft: var(--card);
 
-  --text-strong: #171d2b;
-  --text-primary: #2a3142;
-  --text-secondary: #5a6372;
-  --text-tertiary: #8a93a3;
-  --text-brand: #2563eb;
-  --text-accent: #2563eb;
+  --text-strong: var(--ink);
+  --text-primary: var(--ink);
+  --text-secondary: var(--gray);
+  --text-tertiary: var(--gray-light);
+  --text-brand: var(--blue);
+  --text-accent: var(--blue);
 
   --accent: #2563eb;
   --blue-600: #2563eb;
@@ -53,8 +53,8 @@ body {
   min-height: 100vh;
   font-family: var(--font-sans);
   color: var(--text-primary);
-  font-size: 13.5px;
-  line-height: 1.4;
+  font-size: 14px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 a { color: var(--blue-600); text-decoration: none; }
