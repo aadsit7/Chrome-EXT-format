@@ -76,12 +76,12 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 }
 .sqg-header-titles { display: flex; flex-direction: column; gap: 0; min-width: 0; }
 .sqg-kicker {
-  font-size: 10px; font-weight: 600; letter-spacing: 0.09em;
-  color: var(--text-brand); text-transform: uppercase;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  color: var(--blue); text-transform: uppercase;
 }
 .sqg-title {
-  font-family: var(--font-display); font-weight: 700; font-size: 16px;
-  letter-spacing: -0.02em; color: var(--text-strong);
+  font-family: var(--font-display); font-weight: 700; font-size: 17px;
+  letter-spacing: -0.015em; color: var(--ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .sqg-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
@@ -95,8 +95,8 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 /* ---- Layout (single column, room for the bottom dock) ---- */
 .sqg-main {
   max-width: 640px; margin: 0 auto;
-  padding: 10px 10px calc(var(--dock-h) + 28px);
-  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 12px calc(var(--dock-h) + 28px);
+  display: flex; flex-direction: column; gap: 12px;
 }
 .sqg-settings-main {
   max-width: 640px; margin: 0 auto; padding: 10px 10px 44px;
@@ -110,7 +110,7 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
   border-radius: var(--radius-card);
   padding: var(--space-2);
 }
-.sqg-card h2 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-strong); }
+.sqg-card h2 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-strong); }
 
 /* ---- Collapsible section accordion (progressive disclosure) ---- */
 .sqg-acc { padding: 0; }
@@ -121,7 +121,7 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 }
 .sqg-acc.open .sqg-acc-head { padding-bottom: 8px; }
 .sqg-acc-head:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.sqg-acc-title { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-strong); }
+.sqg-acc-title { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-strong); }
 .sqg-acc-right { display: flex; align-items: center; gap: 8px; min-width: 0; flex-shrink: 1; }
 .sqg-acc-summary {
   font-size: 12.5px; font-weight: 500; color: var(--text-secondary);
@@ -183,8 +183,8 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .sqg-line { display: flex; flex-direction: column; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--border-subtle); }
 .sqg-line-top { display: flex; align-items: flex-start; gap: 10px; }
 .sqg-avatar {
-  width: 32px; height: 32px; border-radius: 9px; background: var(--surface-accent-soft);
-  color: var(--text-accent); display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: var(--radius-tile); background: var(--blue);
+  color: #fff; display: inline-flex; align-items: center; justify-content: center;
   font-size: 12px; font-weight: 700; flex-shrink: 0;
 }
 .sqg-line-names { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
@@ -275,7 +275,7 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .sqg-dock-summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .sqg-dock-label {
   display: flex; align-items: center; gap: 5px;
-  font-size: 10px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-accent);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-light);
   white-space: nowrap; overflow: hidden; max-width: 100%;
 }
 .sqg-dock-label svg { flex-shrink: 0; }
@@ -301,10 +301,10 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
   font: inherit; color: inherit; -webkit-tap-highlight-color: transparent;
 }
 .sqg-dock-icon-circle {
-  width: 50px; height: 50px; border-radius: 50%; flex-shrink: 0;
+  width: 48px; height: 48px; border-radius: var(--radius-tile); flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--surface-card); color: var(--text-primary);
-  border: 1px solid var(--border-subtle); box-shadow: var(--shadow-sm);
+  background: var(--blue); color: #fff;
+  border: none; box-shadow: none;
   transition: transform 140ms, background 140ms, box-shadow 140ms, border-color 140ms, color 140ms;
 }
 .sqg-dock-icon-circle svg { display: block; }
@@ -312,33 +312,31 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
   font-size: 10.5px; font-weight: 600; line-height: 1.2; color: var(--text-secondary);
   white-space: nowrap;
 }
-/* Hover / press — subtle iOS-style lift on the circle */
+/* Hover / press — darken the tile ~8%, iOS-style press scale */
 .sqg-dock-icon:hover:not(:disabled) .sqg-dock-icon-circle {
-  background: var(--surface-hover); border-color: var(--border-strong);
-  transform: translateY(-1px); box-shadow: var(--shadow-lg);
+  background: var(--blue-700);
 }
 .sqg-dock-icon:active:not(:disabled) .sqg-dock-icon-circle { transform: scale(0.94); }
-/* Keyboard focus ring on the circle (matches the app's focus treatment) */
+/* Keyboard focus ring on the tile (matches the app's focus treatment) */
 .sqg-dock-icon:focus-visible { outline: none; }
 .sqg-dock-icon:focus-visible .sqg-dock-icon-circle {
-  box-shadow: var(--focus-ring); border-color: var(--border-accent);
+  box-shadow: var(--focus-ring);
 }
-/* Accent (mic) — the one primary, accent-colored button */
+/* Accent (mic) — same solid accent tile as its siblings */
 .sqg-dock-icon.accent .sqg-dock-icon-circle {
-  background: var(--accent); color: #fff; border-color: transparent;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.30);
+  background: var(--blue); color: #fff; border-color: transparent;
 }
 .sqg-dock-icon.accent:hover:not(:disabled) .sqg-dock-icon-circle {
-  background: var(--blue-700); border-color: transparent; box-shadow: 0 6px 16px rgba(37, 99, 235, 0.34);
+  background: var(--blue-700); border-color: transparent;
 }
-.sqg-dock-icon.accent .sqg-dock-icon-label { color: var(--text-accent); }
+.sqg-dock-icon.accent .sqg-dock-icon-label { color: var(--gray); }
 /* Listening — mic active: red pulse + stop glyph (mirrors .sqg-mic-btn.listening) */
 .sqg-dock-icon.listening .sqg-dock-icon-circle {
-  background: #dc2626; color: #fff; border-color: transparent;
-  box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45); animation: sqg-mic-pulse 1.4s ease-out infinite;
+  background: #FF3B30; color: #fff; border-color: transparent;
+  box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.45); animation: sqg-mic-pulse 1.4s ease-out infinite;
 }
-.sqg-dock-icon.listening:hover:not(:disabled) .sqg-dock-icon-circle { background: #c81e1e; }
-.sqg-dock-icon.listening .sqg-dock-icon-label { color: #dc2626; }
+.sqg-dock-icon.listening:hover:not(:disabled) .sqg-dock-icon-circle { background: #E6352B; }
+.sqg-dock-icon.listening .sqg-dock-icon-label { color: #FF3B30; }
 /* Locked / disabled — same dimmed, non-interactive look the inline buttons used */
 .sqg-dock-icon:disabled, .sqg-dock-icon.sqg-locked { cursor: not-allowed; }
 .sqg-dock-icon:disabled .sqg-dock-icon-circle, .sqg-dock-icon.sqg-locked .sqg-dock-icon-circle {
@@ -382,7 +380,7 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .sqg-sum-box { margin-top: 12px; padding: 11px 13px; background: var(--surface-sunken); border-radius: 12px; display: flex; flex-direction: column; gap: 6px; }
 .sqg-sum-box-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); }
 .sqg-tcv-box { margin-top: 12px; padding: 14px 16px; background: var(--surface-accent-soft); border-radius: 14px; display: flex; flex-direction: column; gap: 1px; }
-.sqg-tcv-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-accent); }
+.sqg-tcv-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-light); }
 .sqg-tcv-amt {
   font-family: var(--font-display); font-weight: 700; font-size: 24px; letter-spacing: -0.02em;
   color: var(--text-strong); font-variant-numeric: tabular-nums; line-height: 1.15;
@@ -575,14 +573,14 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .sqg-mic-ico { display: inline-flex; }
 .sqg-mic-ico svg { display: block; }
 .sqg-mic-btn.listening {
-  color: #ffffff; background: #dc2626; border-color: #dc2626;
-  box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45); animation: sqg-mic-pulse 1.4s ease-out infinite;
+  color: #ffffff; background: #FF3B30; border-color: #FF3B30;
+  box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.45); animation: sqg-mic-pulse 1.4s ease-out infinite;
 }
-.sqg-mic-btn.listening:hover { background: #c81e1e; }
+.sqg-mic-btn.listening:hover { background: #E6352B; }
 @keyframes sqg-mic-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45); }
-  70% { box-shadow: 0 0 0 8px rgba(220, 38, 38, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.45); }
+  70% { box-shadow: 0 0 0 8px rgba(255, 59, 48, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0); }
 }
 .sqg-voice-live {
   display: flex; flex-direction: column; gap: 9px; padding: 10px 12px;
@@ -591,13 +589,13 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .sqg-voice-live-row { display: flex; align-items: flex-start; gap: 9px; }
 .sqg-voice-dot {
   width: 9px; height: 9px; margin-top: 5px; flex-shrink: 0; border-radius: 50%;
-  background: #dc2626; animation: sqg-mic-pulse 1.4s ease-out infinite;
+  background: #FF3B30; animation: sqg-mic-pulse 1.4s ease-out infinite;
 }
 .sqg-voice-text { font-size: 13px; color: var(--text-secondary); line-height: 1.4; word-break: break-word; }
 .sqg-voice-live-texts { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .sqg-voice-live-label {
   font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
-  color: #dc2626;
+  color: #FF3B30;
 }
 /* Live "filled" chips — one per field the voice parser updated */
 .sqg-voice-chips { display: flex; flex-wrap: wrap; gap: 6px; }
