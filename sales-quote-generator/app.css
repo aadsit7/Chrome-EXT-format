@@ -99,8 +99,8 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
   display: flex; flex-direction: column; gap: 12px;
 }
 .sqg-settings-main {
-  max-width: 640px; margin: 0 auto; padding: 10px 10px 44px;
-  display: flex; flex-direction: column; gap: 10px;
+  max-width: 640px; margin: 0 auto; padding: 12px 12px 44px;
+  display: flex; flex-direction: column; gap: 12px;
 }
 
 /* ---- Cards / sections ---- */
