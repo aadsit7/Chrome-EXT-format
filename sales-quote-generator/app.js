@@ -448,7 +448,7 @@ function existOptions(cfg) {
   return cfg.products.map((p) => h('option', { value: p.id }, p.name));
 }
 
-const IN_BASE = 'border: 1px solid var(--border-default); border-radius: 10px; background: var(--surface-card); box-sizing: border-box;';
+const IN_BASE = 'border: 1px solid var(--hairline); border-radius: 12px; background: var(--bg); box-sizing: border-box;';
 
 /* ---------------- Render ---------------- */
 
