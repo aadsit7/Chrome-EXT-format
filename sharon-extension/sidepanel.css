@@ -922,6 +922,38 @@ html[data-view="welcome"] .welcome{display:flex}
 .keycap:hover{border-color:var(--blue)}
 .keycap:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
 
+/* ================= Polish: hover & focus sweep ================= */
+/* Every interactive element gets the same 3px accent-tinted focus glow. */
+.txt-link:focus-visible,
+.status:focus-visible,
+.qc-undo:focus-visible,
+.toast-undo:focus-visible,
+.ac-listen:focus-visible,
+.pl-seek:focus-visible{
+  outline:none;box-shadow:0 0 0 3px var(--blue-halo);border-radius:8px;
+}
+.ac-note:focus-visible,
+.ac-src:focus-visible{
+  outline:none;box-shadow:0 0 0 3px var(--blue-halo);
+}
+.ac-note:focus-visible{border-radius:8px}
+.txt-link:hover,.qc-undo:hover{color:var(--blue-deep)}
+.ac-listen:hover{color:var(--blue-deep)!important}
+
+/* ================= Polish: responsive ================= */
+/* Narrow panels (~320px): tighten the mode bar so five buttons plus the
+   divider never overflow, and give the welcome overlay back some width. */
+@media (max-width:360px){
+  .modebar{gap:12px}
+  .welcome{padding-left:var(--space-2);padding-right:var(--space-2)}
+  .ac-tiles .ac-tile{min-width:80px}
+}
+/* Wide panels (a docked-wide side panel or a full tab): keep the content
+   in a centered column instead of stretching edge to edge. */
+@media (min-width:768px){
+  .panel{max-width:720px;margin:0 auto}
+}
+
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
 }
