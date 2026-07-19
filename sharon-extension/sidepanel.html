@@ -135,6 +135,57 @@
         </div>
       </div>
 
+      <!-- ================= Notes view =================
+           A sibling of the memory view: the pencil button in the mode bar
+           swaps the conversation for Notes the same way the book button
+           swaps in memory. Two screens live inside the one view — the list
+           (with the paste-to-save composer) and the editor a row opens. -->
+      <div class="notes" id="notesView" role="region" aria-label="Notes" data-screen="list">
+        <div class="notes-screen" id="notesListScreen">
+          <div class="mem-head">
+            <button class="hd-btn" id="notesBack" type="button" aria-label="Back to the conversation">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+            </button>
+            <div class="mem-hd-txt">
+              <div class="mem-title">Notes.</div>
+              <div class="mem-sub" id="notesSubtitle">Saved in your Sheet</div>
+            </div>
+            <button class="pill-btn" id="noteNewBtn" type="button" aria-label="Start a new note">+ New note</button>
+          </div>
+          <div class="note-compose">
+            <textarea id="noteComposeArea" rows="3" placeholder="Paste or type a note — the first line becomes its title" aria-label="Paste or type a new note"></textarea>
+            <div class="note-compose-row hidden" id="noteComposeRow">
+              <button class="pill-btn primary" id="noteComposeSave" type="button">Save note</button>
+            </div>
+          </div>
+          <div class="notes-err hidden" id="notesErr"></div>
+          <div class="notes-list" id="notesList"></div>
+        </div>
+        <div class="notes-screen" id="noteEditorScreen">
+          <div class="mem-head">
+            <button class="hd-btn" id="noteEdBack" type="button" aria-label="Back to your notes">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+            </button>
+            <div class="mem-hd-txt">
+              <div class="mem-title">Note.</div>
+              <div class="mem-sub" id="noteEdMeta">New note</div>
+            </div>
+            <button class="pill-btn primary" id="noteEdSave" type="button" aria-label="Save this note">Save</button>
+          </div>
+          <input class="note-ed-title" id="noteEdTitle" type="text" placeholder="Title" aria-label="Note title" />
+          <textarea class="note-ed-body" id="noteEdBody" placeholder="Write, paste, or tap the mic and dictate…" aria-label="Note text"></textarea>
+          <div class="notes-err hidden" id="noteEdErr"></div>
+          <div class="note-ed-bar">
+            <button class="note-mic" id="noteEdMic" type="button" aria-label="Dictate into this note" aria-pressed="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
+            </button>
+            <span class="note-ed-hint hidden" id="noteEdHint" aria-live="polite">Listening — speak and I'll type it here</span>
+            <span class="spacer" aria-hidden="true"></span>
+            <button class="pill-btn" id="noteEdCopy" type="button" aria-label="Copy this note">Copy</button>
+          </div>
+        </div>
+      </div>
+
       <!-- ================= In-panel audio player ================= -->
       <div class="player hidden" id="playerBar" data-state="loading" data-playing="false">
         <button class="pl-toggle" id="plToggle" type="button" aria-label="Play">
@@ -190,6 +241,9 @@
         <button class="mode-btn" id="memNavBtn" type="button" aria-label="Sharon's memory — notes, tasks and recordings" aria-pressed="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
           <span class="badge hidden" id="memNavBadge"></span>
+        </button>
+        <button class="mode-btn" id="notesNavBtn" type="button" aria-label="Notes — write, paste and dictate notes" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>
         </button>
       </div>
 

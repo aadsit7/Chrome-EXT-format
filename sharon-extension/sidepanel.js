@@ -25,6 +25,7 @@ import * as api from "./api.js";
 import * as page from "./page.js";
 import * as speech from "./speech.js";
 import * as ui from "./ui.js";
+import * as notes from "./notes.js";
 import { MODES, initModes, enterMode, inMode } from "./mode.js";
 
 /* ------------------------------------------------------------------ *
@@ -3235,6 +3236,14 @@ function wireControls() {
 
   ui.initUI();
   ui.setMemFilterHandler(onMemFilterChange);
+
+  // The Notes view wires its own controls; it only needs the redeploy
+  // walkthrough for a stale backend, and a guard so dictation can never
+  // start while a voice or screen recording owns the ears.
+  notes.initNotes({
+    redeploySteps: REDEPLOY_STEPS,
+    canDictate: () => !recActive() && !screenRecActive(),
+  });
 
   // The mode manager — Sharon is in exactly one mode; every feature routes
   // its entries and exits through here. Opens in LISTENING (the default),

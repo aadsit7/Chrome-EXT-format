@@ -103,6 +103,24 @@ export function searchMemory({ query = "", entryType = "", limit = 20, touch = f
   });
 }
 
+/**
+ * Save one note straight from the panel (the Notes view's editor and its
+ * paste-to-save box). The backend writes it through the SAME internal path
+ * and columns the AI's save_memory tool uses, and returns the created entry
+ * (entry_id included) so the list can update in place. An older deployment
+ * answers "unknown action: save_memory", which call() flags as
+ * backendOutdated so the UI can say "redeploy Code.gs".
+ */
+export function saveMemory({ title, content, entryType = "note" }) {
+  return call("save_memory", {
+    title: title || "",
+    content: content || "",
+    entry_type: entryType,
+    user_id: USER_ID,
+    assistant_id: ASSISTANT_ID,
+  });
+}
+
 /** Patch one memory entry (mark a task done, edit, or delete). */
 export function updateMemory({ entryId, status, title, content, deleted }) {
   return call("update_memory", {

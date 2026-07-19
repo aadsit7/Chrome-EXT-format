@@ -37,6 +37,10 @@
  *   search_memory     — keyword search over memory_log AND the transcripts
  *                       in the recordings tab (recording hits are read-only,
  *                       entry_id "rec:<recording_id>").
+ *   save_memory       — create one memory row directly from the panel (the
+ *                       Notes view). Same write path and columns as the AI's
+ *                       save_memory tool; returns the created entry with its
+ *                       entry_id.
  *   update_memory     — patch a memory_log row (status/done/deleted/edits).
  *   batch_update_memory — patch many memory_log rows in one pass (bulk
  *                       mark-done / reopen / soft-delete and its undo).
@@ -132,6 +136,7 @@ function doPost(e) {
         case "append_turn":       out = { ok: true, result: actionAppendTurn_(payload) }; break;
         case "distill_to_memory": out = { ok: true, result: actionDistill_(payload) }; break;
         case "search_memory":     out = { ok: true, result: searchMemory_(payload) }; break;
+        case "save_memory":       out = { ok: true, result: actionSaveMemory_(payload) }; break;
         case "update_memory":     out = { ok: true, result: updateMemory_(payload) }; break;
         case "batch_update_memory": out = { ok: true, result: batchUpdateMemory_(payload) }; break;
         case "save_recording":    out = { ok: true, result: actionSaveRecording_(payload) }; break;
@@ -1053,6 +1058,43 @@ function actionDistill_(p) {
     })
   );
   return { entry_id: entryId };
+}
+
+/**
+ * save_memory (doPost action) — create one memory row directly from the
+ * panel's Notes view. The api_key was already checked in doPost like every
+ * other action; the row is written through the SAME internal path and
+ * columns the AI's save_memory tool uses (actionDistill_), and the created
+ * entry comes back — entry_id included — so the panel can render it without
+ * re-reading the sheet.
+ * payload: { title, content, entry_type?, user_id?, assistant_id? }
+ */
+function actionSaveMemory_(p) {
+  var title = String(p.title || "").trim();
+  var content = String(p.content || "").trim();
+  if (!title && !content) throw new Error("save_memory needs a title or content");
+  var entryType = String(p.entry_type || "note");
+  var saved = actionDistill_({
+    entry_type: entryType,
+    title: title,
+    content: content,
+    tags: [],
+    importance: 3,
+    user_id: p.user_id || "",
+    assistant_id: p.assistant_id || "",
+    session_id: p.session_id || "",
+    page_url: "",
+    source_turn_ids: [],
+  });
+  return {
+    entry_id: saved.entry_id,
+    entry_type: entryType,
+    title: title.slice(0, 120),
+    content: content,
+    status: entryType === "task" ? "open" : "",
+    created_at: nowIso_(),
+    updated_at: nowIso_(),
+  };
 }
 
 function indexMap_(headers) {
