@@ -91,7 +91,7 @@ a.pill-btn{text-decoration:none;display:inline-flex;align-items:center}
 .hdr{
   flex:none;z-index:8;
   display:flex;align-items:center;justify-content:space-between;gap:8px;
-  padding:12px 14px 10px;
+  padding:12px 16px 10px;
   background:var(--bg);
   border-bottom:1px solid var(--hairline);
 }
@@ -163,8 +163,8 @@ html[data-voice="off"] #voiceBtn .v-slash{display:block}
 
 /* page-awareness pill */
 .tabpill{
-  flex:none;align-self:flex-start;max-width:calc(100% - 28px);
-  margin:10px 14px 0;padding:6px 12px;
+  flex:none;align-self:flex-start;max-width:calc(100% - 32px);
+  margin:12px 16px 0;padding:6px 12px;
   background:var(--hover);border-radius:var(--r-pill);
   font-size:12px;color:var(--tertiary);
   display:flex;align-items:center;gap:6px;
@@ -186,7 +186,7 @@ html[data-view="memory"] .tabpill{display:none}
 
 /* ================= Live-presence card ================= */
 .live-card{
-  flex:none;margin:10px 14px 0;padding:14px 16px;
+  flex:none;margin:12px 16px 0;padding:14px 16px;
   background:var(--card);border:none;border-radius:var(--r-card);
 }
 html[data-view="memory"] .live-card{display:none}
@@ -255,7 +255,7 @@ html[data-capture="editing"] .caret{display:none}
 
 /* ================= Recorder card ================= */
 .rec-card{
-  flex:none;margin:10px 14px 0;padding:14px 16px;
+  flex:none;margin:12px 16px 0;padding:14px 16px;
   background:var(--card);border:none;border-radius:var(--r-card);
 }
 html[data-record="on"] .live-card{display:none}
@@ -280,7 +280,7 @@ html[data-view="memory"] .rec-card{display:none}
 /* A SEPARATE live card from the voice recorder, so the two never interfere.
    Same shape and coral "recording" cue; teal border to read as screen. */
 .screenrec-card{
-  flex:none;margin:10px 14px 0;padding:14px 16px;
+  flex:none;margin:12px 16px 0;padding:14px 16px;
   background:var(--card);border:none;border-radius:var(--r-card);
 }
 html[data-screenrec="on"] .live-card{display:none}
@@ -344,15 +344,15 @@ html[data-phase="screen_trim"] .st-dot{animation:blink 1.1s infinite}
 /* ================= Thread ================= */
 .thread{
   flex:1;min-height:0;overflow-y:auto;
-  display:flex;flex-direction:column;gap:10px;
-  padding:12px 14px 14px;
+  display:flex;flex-direction:column;gap:12px;
+  padding:16px;
 }
 .thread::-webkit-scrollbar{width:0}
 html[data-view="memory"] .thread{display:none}
 
 .empty-state{
-  margin:auto;padding:24px 18px;text-align:center;
-  font-size:13.5px;line-height:1.55;color:var(--tertiary);
+  margin:auto;padding:24px 18px;text-align:center;max-width:300px;
+  font-size:14px;line-height:1.55;color:var(--gray-light);
 }
 
 @keyframes riseIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -393,10 +393,10 @@ html[data-view="memory"] .thread{display:none}
   padding:12px 14px;display:flex;align-items:flex-start;gap:10px;
 }
 .qcap .qc-ic{
-  width:20px;height:20px;border-radius:50%;flex:none;margin-top:1px;
+  width:28px;height:28px;border-radius:var(--radius-tile);flex:none;
   background:var(--green);color:#fff;display:grid;place-items:center;
 }
-.qcap .qc-ic svg{width:11px;height:11px}
+.qcap .qc-ic svg{width:14px;height:14px;stroke-width:2.5px}
 .qcap .qc-txt{flex:1;min-width:0}
 .qcap .qc-t{font-size:13.5px;font-weight:700;color:var(--green)}
 .qcap .qc-s{font-size:12px;color:var(--secondary);margin-top:1px}
@@ -414,11 +414,16 @@ html[data-view="memory"] .thread{display:none}
   background:var(--card);border:none;border-radius:var(--r-card);
   padding:14px 16px;
 }
-.ac-head{display:flex;align-items:center;gap:7px;margin-bottom:8px}
-.ac-head svg{width:15px;height:15px;color:var(--tertiary);flex:none}
+.ac-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+/* icon tile: rounded square, solid accent fill, single white glyph */
+.ac-head svg{
+  width:32px;height:32px;padding:8px;flex:none;
+  background:var(--blue);color:#fff;border-radius:var(--radius-tile);
+  stroke-width:2.5px;
+}
 .ac-label{
-  font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--tertiary);
+  font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--gray-light);
 }
 .ac-meta{margin-left:auto;font-size:12px;color:var(--placeholder);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%}
 .ac-q{font-size:13px;font-style:italic;color:var(--tertiary);margin:0 0 8px}
@@ -479,8 +484,8 @@ html[data-view="memory"] .thread{display:none}
   flex:1 1 30%;min-width:88px;
   background:var(--bg);border-radius:12px;padding:10px 11px;
 }
-.ac-tile .tv{font-family:var(--f-mono);font-size:16px;font-weight:600;color:var(--ink);line-height:1.2;word-break:break-word}
-.ac-tile .tl{font-size:11.5px;color:var(--tertiary);margin-top:2px}
+.ac-tile .tv{font-size:17px;font-weight:700;color:var(--ink);line-height:1.2;word-break:break-word}
+.ac-tile .tl{font-size:12px;color:var(--gray-light);margin-top:2px}
 .ac-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .ac-chip{
   display:inline-flex;align-items:center;gap:6px;
@@ -531,7 +536,7 @@ html[data-voice="off"] .spoken-line{display:none}
 
 /* ================= In-panel audio player ================= */
 .player{
-  flex:none;margin:0 14px 10px;padding:9px 11px;
+  flex:none;margin:0 16px 12px;padding:9px 11px;
   background:var(--card);border:none;border-radius:var(--r-card);
   display:flex;align-items:center;gap:10px;
   animation:riseIn .2s var(--ease) both;
@@ -572,7 +577,7 @@ html[data-voice="off"] .spoken-line{display:none}
 .composer{
   flex:none;
   display:flex;align-items:flex-end;gap:8px;
-  padding:10px 14px 6px;
+  padding:10px 16px 6px;
 }
 html[data-view="memory"] .composer{display:none}
 .composer input{
@@ -603,7 +608,7 @@ html[data-view="memory"] .composer{display:none}
    while she searches the web. Inactive icons stay muted gray. */
 .modebar{
   flex:none;display:flex;align-items:center;justify-content:center;gap:18px;
-  padding:2px 14px 12px;
+  padding:2px 16px 12px;
 }
 /* the mode bar stays put in the memory view too, so the memory button below
    can toggle the two views back and forth from a fixed spot */
