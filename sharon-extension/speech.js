@@ -256,8 +256,9 @@ export function speak(text, { onDone } = {}) {
   onDoneSpeaking = onDone || null;
   // Recorder non-idle: her voice must never land in the recording (or talk
   // over the upload), so nothing is spoken — replies still render, only
-  // the audio is skipped.
-  if (recorderState !== "idle" || !synth || !cb.getSettings().readAloud || !full) {
+  // the audio is skipped. Dictation is the same deal: her voice would be
+  // transcribed straight into the user's note.
+  if (recorderState !== "idle" || dictationCb || !synth || !cb.getSettings().readAloud || !full) {
     // Nothing will be spoken — settle, then signal completion.
     const done = onDoneSpeaking;
     onDoneSpeaking = null;
@@ -620,6 +621,9 @@ export function setRecorderState(state, callbacks) {
   recorderState = state;
 
   if (state === "recording") {
+    // The recorder outranks dictation: end it first, which also restores the
+    // mic's true muted state before the recorder snapshots it below.
+    stopDictation();
     recorderCb = { onFinal: () => {}, onInterim: () => {}, ...(callbacks || {}) };
     recorderPrevMuted = micMuted;
     stopSpeaking(); // she goes quiet the instant recording starts
@@ -647,6 +651,59 @@ export function setRecorderState(state, callbacks) {
     if (recorderPrevMuted) setMicMuted(true); // restore exactly what was there
     recorderPrevMuted = false;
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Dictation mode — the Notes editor borrows the ears, the same contract as
+ * the recorder: while active, EVERY recognition result is rerouted to the
+ * dictation callback and the assist pipeline is unreachable, so dictated
+ * words can never become commands. Sharon's voice stays quiet (see speak()),
+ * the mic runs even if the user had muted it, and stopping restores the
+ * mute state exactly as it was. A short grace window after stopping keeps
+ * trailing dictation audio from leaking into the conversation. The recorder
+ * always outranks dictation: it can't start while the recorder owns the
+ * ears, and a recording that starts mid-dictation ends the dictation first.
+ * ------------------------------------------------------------------ */
+const POST_DICTATION_GRACE_MS = 1000; // trailing dictation audio ≠ a command
+
+let dictationCb = null; // set = dictation owns every recognition result
+let dictationPrevMuted = false;
+let dictationEndedAt = 0;
+
+export function dictationActive() {
+  return !!dictationCb;
+}
+
+export function startDictation(onFinal) {
+  if (recorderState !== "idle") return false; // the recorder owns the ears
+  if (dictationCb) {
+    dictationCb = typeof onFinal === "function" ? onFinal : dictationCb;
+    return true;
+  }
+  dictationCb = typeof onFinal === "function" ? onFinal : function () {};
+  dictationPrevMuted = micMuted;
+  stopSpeaking(); // she goes quiet the instant dictation starts
+  // Dictation needs the engine live even if the user had muted; the tap on
+  // the dictate button is a fresh gesture, so a stale block is worth retrying.
+  micBlocked = false;
+  micMuted = false;
+  startRecognition();
+  return true;
+}
+
+export function stopDictation() {
+  if (!dictationCb) return;
+  dictationCb = null;
+  dictationEndedAt = Date.now();
+  // abort() discards anything the engine still owes us — a stop() would
+  // flush buffered dictation out as fresh finals into the conversation.
+  abortRecognition();
+  if (dictationPrevMuted) setMicMuted(true); // restore exactly what was there
+  dictationPrevMuted = false;
+}
+
+function dictationSealOpen() {
+  return !dictationCb && Date.now() - dictationEndedAt >= POST_DICTATION_GRACE_MS;
 }
 
 /* ------------------------------------------------------------------ *
@@ -712,6 +769,18 @@ function handleHeard(finalText, interimText, conf) {
     return;
   }
   if (!recorderSealOpen()) return;
+
+  // Dictation (the Notes editor): every result types into the note instead
+  // of the conversation; from stop until the grace window closes, trailing
+  // dictation audio is discarded so it can never become a command.
+  if (dictationCb) {
+    if (finalText) {
+      lastHeardAt = Date.now();
+      dictationCb(finalText, conf);
+    }
+    return;
+  }
+  if (!dictationSealOpen()) return;
 
   // Playback mode (rule 7): nothing heard while a recording plays — or in
   // its short echo tail — ever reaches the assist flow. Confident speech
@@ -846,7 +915,16 @@ function ensureRecognition() {
       if (recorderState === "recording") {
         lastHeardAt = Date.now();
         recorderCb.onFinal(orphan, null);
-      } else if (recorderSealOpen() && !playbackGuardActive() && !echoFilterActive()) {
+      } else if (dictationCb) {
+        // Dictation: an orphan caught mid-dictation belongs in the note.
+        lastHeardAt = Date.now();
+        dictationCb(orphan, null);
+      } else if (
+        recorderSealOpen() &&
+        dictationSealOpen() &&
+        !playbackGuardActive() &&
+        !echoFilterActive()
+      ) {
         // Rule 6: an orphan around a recording belongs to the recording.
         // Rule 7: an orphan caught mid-playback may be the playback itself.
         // Echo window: an orphan caught while she speaks (or just after) is

@@ -28,6 +28,20 @@ memory, act on page), executes the database tools against the Sheet, and
 returns one combined answer. One round trip per turn keeps her fast.
 
 
+What's new in v7.4.0 — the Notes tab
+------------------------------------
+- A new pencil button in the bottom mode bar opens Notes: a simple notes app
+  right in the side panel. Browse every saved note newest-first, copy any
+  note with one tap, and paste or type a new note up top (the first line
+  becomes its title). Tap a row to edit the title and body, copy the note,
+  or hit the mic and dictate straight into it — Sharon's normal listening
+  pauses while you dictate and picks back up exactly where it was.
+- REMINDER: redeploy backend/Code.gs once (Sheet → Extensions → Apps Script,
+  paste the latest Code.gs, then Deploy → Manage deployments → edit →
+  Version: "New version" → Deploy) so the panel can CREATE notes directly.
+  Browsing, copying, and editing notes work against your existing deployment.
+
+
 What's new in v7 (the big overhaul)
 -----------------------------------
 - Real conversation: the last dozen exchanges ride along with every request,
