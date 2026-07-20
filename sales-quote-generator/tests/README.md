@@ -69,6 +69,12 @@ email → one valid email + partnerEmail), `analyze.js` ("Insight Preview" →
 Aerospace Corp." unchanged, hand-typed "Preview Inc" with no sourceUrl unchanged,
 invalid email blanked).
 
+Also covers the v3.5 PDF output-formatting guards, from a real broken PDF: a
+Bill To / Ship To address first line that duplicates the block's party name (or
+the customer, on partner deals) is dropped so the company never prints twice,
+and a run-on dictation glob fused onto ".com" is rejected by the email guard
+(prints blank) and is never captured by the voice parser in the first place.
+
 ## Run it
 
 ```bash

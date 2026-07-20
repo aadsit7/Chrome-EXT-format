@@ -9,8 +9,10 @@ WHERE TO PASTE THIS (5 steps):
    fill" (mode:"voice") — through the one analyzePage_ handler.
 4. In doPost(e), route the request so action "analyzePage" calls analyzePage_(data)
    — e.g.  if (data.action === 'analyzePage') return json_(analyzePage_(data));
-   (see the doPost snippet at the very bottom; keep your saveQuote/registerUser
-   branches exactly as they are).
+   — and action "addressLookup" calls addressLookup_(data) (the "Look up
+   address" button, extension v3.5+; optional — without it the extension falls
+   back to its built-in OpenStreetMap lookup). See the doPost snippet at the
+   very bottom; keep your saveQuote/registerUser branches exactly as they are.
 5. Save, then Deploy ▸ Manage deployments ▸ edit the existing deployment ▸
    "New version" ▸ Deploy. The URL stays the same, so no extension change is needed.
 =============================================================================
@@ -321,14 +323,56 @@ function callGenerativeModel_(prompt) {
   return (part && part.text) ? part.text : '';
 }
 
+/**
+ * "Look up address" server brain (extension v3.5+, Billing details).
+ *
+ * Input  (POST JSON):  { action:"addressLookup", company:"<company name>" }
+ * Output (JSON only):  { ok:true, address:"Street\nCity, State ZIP\nCountry" }
+ *                      address:"" when the company can't be identified.
+ *
+ * The extension asks THIS handler first for the company's corporate mailing /
+ * headquarters address (AI-curated, well formatted). If this deployment doesn't
+ * have the handler yet (doPost answers ok:false "unknown action") or the call
+ * fails, the extension automatically falls back to its built-in keyless
+ * OpenStreetMap lookup — so nothing breaks either way; pasting this just
+ * upgrades the answer quality. The filled address is always labeled
+ * "Auto-filled — please verify" in the panel.
+ */
+function addressLookup_(data) {
+  var company = (data && data.company != null) ? String(data.company).trim() : '';
+  if (!company) return { ok: true, address: '' };
+  var prompt =
+    'You are looking up the corporate mailing address (headquarters) of a company ' +
+    'for a sales quote "Bill To" block.\n' +
+    'Company: "' + company + '"\n\n' +
+    'Return ONLY a JSON object, no prose, no markdown fences, exactly:\n' +
+    '{ "address": "<street address>\\n<city, state/region postal code>\\n<country>" }\n' +
+    'Rules:\n' +
+    '- Use the company\'s primary/global headquarters mailing address.\n' +
+    '- 2 or 3 lines joined with \\n; do NOT repeat the company name in the address.\n' +
+    '- If you are not confident you know this company\'s address, return { "address": "" } ' +
+    'instead of guessing a made-up street address.';
+  var raw;
+  try {
+    // Reuse your existing model helper here if you have one, e.g. callGemini_(prompt);
+    raw = callGenerativeModel_(prompt);
+  } catch (err) {
+    return { ok: false, error: String(err) }; // extension falls back to OpenStreetMap
+  }
+  var parsed = extractJson_(raw);
+  var address = (parsed && parsed.address != null) ? String(parsed.address).trim() : '';
+  return { ok: true, address: address };
+}
+
 /* --- doPost routing reminder (keep your other branches unchanged) ---
 
 function doPost(e) {
   var data = {};
   try { data = JSON.parse(e.postData.contents) || {}; } catch (err) { data = {}; }
-  if (data.action === 'analyzePage')  return json_(analyzePage_(data));
-  if (data.action === 'saveQuote')    return json_(handleSaveQuote_(data));    // your existing code
-  if (data.action === 'registerUser') return json_(handleRegisterUser_(data)); // your existing code
+  if (data.action === 'analyzePage')   return json_(analyzePage_(data));
+  if (data.action === 'addressLookup') return json_(addressLookup_(data));     // "Look up address" (v3.5+)
+  if (data.action === 'saveQuote')     return json_(handleSaveQuote_(data));   // your existing code
+  if (data.action === 'registerUser')  return json_(handleRegisterUser_(data)); // your existing code
   return json_({ ok: false, error: 'unknown action' });
 }
 

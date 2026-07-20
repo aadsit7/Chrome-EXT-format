@@ -1262,29 +1262,60 @@ function sectionWho(v) {
   return section;
 }
 
-/* ---- Billing-address lookup (Change 3) ----
+/* ---- Billing-address lookup (Change 3 — now LIVE) ----
    "Look up address" uses the company name to look up the company's mailing /
    headquarters address online and fills it into the Bill To address box, below
-   the company-name first line (Change 2c). The lookup SERVICE is not chosen
-   yet, so ADDRESS_LOOKUP_SERVICE stays null and the button only explains that a
-   service needs to be connected — it never crashes or throws.
+   the company-name first line (Change 2c). It works out of the box, two tiers:
 
-   TODO: connect the chosen address-lookup service here. Replace the `null`
-   below with an implementation of the form
-       async function (companyName) { ... return 'Street\nCity, State ZIP\nCountry'; }
-   returning the company's mailing/headquarters address as a multi-line string
-   (or ''/null when nothing is found). Everything else — the button, the
-   company-name first line, the "Auto-filled — please verify" note, and the
-   never-overwrite-a-hand-typed-address guard — is already wired up. */
-const ADDRESS_LOOKUP_SERVICE = null;
+     1. The tool's own Apps Script backend (the same web app that powers page
+        analysis and quote saves): action "addressLookup" returns an AI-curated
+        corporate mailing address. See APPS-SCRIPT-UPGRADE.txt for the paste-in
+        server handler; an older deployment that doesn't know the action simply
+        rejects and tier 2 takes over — nothing breaks.
+     2. Keyless fallback: OpenStreetMap's public Nominatim geocoder (no API key,
+        no signup), searched as "<company> headquarters" then plain "<company>".
+
+   Either way the result is best-guess: it fills below the company-name first
+   line, shows "Auto-filled — please verify", and NEVER overwrites an address
+   the user typed. To swap in a different provider later, replace this function
+   (same shape: async (companyName) → multi-line address string, ''/null when
+   nothing is found). */
+async function ADDRESS_LOOKUP_SERVICE(companyName) {
+  try {
+    if (window.SQG_SHEETS && typeof window.SQG_SHEETS.lookupAddress === 'function') {
+      const addr = await window.SQG_SHEETS.lookupAddress(companyName);
+      if (addr) return addr;
+    }
+  } catch (e) { /* backend unavailable or pre-upgrade deployment — use tier 2 */ }
+  return lookupAddressViaOpenStreetMap(companyName);
+}
+
+/* Tier 2 — OpenStreetMap Nominatim (public, keyless; one request per click).
+   Returns 'Street\nCity, State ZIP\nCountry' built from the top result's
+   structured address, or '' when nothing plausible is found. */
+async function lookupAddressViaOpenStreetMap(companyName) {
+  const queryOnce = async (q) => {
+    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=1&accept-language=en&q=' + encodeURIComponent(q);
+    const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const list = await resp.json();
+    return Array.isArray(list) && list[0] ? list[0] : null;
+  };
+  const hit = (await queryOnce(companyName + ' headquarters')) || (await queryOnce(companyName));
+  if (!hit) return '';
+  const a = hit.address || {};
+  const street = [a.house_number, a.road].filter(Boolean).join(' ');
+  const city = a.city || a.town || a.village || a.municipality || a.county || '';
+  const line2 = [city, [a.state, a.postcode].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  const lines = [street, line2, a.country].map((s) => String(s || '').trim()).filter(Boolean);
+  if (lines.length) return lines.join('\n');
+  // No structured parts — fall back to the display name minus the leading POI name.
+  const disp = String(hit.display_name || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return disp.length > 1 ? disp.slice(1).join(', ') : '';
+}
 
 function lookupBillingAddress() {
   const q = state.quote;
-  if (typeof ADDRESS_LOOKUP_SERVICE !== 'function') {
-    // No lookup service configured yet — say so and do nothing else.
-    flash('Connect an address-lookup service to use this', 'warn');
-    return;
-  }
   const company = String(q.customer || '').trim();
   if (!company) {
     state.sections.who = true;

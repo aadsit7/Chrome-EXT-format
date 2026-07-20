@@ -197,15 +197,18 @@ USING THE TOOL
   fields left blank print as blank space on the PDF. Like every other
   field, these save with the quote (localStorage) and are restored
   when you reopen the panel.
-- "Look up address" (a small button under the Bill To address box) is
-  meant to fill the company's mailing/headquarters address from an
-  online lookup, below the company-name first line. The lookup SERVICE
-  is not chosen yet: until one is connected (see the TODO on
-  ADDRESS_LOOKUP_SERVICE in app.js) the button just shows "Connect an
-  address-lookup service to use this" and does nothing else. Once a
-  service is connected, a looked-up address shows an "Auto-filled —
-  please verify" note next to the box, and an address you typed
-  yourself is never overwritten.
+- "Look up address" (a small button under the Bill To address box)
+  fills the company's mailing/headquarters address from an online
+  lookup, below the company-name first line. It works out of the box,
+  in two tiers: first it asks the tool's own Apps Script web app
+  (action "addressLookup" — paste-in handler in APPS-SCRIPT-UPGRADE.txt)
+  for an AI-curated corporate address; if that deployment doesn't have
+  the handler yet or the call fails, it falls back to OpenStreetMap's
+  public keyless Nominatim geocoder automatically. The result is a
+  best guess: it shows an "Auto-filled — please verify" note next to
+  the box, and an address you typed yourself is never overwritten. To
+  swap in a different provider later, replace ADDRESS_LOOKUP_SERVICE
+  in app.js (same shape: async company name → multi-line address).
 - "Create quote" downloads a one-page Recast-branded quote PDF that
   matches the official Recast Software quote form: the Recast logo
   and company address, the quote number, a Bill To / Ship To block,
@@ -220,7 +223,12 @@ USING THE TOOL
   To block shows the customer and ship-to address; and Order Details
   shows billing contact, email, payment method, currency and payment
   terms. Blank fields simply print as blank space — never a stray label
-  or the word "undefined". The file is named after the quote number
+  or the word "undefined". The Bill To / Ship To blocks never repeat the
+  company name: an address first line that duplicates the block's own
+  name (the billing auto-mirror keeps the company on the Bill To first
+  line in the panel) is dropped at print time, and an email that isn't a
+  single valid address — including a run-on dictation glob fused onto
+  ".com" — prints blank. The file is named after the quote number
   (e.g. QT-2026-1234.pdf). All pricing shown is the same computed total
   already displayed in the app — the PDF never re-derives pricing math,
   and everything is laid out to always fit on one page (the Terms &
@@ -279,12 +287,14 @@ PERMISSIONS
               function in the active tab (via chrome.scripting).
 - host_permissions "http://*/*" and "https://*/*" — so "Analyze this
               page" works on any normal website when you click it, and so
-              the automatic save, first-run registration, and the AI page
-              analysis can reach the Google Apps Script web app
-              (script.google.com / script.googleusercontent.com). No new
-              permissions were added. The extension does not read pages in
-              the background; it only reads a tab when you press "Analyze
-              this page".
+              the automatic save, first-run registration, the AI page
+              analysis, and the "Look up address" lookup can reach the
+              Google Apps Script web app (script.google.com /
+              script.googleusercontent.com) and, for the address fallback,
+              nominatim.openstreetmap.org. No new permissions were added.
+              The extension does not read pages in the background; it only
+              reads a tab when you press "Analyze this page", and it only
+              performs an address lookup when you press "Look up address".
 - microphone  Not a manifest permission. "Speak to fill" uses the
               browser's built-in Web Speech API, which asks for microphone
               access with the standard browser prompt the first time you

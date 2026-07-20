@@ -115,6 +115,35 @@ console.log('── Value cleaning (Bugs 2 & 3) — exact broken strings from th
     'bob at simple services', '', m.email);
 }
 
+/* ---- PDF output-formatting guards (v3.5) ----
+   From a real broken PDF: the billing auto-mirror puts the company name on the
+   first line of the Bill To address, but the PDF already prints the party name —
+   the duplicate line must be dropped. And a run-on dictation glob fused onto
+   ".com" must never print as an email. */
+console.log('── PDF output formatting (v3.5) ──\n');
+{
+  const m = cleanedMeta({ customer: 'Amazon', billToName: 'Amazon', shipToName: 'Amazon',
+    billToAddress: 'Amazon\n410 Terry Ave N\nSeattle, WA 98109', email: 'a@b.com' }, '');
+  check('10. PDF: duplicate company first line dropped from Bill To', 'cleanMeta (dropLeadingNameLine)',
+    'Amazon\\n410 Terry Ave N\\n…', '410 Terry Ave N\nSeattle, WA 98109', m.billToAddress);
+
+  const m2 = cleanedMeta({ customer: 'Amazon', billToName: 'Amazon',
+    billToAddress: '410 Terry Ave N\nSeattle, WA 98109', email: 'a@b.com' }, '');
+  check('11. PDF: non-duplicate first line kept', 'cleanMeta (dropLeadingNameLine)',
+    '410 Terry Ave N…', '410 Terry Ave N\nSeattle, WA 98109', m2.billToAddress);
+
+  // Partner deal: billToName is the reseller but the mirror wrote the CUSTOMER
+  // into the first line — still deduped (checked against customer too).
+  const m3 = cleanedMeta({ customer: 'Amazon', billToName: 'Reseller Inc',
+    billToAddress: 'Amazon\n1 Partner Way\nDuluth, MN', email: 'a@b.com' }, '');
+  check('12. PDF: customer-name first line dropped on a partner deal', 'cleanMeta (dropLeadingNameLine)',
+    'Amazon\\n1 Partner Way…', '1 Partner Way\nDuluth, MN', m3.billToAddress);
+
+  const m4 = cleanedMeta({ customer: 'Acme', email: 'johnsmith@amazon.comthelookupaddressshould', partnerEmail: '' }, '');
+  check('13. PDF: run-on dictation glob never prints as the email', 'cleanMeta (validEmail TLD cap)',
+    'johnsmith@amazon.comthelookupaddressshould', '', m4.email);
+}
+
 /* ---- extra guards that back the six above (no false positives) ---- */
 console.log('── supporting guards ──\n');
 {

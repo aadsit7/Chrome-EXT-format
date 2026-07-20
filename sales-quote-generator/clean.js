@@ -67,11 +67,38 @@
   }
 
   /* A value is a printable email only if it is exactly one syntactically valid
-     address. Anything else ("bob at simple services", garbage, blank) is not. */
-  var EMAIL_RX = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
+     address. Anything else ("bob at simple services", garbage, blank) is not.
+     The final label (TLD) is capped at 18 letters — the longest real TLDs are
+     18 — so a run-on dictation glob fused onto ".com" (e.g.
+     "…@amazon.comthelookupaddressshould…") is rejected and prints blank. */
+  var EMAIL_RX = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,18}$/;
   function validEmail(s) {
     if (s == null) return false;
     return EMAIL_RX.test(String(s).trim());
+  }
+
+  /* The billing auto-mirror (v3.4+) keeps the company name as the FIRST LINE of
+     the Bill To address box, but the PDF's Bill To / Ship To blocks already
+     print the party name on a line of their own — so a first address line that
+     merely repeats that name would print the company twice. Drop it (tolerant
+     compare: case / punctuation / spacing ignored); any other first line stays. */
+  function sameName(a, b) {
+    var key = function (s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ''); };
+    var ka = key(a), kb = key(b);
+    return !!ka && ka === kb;
+  }
+  function dropLeadingNameLine(address, names) {
+    var s = String(address == null ? '' : address);
+    if (!s.trim()) return s;
+    var lines = s.split('\n');
+    for (var i = 0; i < names.length; i++) {
+      if (sameName(lines[0], names[i])) {
+        var rest = lines.slice(1);
+        while (rest.length && !rest[0].trim()) rest.shift();
+        return rest.join('\n');
+      }
+    }
+    return s;
   }
 
   /* Final guard applied to the PDF meta object (app.js buildQuoteData):
@@ -94,10 +121,16 @@
     });
     if (!validEmail(m.email)) m.email = '';
     if (!validEmail(m.partnerEmail)) m.partnerEmail = '';
+    // Never print the company name twice in an address block (see
+    // dropLeadingNameLine above). Checked against the block's own party name
+    // AND the customer (the mirror writes the customer into Bill To even on
+    // partner deals, where the bill-to party is the reseller).
+    if (m.billToAddress != null) m.billToAddress = dropLeadingNameLine(m.billToAddress, [m.billToName, m.customer]);
+    if (m.shipToAddress != null) m.shipToAddress = dropLeadingNameLine(m.shipToAddress, [m.shipToName, m.customer]);
     return m;
   }
 
-  var api = { scrubEdges: scrubEdges, trimTrailingPunct: trimTrailingPunct, validEmail: validEmail, cleanMeta: cleanMeta, ACTION_PHRASES: ACTION_PHRASES };
+  var api = { scrubEdges: scrubEdges, trimTrailingPunct: trimTrailingPunct, validEmail: validEmail, cleanMeta: cleanMeta, dropLeadingNameLine: dropLeadingNameLine, ACTION_PHRASES: ACTION_PHRASES };
   if (typeof window !== 'undefined') window.SQG_CLEAN = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })();

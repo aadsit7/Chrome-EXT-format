@@ -184,9 +184,35 @@ window.SQG_SHEETS = (function () {
       });
   }
 
+  /* Company address lookup ("Look up address" in Billing details) — POSTs
+     { action:'addressLookup', company } to the same Apps Script web app and
+     resolves to the company's mailing/headquarters address as a multi-line
+     string. Rejects on any transport/parse failure OR when the deployed script
+     doesn't know the action yet (older deployment), so app.js can fall back to
+     its keyless OpenStreetMap lookup. Never touches the quote itself. */
+  function lookupAddress(company) {
+    return fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'addressLookup', company: String(company == null ? '' : company) }),
+    })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.text();
+      })
+      .then(function (text) {
+        var data = {};
+        try { data = JSON.parse(text) || {}; } catch (e) { data = {}; }
+        if (data.ok === false) throw new Error('server reported failure'); // incl. "unknown action" pre-upgrade
+        var addr = (data.address == null ? '' : String(data.address)).trim();
+        if (!addr) throw new Error('no address returned');
+        return addr;
+      });
+  }
+
   // Attach the functions so app.js / analyze.js can wire them to the UI.
   window.saveQuoteToSheet = saveQuoteToSheet;
   window.registerUser = registerUser;
 
-  return { saveQuoteToSheet: saveQuoteToSheet, registerUser: registerUser, analyzePage: analyzePage };
+  return { saveQuoteToSheet: saveQuoteToSheet, registerUser: registerUser, analyzePage: analyzePage, lookupAddress: lookupAddress };
 })();
