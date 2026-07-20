@@ -30,7 +30,7 @@ const CATALOG = [
 ];
 function freshQuote() {
   return {
-    customer: '', email: '', partnerCompany: '', partnerEmail: '', billingContact: '',
+    customer: '', email: '', contactName: '', partnerCompany: '', partnerEmail: '', billingContact: '',
     billToAddress: '', shipToAddress: '', expires: '', currency: '', coTermDate: '',
     months: 12, years: 1, lines: [], renewLines: [],
     // deal / discount / support state the AI review path (Task 2) can fill
@@ -125,6 +125,13 @@ function runRulePath(label, html, url, expect) {
   check(label, 'customer', expect.customer, pick(findings, 'customer') && pick(findings, 'customer').value);
   if (expect.partner) check(label, 'partner', expect.partner, pick(findings, 'partnerCompany') && pick(findings, 'partnerCompany').value);
   else checkAbsent(label, 'partner', pick(findings, 'partnerCompany') && pick(findings, 'partnerCompany').value);
+  // The detected contact (Contact Roles primary) fills the NEW "Contact name"
+  // field (Change 2b) — it must arrive as a contactName finding, never as a
+  // direct billingContact write (Billing contact fills via the app's mirror).
+  if (expect.contactName) {
+    check(label, 'contact name', expect.contactName, pick(findings, 'contactName') && pick(findings, 'contactName').value);
+    checkAbsent(label, 'billingContact finding', pick(findings, 'billingContact') && pick(findings, 'billingContact').value);
+  }
   check(label, 'renewal date', expect.renewalDate, pick(findings, 'coTermDate') && pick(findings, 'coTermDate').value);
   checkEq(label, 'term months', expect.termMonths, pick(findings, 'term') && pick(findings, 'term').months);
   const pl = productLine(findings);
@@ -145,6 +152,11 @@ function runAiPath(label, data, expect) {
   const res = A._buildAiFindings(data);
   const findings = res.findings;
   check(label + ' (AI)', 'customer', expect.customer, pick(findings, 'customer') && pick(findings, 'customer').value);
+  // Change 2b — the AI's contactName maps to the new "Contact name" field.
+  if (expect.contactName) {
+    check(label + ' (AI)', 'contact name', expect.contactName, pick(findings, 'contactName') && pick(findings, 'contactName').value);
+    checkAbsent(label + ' (AI)', 'billingContact finding', pick(findings, 'billingContact') && pick(findings, 'billingContact').value);
+  }
   if (expect.partner) check(label + ' (AI)', 'partner', expect.partner, pick(findings, 'partnerCompany') && pick(findings, 'partnerCompany').value);
   checkEq(label + ' (AI)', 'term months', expect.termMonths, pick(findings, 'term') && pick(findings, 'term').months);
   const pl = productLine(findings);
@@ -240,24 +252,25 @@ async function runSnapshot(label, html, url, mustContain, mustExclude, orderBefo
 /* ============================ RUN ============================ */
 (async function () {
   runRulePath('NEW BUSINESS (Insight - AW MSP)', fx.NEW_BUSINESS_HTML, fx.NEW_BUSINESS_URL, {
-    customer: 'Insight', partner: null, renewalDate: '2026-11-25', termMonths: 12, product: 'Application Workspace', quantity: 10000,
+    customer: 'Insight', partner: null, contactName: 'Adam Duffy', renewalDate: '2026-11-25', termMonths: 12, product: 'Application Workspace', quantity: 10000,
   });
   runRulePath('RENEWAL (Gulfstream Aerospace Corp.)', fx.RENEWAL_HTML, fx.RENEWAL_URL, {
-    customer: 'Gulfstream Aerospace Corp.', partner: 'Insight', renewalDate: '2027-09-29', termMonths: 12, product: 'Right Click Tools', quantity: 20000,
+    customer: 'Gulfstream Aerospace Corp.', partner: 'Insight', contactName: 'Travis Xiong', renewalDate: '2027-09-29', termMonths: 12, product: 'Right Click Tools', quantity: 20000,
   });
 
   runAiPath('NEW BUSINESS (Insight - AW MSP)', fx.NEW_BUSINESS_AI, {
-    customer: 'Insight', partner: null, termMonths: 12, product: 'Application Workspace', quantity: 10000,
+    customer: 'Insight', partner: null, contactName: 'Adam Duffy', termMonths: 12, product: 'Application Workspace', quantity: 10000,
   });
   runAiPath('RENEWAL (Gulfstream Aerospace Corp.)', fx.RENEWAL_AI, {
-    customer: 'Gulfstream Aerospace Corp.', partner: 'Insight', renewalDate: '2027-09-29', termMonths: 12, product: 'Right Click Tools', quantity: 20000,
+    customer: 'Gulfstream Aerospace Corp.', partner: 'Insight', contactName: 'Travis Xiong', renewalDate: '2027-09-29', termMonths: 12, product: 'Right Click Tools', quantity: 20000,
   });
 
   // Task 2 — the extended deal/discount/support schema the voice review path returns.
+  // contactName (Change 2b) applies through the same scalar path into q.contactName.
   runExtendedAiPath('VOICE (Amazon, net new, 15% off)',
-    { isRenewal: false, customer: 'Amazon', customerType: 'new', extraDiscountPct: 15, partnerMarginPct: 20, premiumSupport: true, termMonths: 24, lines: [{ productId: 'aw', qty: 500 }] },
-    { customer: 'Amazon', customerType: 'new', extraPct: 15, partnerMargin: 20, premiumSupport: true },
-    { customer: 'Amazon', customerType: 'new', extraPct: 15, partner: true, marginNewPct: 20, supportAll: true, months: 24, years: 2, lines: { productId: 'aw', qty: 500 } });
+    { isRenewal: false, customer: 'Amazon', contactName: 'John Buyer', customerType: 'new', extraDiscountPct: 15, partnerMarginPct: 20, premiumSupport: true, termMonths: 24, lines: [{ productId: 'aw', qty: 500 }] },
+    { customer: 'Amazon', contactName: 'John Buyer', customerType: 'new', extraPct: 15, partnerMargin: 20, premiumSupport: true },
+    { customer: 'Amazon', contactName: 'John Buyer', customerType: 'new', extraPct: 15, partner: true, marginNewPct: 20, supportAll: true, months: 24, years: 2, lines: { productId: 'aw', qty: 500 } });
 
   runExtendedAiPath('VOICE (renewal, current customer)',
     { isRenewal: true, customer: 'Globex', dealType: 'ren' },

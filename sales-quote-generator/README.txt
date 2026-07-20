@@ -109,9 +109,17 @@ USING THE TOOL
       "annual increase 3 percent", "premium support"
     • term & type — "two year term", "eighteen month term", "net new",
       "current customer", "renewal", "add-on and renewal"
-    • text fields — "customer is Acme Corporation", "contact Jane Doe",
-      "email jane at acme dot com", "partner company Reseller Inc",
-      "prepared by …", "currency euros", "payment terms Net 30"
+    • text fields — "customer is Acme Corporation", "contact name Jane Doe"
+      (fills the Contact name field; "billing contact …" targets the
+      Billing contact field directly), "email jane at acme dot com",
+      "partner company Reseller Inc", "prepared by …", "currency euros",
+      "payment terms Net 30"
+  Company names are captured in FULL — multi-word names, names containing
+  "and" ("Procter and Gamble") and names starting with a number word
+  ("Seven Hills Software") come through whole — and a spoken name that
+  closely matches a company name already on the quote (customer or
+  partner company, e.g. filled by "Analyze this page") snaps to that
+  known spelling.
   It also drives the rest of the extension by voice — spoken commands, run
   once each (they never repeat when the transcript is re-read):
     • navigation — "scroll down", "scroll up", "scroll to the top",
@@ -130,15 +138,18 @@ USING THE TOOL
   Click Tools 3,000 endpoints" to overwrite an earlier 2,500). Applied
   changes go through the form exactly like a manual edit — visible, saved,
   and reversible — and the pricing engine recomputes every total.
-  Tap the button again (or stop talking) to stop; the transcript is kept
-  in an editable box so you can fix a misheard word and press "Re-apply".
-  If the mic is blocked or nothing is heard you get a short message and
-  the button resets — it's never left stuck listening. Speech is
-  transcribed by the browser's built-in Web Speech API using the standard
-  microphone permission prompt — allow mic access the first time; the
-  transcription accuracy depends on your mic and surroundings, which is
-  why every change is shown live and stays editable. If your browser has
-  no speech support the microphone button simply doesn't appear.
+  Tap the button again (or stop talking) to stop. Stopping is SILENT:
+  there is no after-the-fact recap or confirmation panel — the values you
+  spoke are already in the form, a short toast reports how many fields
+  were filled, and all voice state is cleared so nothing lingers on
+  screen. To correct a misheard value, say it again (latest wins) or edit
+  the field directly. If the mic is blocked or nothing is heard you get a
+  short message and the button resets — it's never left stuck listening.
+  Speech is transcribed by the browser's built-in Web Speech API using
+  the standard microphone permission prompt — allow mic access the first
+  time; the transcription accuracy depends on your mic and surroundings,
+  which is why every change is shown live as you speak. If your browser
+  has no speech support the microphone button simply doesn't appear.
 - The "New quote" button (the page-with-a-plus icon in the header, next
   to the gear) starts a fresh quote: it clears every field and resets
   the calculator to its defaults with a new quote number. Because this
@@ -166,6 +177,17 @@ USING THE TOOL
   Tap it to slide up the full quote breakdown (line items, discounts,
   billing schedule, savings); tap the dimmed area, the ×, or press
   Escape to close it.
+- "Who's it for?" holds Customer / company, Contact email, and a
+  Contact name field directly below the email (plus Prepared by and the
+  expiration date; partner fields appear on partner deals).
+- Billing auto-fill: whenever the company name or the contact name is
+  set — typed, spoken, or applied from "Analyze this page" — they are
+  mirrored into Billing details: the company name becomes the FIRST
+  LINE of the Bill To address box and the contact name fills the
+  Billing contact field. A billing field is only ever auto-filled while
+  it is empty or still auto-managed; the moment you type into a billing
+  field yourself, your entry wins and that field is never auto-
+  overwritten again (clearing it makes it auto-fillable again).
 - "Billing details (for PDF)" is a collapsible group at the bottom of
   "Who's it for?". It holds the fields that only appear on the quote
   PDF: Bill To address and Ship To address (multi-line), Billing
@@ -175,6 +197,15 @@ USING THE TOOL
   fields left blank print as blank space on the PDF. Like every other
   field, these save with the quote (localStorage) and are restored
   when you reopen the panel.
+- "Look up address" (a small button under the Bill To address box) is
+  meant to fill the company's mailing/headquarters address from an
+  online lookup, below the company-name first line. The lookup SERVICE
+  is not chosen yet: until one is connected (see the TODO on
+  ADDRESS_LOOKUP_SERVICE in app.js) the button just shows "Connect an
+  address-lookup service to use this" and does nothing else. Once a
+  service is connected, a looked-up address shows an "Auto-filled —
+  please verify" note next to the box, and an address you typed
+  yourself is never overwritten.
 - "Create quote" downloads a one-page Recast-branded quote PDF that
   matches the official Recast Software quote form: the Recast logo
   and company address, the quote number, a Bill To / Ship To block,
@@ -303,8 +334,10 @@ voice.js        "Speak to fill" — LIVE voice input. Transcribes speech with
                 and applies each recognized value to the matching field
                 immediately via setQ — no network round-trip. Re-saying a
                 value corrects it (latest wins); the section being filled
-                opens so the change is visible; after stopping, the
-                transcript stays editable for a "Re-apply". Also recognizes
+                opens so the change is visible; stopping is silent (all
+                voice state is cleared — no recap panel). Captures full
+                multi-word company names and snaps close matches to a
+                company name already on the quote. Also recognizes
                 one-shot COMMANDS from each new phrase (scroll up/down/top/
                 bottom, analyze this page, create/new quote, show/hide the
                 details sheet, open settings, expand/collapse a section) and

@@ -1224,6 +1224,10 @@ window.SQG_ANALYZE = (function () {
     var custV = scrubEdge(raw.customer);
     if (custV) out.push(scalarFinding('customer', 'Customer / company', custV, custV, q.customer));
     if (raw.email) out.push(scalarFinding('email', 'Contact email', raw.email, raw.email, q.email));
+    // Change 2b — the extractor's contact (Salesforce Contact Roles) fills the
+    // "Contact name" field, matching the AI path's contactName wiring.
+    var contactV = scrubEdge(raw.contactName);
+    if (contactV) out.push(scalarFinding('contactName', 'Contact name', contactV, contactV, q.contactName));
 
     // Account Name stays the customer; the reseller/partner is a separate company.
     var partner = scrubEdge(raw.partnerCompany || raw.billTo);
@@ -1417,8 +1421,10 @@ window.SQG_ANALYZE = (function () {
     // captured "Insight Preview" becomes "Insight"); email is not a scalar name.
     var aiCust = scrubEdge(S(data.customer));
     if (aiCust) out.push(scalarFinding('customer', 'Customer / company', aiCust, aiCust, q.customer));
+    // Change 2b — a detected contact fills the "Contact name" field in "Who's it
+    // for?" (it mirrors into Billing contact via the app's billing auto-mirror).
     var aiContact = scrubEdge(S(data.contactName));
-    if (aiContact) out.push(scalarFinding('billingContact', 'Billing contact', aiContact, aiContact, q.billingContact));
+    if (aiContact) out.push(scalarFinding('contactName', 'Contact name', aiContact, aiContact, q.contactName));
     if (S(data.email)) out.push(scalarFinding('email', 'Contact email', S(data.email), S(data.email), q.email));
     var aiPartner = scrubEdge(S(data.partnerCompany));
     if (aiPartner) {
@@ -1625,7 +1631,7 @@ window.SQG_ANALYZE = (function () {
     // coTermDate) plus the AI-only fields, so behaviour for the old ones is
     // unchanged and the new ones just work.
     var SCALAR_FIELDS = {
-      customer: 1, email: 1, partnerCompany: 1, partnerEmail: 1, billingContact: 1,
+      customer: 1, email: 1, contactName: 1, partnerCompany: 1, partnerEmail: 1, billingContact: 1,
       billToAddress: 1, shipToAddress: 1, expires: 1, currency: 1, coTermDate: 1,
     };
 
@@ -1717,8 +1723,9 @@ window.SQG_ANALYZE = (function () {
     var strip = (window.SQG_VOICE && typeof window.SQG_VOICE.liveStrip === 'function') ? window.SQG_VOICE.liveStrip() : null;
     if (strip) { wrap.append(strip); any = true; }
 
-    // Editable "here's what I heard" confirmation — shown after listening stops,
-    // before the words are sent to the AI (voice.js owns its state).
+    // Voice recap panel — retired (Change 1: voice is silent after stopping).
+    // reviewBox() is kept as a null-returning stub in voice.js, so this renders
+    // nothing; the call stays so voice.js keeps owning that decision.
     var vreview = (window.SQG_VOICE && typeof window.SQG_VOICE.reviewBox === 'function') ? window.SQG_VOICE.reviewBox() : null;
     if (vreview) { wrap.append(vreview); any = true; }
 
