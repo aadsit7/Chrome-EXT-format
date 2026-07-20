@@ -9,6 +9,14 @@ layout (`pdf.js`) and the value-cleaning guards (`clean.js` + `voice.js` +
 
 ## What it checks
 
+### `quotetypes.test.js` — app.js pure helpers
+
+Loads app.js head-less and drives `SQG_APP`: the quote-type enablement helpers
+(defaults / clamp / toggle guardrail) and — v3.6 — `osmPick`, the company-aware
+candidate filter behind "Look up address"'s OpenStreetMap fallback: the input is
+always a COMPANY name, so rivers / cities / bare place names are rejected and
+office/headquarters hits with a real street address win.
+
 ### `analyze.test.js` — "Analyze this page" + the AI review path
 
 Feeds two fixtures modeled on the attached PDFs (`fixtures.js` — a

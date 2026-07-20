@@ -1290,18 +1290,48 @@ async function ADDRESS_LOOKUP_SERVICE(companyName) {
   return lookupAddressViaOpenStreetMap(companyName);
 }
 
-/* Tier 2 — OpenStreetMap Nominatim (public, keyless; one request per click).
-   Returns 'Street\nCity, State ZIP\nCountry' built from the top result's
-   structured address, or '' when nothing plausible is found. */
+/* The lookup input is ALWAYS a COMPANY name — "Amazon" means the company
+   Amazon.com, Inc., never the river; "Apple" means Apple Inc., never the
+   fruit. Tier 2's geocoder results are therefore filtered before use: a
+   usable hit must be street-addressable (carry a house number or road), and
+   natural features / waterways / bare place names are rejected outright, so a
+   non-company match can never land in the Bill To address. Office-type
+   results and ones labeled "headquarters" outrank generic matches. Pure
+   (result list in → best candidate or null out); exposed on SQG_APP for the
+   tests harness. */
+function pickOsmCandidate(list) {
+  const REJECT_CLASS = { natural: 1, waterway: 1, boundary: 1, place: 1, landuse: 1 };
+  let best = null, bestScore = 0;
+  (Array.isArray(list) ? list : []).forEach((hit) => {
+    if (!hit || typeof hit !== 'object') return;
+    const cls = String(hit.class || hit.category || '').toLowerCase();
+    if (REJECT_CLASS[cls]) return;
+    const a = hit.address || {};
+    if (!a.house_number && !a.road) return; // not a street-addressable location
+    let score = 1 + (a.house_number ? 2 : 0) + (a.road ? 1 : 0);
+    const typ = String(hit.type || '').toLowerCase();
+    if (cls === 'office' || typ === 'company' || typ === 'office' || /corporate|headquarters/.test(typ)) score += 3;
+    if (/headquarters|\bhq\b/i.test(String(hit.display_name || ''))) score += 2;
+    if (score > bestScore) { bestScore = score; best = hit; }
+  });
+  return best;
+}
+
+/* Tier 2 — OpenStreetMap Nominatim (public, keyless; runs per click).
+   Searches "<company> headquarters" first, then the plain company name, and
+   picks the best COMPANY-plausible candidate via pickOsmCandidate above.
+   Returns 'Street\nCity, State ZIP\nCountry' built from the winner's
+   structured address, or '' when nothing plausible is found (an honest
+   "No address found" beats filling in the wrong place). */
 async function lookupAddressViaOpenStreetMap(companyName) {
   const queryOnce = async (q) => {
-    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=1&accept-language=en&q=' + encodeURIComponent(q);
+    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&accept-language=en&q=' + encodeURIComponent(q);
     const resp = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const list = await resp.json();
-    return Array.isArray(list) && list[0] ? list[0] : null;
+    return resp.json();
   };
-  const hit = (await queryOnce(companyName + ' headquarters')) || (await queryOnce(companyName));
+  let hit = pickOsmCandidate(await queryOnce(companyName + ' headquarters'));
+  if (!hit) hit = pickOsmCandidate(await queryOnce(companyName));
   if (!hit) return '';
   const a = hit.address || {};
   const street = [a.house_number, a.road].filter(Boolean).join(' ');
@@ -2080,6 +2110,9 @@ window.SQG_APP = {
   // own setQ/render follows). Used by the AI review path (analyze.js) so applied
   // deal/discount/support values land in a section the user can see.
   openSections: function (keys) { if (!state.sections) return; (keys || []).forEach(function (k) { if (Object.prototype.hasOwnProperty.call(state.sections, k)) state.sections[k] = true; }); },
+  // "Look up address" fallback candidate filter — exposed for the /tests
+  // harness (pure: OSM result list in → best company-plausible hit or null).
+  osmPick: pickOsmCandidate,
   // Quote-type enablement helpers — exposed for the /tests harness (and available
   // to any future caller). The extension itself uses the top-level functions.
   defaults: defaults,

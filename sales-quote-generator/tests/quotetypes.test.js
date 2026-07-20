@@ -1,6 +1,6 @@
 'use strict';
 
-/* Test harness for the admin "Quote types" setting (app.js).
+/* Test harness for app.js's exported pure helpers.
    NOT shipped in the manifest — run manually with Node:
 
        node tests/quotetypes.test.js
@@ -11,6 +11,9 @@
      • defaults()                     — the default enabledQuoteTypes set
      • SQG_APP.quoteTypes.clamp()     — clamp a disabled combination to an enabled one
      • SQG_APP.quoteTypes.toggle()    — the last-enabled-type guardrail
+     • SQG_APP.osmPick()              — "Look up address" fallback candidate filter
+                                        (the input is a COMPANY name: rivers/places
+                                        are rejected, office-like hits win)
 
    Pure functions only (no DOM, no state mutation), so this runs on a bare Node
    with no dependencies. */
@@ -87,6 +90,26 @@ checkEq('guardrail', 'new now off', false, allow.enabledQuoteTypes.new);
 const turnOn = QT.toggle(defaults(), 'ren', true);
 checkEq('guardrail', 'enabling a type (ok)', true, turnOn.ok);
 checkEq('guardrail', 'ren now on', true, turnOn.enabledQuoteTypes.ren);
+
+/* ============ (f) "Look up address" — company-aware fallback filter ============
+   The lookup input is always a COMPANY name ("Amazon" = the company, never the
+   river). osmPick must reject non-company geocoder hits and prefer office /
+   headquarters results with a real street address. */
+console.log('\n── (f) osmPick — company-aware candidate filter ──');
+const RIVER = { class: 'waterway', type: 'river', display_name: 'Amazon, South America', address: { country: 'Brazil' } };
+const CITY = { class: 'place', type: 'city', display_name: 'Amazon City', address: { city: 'Amazon City', country: 'Utopia' } };
+const HQ = { class: 'office', type: 'company', display_name: 'Amazon Headquarters, 410 Terry Avenue North, Seattle',
+  address: { house_number: '410', road: 'Terry Avenue North', city: 'Seattle', state: 'Washington', postcode: '98109', country: 'United States' } };
+const SHOP = { class: 'shop', type: 'books', display_name: 'Amazon Books, 100 Side St',
+  address: { road: 'Side St', city: 'Elsewhere', country: 'United States' } };
+
+checkEq('osmPick', 'river alone → rejected (null)', null, APP.osmPick([RIVER]));
+checkEq('osmPick', 'bare city alone → rejected (null)', null, APP.osmPick([CITY]));
+checkEq('osmPick', 'river + HQ → picks the HQ', HQ.display_name, (APP.osmPick([RIVER, HQ]) || {}).display_name);
+checkEq('osmPick', 'shop + HQ → office/HQ outranks the shop', HQ.display_name, (APP.osmPick([SHOP, HQ]) || {}).display_name);
+checkEq('osmPick', 'street-addressed hit accepted when alone', SHOP.display_name, (APP.osmPick([SHOP]) || {}).display_name);
+checkEq('osmPick', 'no street evidence → rejected (null)', null, APP.osmPick([{ class: 'office', type: 'company', display_name: 'X', address: {} }]));
+checkEq('osmPick', 'empty / garbage input → null', null, APP.osmPick(null));
 
 /* ---- report ---- */
 console.log('\n================= RESULTS =================');
