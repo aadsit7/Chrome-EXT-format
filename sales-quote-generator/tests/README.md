@@ -50,6 +50,14 @@ customer = Amazon, extra discount = 15, customer type = new), a label-first
 fixture that must still parse identically (additive-only guard), `quote for
 Costco, …`, partner-margin phrasing, and a renewal phrasing.
 
+v3.7 adds the **AI reasoning pass guardrails** (`_buildRefinePatch`): when a
+dictation session ends, the transcript goes to the Apps Script voice brain and
+the returned customer / contact / email may only fill EMPTY fields or correct a
+field the live voice parse itself set this session (and only while unchanged
+since) — a manual entry is never overwritten, invalid emails are rejected, and
+identical values produce no patch. Natural phrasings "customer name is X" /
+"the client is X" are also asserted.
+
 Also covers the "Who's it for?" upgrades: **full multi-word company capture**
 ("Johnson and Johnson", "Seven Hills Software" come through whole while a real
 quantity still ends the capture), the **known-company spelling snap**
