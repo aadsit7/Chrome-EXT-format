@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sharon",
-  "version": "7.5.1",
+  "version": "7.5.2",
   "description": "A hands-free voice assistant with a real memory: she holds a conversation without interrupting you, reads and acts on your current tab, and saves, searches, updates, and summarizes your notes and tasks in your Google Sheet database.",
   "action": {
     "default_title": "Sharon",

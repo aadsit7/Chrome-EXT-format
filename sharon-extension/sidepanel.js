@@ -234,19 +234,20 @@ async function ensureSessionId() {
 let thinking = false;
 let hearing = false; // interim speech is actively streaming
 
-// Deferred listening: when the panel boots into the Notes view, the mic
-// stays MUTED — reading your notes is not talking to Sharon. The deferral
-// ends, and listening starts, the first time the conversation view is
-// actually on screen; an explicit tap on the mic button ends it early
-// instead, in whichever direction the user chose (see toggleMic). Dictation
-// is unaffected — it forces the engine on and restores the mute after.
-let listenDeferred = false;
-
-function undeferListening() {
-  if (!listenDeferred) return;
-  listenDeferred = false;
-  speech.setMicMuted(false); // unmuting starts recognition
-  updateStatus();
+// The voice assistant is OPT-IN, every session: the panel opens with the mic
+// MUTED, and listening starts only from an explicit user action — the mic
+// button (or the live card's Unmute), the "Allow" buttons in the welcome and
+// Settings, or the "Activate Sharon" keyboard shortcut. NOTHING turns the
+// mic on automatically: not booting, not switching views. Dictation and the
+// voice recorder still borrow the engine on their own tap and restore the
+// mute afterward — speech.js owns that contract.
+//
+// Turning the voice assistant on IS switching to it: bring the conversation
+// on screen (closing Notes/memory through their normal auto-save paths) so
+// the live-presence card and her replies are actually visible.
+function showConversationForVoice() {
+  notes.closeNotesView();
+  if (ui.memoryOpen()) ui.closeMemory();
 }
 
 function updateStatus() {
@@ -2831,7 +2832,7 @@ function toggleMic() {
     return;
   }
   if (speech.isMicBlocked()) {
-    listenDeferred = false; // an explicit tap outranks the boot deferral
+    showConversationForVoice(); // retrying the mic is turning the assistant on
     speech.retryMic();
     updateStatus();
     return;
@@ -2842,8 +2843,9 @@ function toggleMic() {
     updateStatus();
     return;
   }
-  listenDeferred = false; // an explicit tap outranks the boot deferral
-  speech.setMicMuted(!speech.isMicMuted());
+  const unmuting = speech.isMicMuted(); // read once — closing views must not race the toggle
+  if (unmuting) showConversationForVoice(); // this tap turns her on: show her
+  speech.setMicMuted(!unmuting);
   updateStatus();
 }
 
@@ -3227,6 +3229,9 @@ function wireControls() {
     chrome.runtime.onMessage.addListener((msg) => {
       if (!msg) return;
       if (msg.type === "sharon-activate") {
+        // The "Activate Sharon" keyboard shortcut is an explicit summons —
+        // the one non-click path allowed to wake the voice assistant.
+        showConversationForVoice();
         speech.retryMic();
         updateStatus();
         return;
@@ -3351,27 +3356,13 @@ function wireControls() {
   // conversation, so her replies are never hidden behind it.
   if (!ui.welcomeVisible()) notes.openNotesView();
 
+  // The voice assistant NEVER starts on its own: whatever view is showing
+  // (Notes, the welcome, the conversation), the panel opens with the mic
+  // muted, and recognition is deliberately not started here. It goes live
+  // only from an explicit user action — the mic button, an "Allow" button,
+  // or the "Activate Sharon" shortcut (see showConversationForVoice above).
+  speech.setMicMuted(true);
   updateStatus();
-  // Ends the boot deferral the moment the conversation view is actually on
-  // screen — the same data-view attribute every view swap already writes.
-  new MutationObserver(() => {
-    if (listenDeferred && document.documentElement.getAttribute("data-view") === "chat")
-      undeferListening();
-  }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-view"] });
-
-  // Listening from launch — the mic goes live the moment the panel opens —
-  // EXCEPT when the panel opened on Notes: reading your notes is not talking
-  // to Sharon, so she starts MUTED and begins listening only when you switch
-  // to the conversation (or tap the mic button yourself). The welcome
-  // walkthrough keeps the original live-from-launch behavior — its first
-  // step is allowing the mic.
-  if (notes.notesViewOpen()) {
-    listenDeferred = true;
-    speech.setMicMuted(true);
-    updateStatus();
-  } else {
-    speech.startRecognition();
-  }
   watchMicPermission();
 
   // If a screen recording is already running in the background (the panel was
