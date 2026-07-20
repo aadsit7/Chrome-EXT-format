@@ -234,6 +234,21 @@ async function ensureSessionId() {
 let thinking = false;
 let hearing = false; // interim speech is actively streaming
 
+// Deferred listening: when the panel boots into the Notes view, the mic
+// stays MUTED — reading your notes is not talking to Sharon. The deferral
+// ends, and listening starts, the first time the conversation view is
+// actually on screen; an explicit tap on the mic button ends it early
+// instead, in whichever direction the user chose (see toggleMic). Dictation
+// is unaffected — it forces the engine on and restores the mute after.
+let listenDeferred = false;
+
+function undeferListening() {
+  if (!listenDeferred) return;
+  listenDeferred = false;
+  speech.setMicMuted(false); // unmuting starts recognition
+  updateStatus();
+}
+
 function updateStatus() {
   const micLive = !speech.isMicMuted() && !speech.isMicBlocked();
   ui.setMicIndicator(micLive);
@@ -2816,6 +2831,7 @@ function toggleMic() {
     return;
   }
   if (speech.isMicBlocked()) {
+    listenDeferred = false; // an explicit tap outranks the boot deferral
     speech.retryMic();
     updateStatus();
     return;
@@ -2826,6 +2842,7 @@ function toggleMic() {
     updateStatus();
     return;
   }
+  listenDeferred = false; // an explicit tap outranks the boot deferral
   speech.setMicMuted(!speech.isMicMuted());
   updateStatus();
 }
@@ -3335,8 +3352,26 @@ function wireControls() {
   if (!ui.welcomeVisible()) notes.openNotesView();
 
   updateStatus();
-  // Listening from launch — the mic starts live the moment the panel opens.
-  speech.startRecognition();
+  // Ends the boot deferral the moment the conversation view is actually on
+  // screen — the same data-view attribute every view swap already writes.
+  new MutationObserver(() => {
+    if (listenDeferred && document.documentElement.getAttribute("data-view") === "chat")
+      undeferListening();
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-view"] });
+
+  // Listening from launch — the mic goes live the moment the panel opens —
+  // EXCEPT when the panel opened on Notes: reading your notes is not talking
+  // to Sharon, so she starts MUTED and begins listening only when you switch
+  // to the conversation (or tap the mic button yourself). The welcome
+  // walkthrough keeps the original live-from-launch behavior — its first
+  // step is allowing the mic.
+  if (notes.notesViewOpen()) {
+    listenDeferred = true;
+    speech.setMicMuted(true);
+    updateStatus();
+  } else {
+    speech.startRecognition();
+  }
   watchMicPermission();
 
   // If a screen recording is already running in the background (the panel was
