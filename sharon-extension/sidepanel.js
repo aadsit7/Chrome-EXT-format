@@ -571,6 +571,12 @@ function handleUserUtterance(text, conf, { typed = false } = {}) {
     return;
   }
 
+  // The user is addressing Sharon. If the Notes view is covering the thread
+  // (it hides the presence card and composer too), close it back to the
+  // conversation first — the same path as its back button, so an open edited
+  // note still auto-saves — because a reply must never render invisibly.
+  notes.closeNotesView();
+
   const cmd = text.toLowerCase().replace(/[.!?,]+$/g, "").trim();
 
   // An action plan waiting for the user's okay — yes / no answers it instantly.
@@ -2830,6 +2836,9 @@ function sendTyped(text) {
   if (!t) return;
   if (text == null && e.composerInput) e.composerInput.value = "";
   ui.setComposerHasText(false);
+  // Typed messages must land in a visible thread too — leave Notes first
+  // (a no-op when it isn't open; handleUserUtterance guards this as well).
+  notes.closeNotesView();
   handleUserUtterance(t, null, { typed: true });
 }
 
@@ -3318,6 +3327,12 @@ function wireControls() {
     refreshWelcomeSteps();
     ui.showWelcome();
   }
+
+  // Notes is the panel's home view — open it unless the welcome walkthrough
+  // is on screen (first run always wins). The moment the user actually
+  // addresses Sharon, handleUserUtterance/sendTyped close Notes back to the
+  // conversation, so her replies are never hidden behind it.
+  if (!ui.welcomeVisible()) notes.openNotesView();
 
   updateStatus();
   // Listening from launch — the mic starts live the moment the panel opens.

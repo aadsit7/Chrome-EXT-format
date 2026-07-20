@@ -1,4 +1,4 @@
-Sharon — a voice assistant for your browser side panel  (v7.4.0)
+Sharon — a voice assistant for your browser side panel  (v7.5.0)
 ================================================================
 
 Sharon is a hands-free voice assistant that lives in Chrome/Edge's side panel.
@@ -26,6 +26,39 @@ your Google Apps Script web app (backend/Code.gs in this folder), which holds
 the secret key, calls the model WITH TOOLS (save/search/update/summarize
 memory, act on page), executes the database tools against the Sheet, and
 returns one combined answer. One round trip per turn keeps her fast.
+
+
+What's new in v7.5.0 — sections, a quick-note mic, Notes up front
+-----------------------------------------------------------------
+- Notes opens first: the pencil button now sits at the far LEFT of the mode
+  bar, and the panel opens straight into the Notes list (the first-run
+  welcome still wins on a brand-new install). The moment you actually talk
+  or type to Sharon, the panel flips back to the conversation on its own —
+  her replies are never hidden behind the notes.
+- Named, collapsible sections: tap "+ New section" to create one, pick a
+  section from the dropdown when you save a note (next to the quick-note
+  mic, and inside the editor to move an existing note), and the list shows
+  one fold-open group per section — tap a header to collapse or expand it,
+  and Sharon remembers which ones you keep closed. Notes without a section
+  live under "Unsorted", always at the bottom. Sections are stored in the
+  "project" column your memory_log tab already has, and the list now loads
+  up to 500 notes (it used to stop at 25).
+- A second dictation mic on the LIST screen, right under the quick-note box:
+  tap it and speak, and the words type into the box at your cursor — same
+  dictation engine as the editor's mic, so Sharon stays quiet and her normal
+  listening picks back up exactly where it was when you stop.
+
+  *** REQUIRED STEP — RE-DEPLOY THE BACKEND, or sections will NOT save ***
+  1. Open your "Speaking Assistant" Sheet → Extensions → Apps Script.
+  2. Paste the new backend/Code.gs from this folder over the project's code.
+  3. Deploy → Manage deployments → edit (pencil) → Version: "New version"
+     → Deploy. (Pasting alone is not enough — /exec serves the version
+     pinned to the deployment. The URL does not change.)
+  4. Confirm the memory_log tab has a "project" column in its header row
+     (row 1). It's part of the standard Speaking Assistant sheet; if yours
+     is missing it, add a header cell named exactly  project .
+  Until then the panel shows a dismissible notice in Notes and everything
+  except saving sections keeps working.
 
 
 What's new in v7.4.0 — the Notes tab

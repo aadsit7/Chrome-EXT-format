@@ -1067,19 +1067,21 @@ function actionDistill_(p) {
  * columns the AI's save_memory tool uses (actionDistill_), and the created
  * entry comes back — entry_id included — so the panel can render it without
  * re-reading the sheet.
- * payload: { title, content, entry_type?, user_id?, assistant_id? }
+ * payload: { title, content, entry_type?, project?, user_id?, assistant_id? }
  */
 function actionSaveMemory_(p) {
   var title = String(p.title || "").trim();
   var content = String(p.content || "").trim();
   if (!title && !content) throw new Error("save_memory needs a title or content");
   var entryType = String(p.entry_type || "note");
+  var project = String(p.project || "").trim(); // the note's section
   var saved = actionDistill_({
     entry_type: entryType,
     title: title,
     content: content,
     tags: [],
     importance: 3,
+    project: project,
     user_id: p.user_id || "",
     assistant_id: p.assistant_id || "",
     session_id: p.session_id || "",
@@ -1091,6 +1093,7 @@ function actionSaveMemory_(p) {
     entry_type: entryType,
     title: title.slice(0, 120),
     content: content,
+    project: project,
     status: entryType === "task" ? "open" : "",
     created_at: nowIso_(),
     updated_at: nowIso_(),
@@ -1119,12 +1122,15 @@ function memoryRowToObj_(r, idx) {
     importance: r[idx.importance],
     created_at: isoOf_(r[idx.created_at]),
     page_url: r[idx.page_url],
+    // The note's section (the panel's Notes view groups by this). Written
+    // defensively: a sheet without the column just reads as "no section".
+    project: idx.project != null ? String(r[idx.project] || "") : "",
   };
 }
 
 function searchMemory_(p) {
   var query = String(p.query || "").toLowerCase().trim();
-  var limit = Math.max(1, Math.min(25, Number(p.limit) || 5));
+  var limit = Math.max(1, Math.min(500, Number(p.limit) || 5));
   var wantType = String(p.entry_type || "");
   var userId = String(p.user_id || "");
 
@@ -1393,6 +1399,7 @@ function updateMemory_(p) {
     if (p.status != null) set("status", p.status);
     if (p.title != null) set("title", p.title);
     if (p.content != null) set("content", p.content);
+    if (p.project != null) set("project", p.project);
     if (p.deleted != null) set("deleted", p.deleted ? "TRUE" : "");
     set("updated_at", nowIso_());
     return { updated: true, entry_id: entryId };
