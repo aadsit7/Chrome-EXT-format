@@ -348,10 +348,16 @@ function addressLookup_(data) {
     'Return ONLY a JSON object, no prose, no markdown fences, exactly:\n' +
     '{ "address": "<street address>\\n<city, state/region postal code>\\n<country>" }\n' +
     'Rules:\n' +
-    '- Use the company\'s primary/global headquarters mailing address.\n' +
+    '- The input is ALWAYS the name of a company or organization — never a place, ' +
+    'a river, a person, or a common word. "Amazon" means Amazon.com, Inc.; "Apple" ' +
+    'means Apple Inc.; "Shell" means Shell plc.\n' +
+    '- If several companies share the name, choose the most widely known one.\n' +
+    '- Use the company\'s primary/global corporate headquarters mailing address — ' +
+    'the address a supplier would put on an invoice (street and number, suite if ' +
+    'applicable, city, state/region, postal code, country).\n' +
     '- 2 or 3 lines joined with \\n; do NOT repeat the company name in the address.\n' +
-    '- If you are not confident you know this company\'s address, return { "address": "" } ' +
-    'instead of guessing a made-up street address.';
+    '- If you are not confident you know this company\'s headquarters address, return ' +
+    '{ "address": "" } instead of guessing a made-up street address.';
   var raw;
   try {
     // Reuse your existing model helper here if you have one, e.g. callGemini_(prompt);

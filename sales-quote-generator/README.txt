@@ -198,13 +198,21 @@ USING THE TOOL
   field, these save with the quote (localStorage) and are restored
   when you reopen the panel.
 - "Look up address" (a small button under the Bill To address box)
-  fills the company's mailing/headquarters address from an online
-  lookup, below the company-name first line. It works out of the box,
-  in two tiers: first it asks the tool's own Apps Script web app
-  (action "addressLookup" — paste-in handler in APPS-SCRIPT-UPGRADE.txt)
-  for an AI-curated corporate address; if that deployment doesn't have
-  the handler yet or the call fails, it falls back to OpenStreetMap's
-  public keyless Nominatim geocoder automatically. The result is a
+  looks up the CORPORATE HEADQUARTERS mailing address of the company
+  named in "Customer / company" and fills it into the Bill To address,
+  below the company-name first line. The input is always treated as a
+  company — "Amazon" means Amazon.com, Inc. (never the river), "Apple"
+  means Apple Inc. It works out of the box, in two tiers: first it asks
+  the tool's own Apps Script web app (action "addressLookup" — paste-in
+  handler in APPS-SCRIPT-UPGRADE.txt) where the AI is instructed to
+  resolve the name to the company and return its global headquarters
+  invoice address; if that deployment doesn't have the handler yet or
+  the call fails, it falls back to OpenStreetMap's public keyless
+  Nominatim geocoder automatically — searched as "<company>
+  headquarters" and filtered so only street-addressed, office-like
+  results are accepted (a river, city, or bare place name can never
+  land in the address; when nothing plausible is found it says "No
+  address found" rather than filling the wrong place). The result is a
   best guess: it shows an "Auto-filled — please verify" note next to
   the box, and an address you typed yourself is never overwritten. To
   swap in a different provider later, replace ADDRESS_LOOKUP_SERVICE
