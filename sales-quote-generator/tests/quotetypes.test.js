@@ -14,6 +14,8 @@
      • SQG_APP.osmPick()              — "Look up address" fallback candidate filter
                                         (the input is a COMPANY name: rivers/places
                                         are rejected, office-like hits win)
+     • SQG_APP._defaultQuote()        — fresh-quote factory (v3.8: auto renewal
+                                        starts Yes and has no UI toggle)
 
    Pure functions only (no DOM, no state mutation), so this runs on a bare Node
    with no dependencies. */
@@ -110,6 +112,16 @@ checkEq('osmPick', 'shop + HQ → office/HQ outranks the shop', HQ.display_name,
 checkEq('osmPick', 'street-addressed hit accepted when alone', SHOP.display_name, (APP.osmPick([SHOP]) || {}).display_name);
 checkEq('osmPick', 'no street evidence → rejected (null)', null, APP.osmPick([{ class: 'office', type: 'company', display_name: 'X', address: {} }]));
 checkEq('osmPick', 'empty / garbage input → null', null, APP.osmPick(null));
+
+/* ============ (g) auto renewal — always Yes, no UI control (v3.8) ============
+   Every fresh quote starts with autoRenewal true (the PDF prints
+   "Auto Renewal: Yes"), and app.js no longer renders a toggle for it —
+   the render source must not build an 'Auto renewal' control. */
+console.log('\n── (g) auto renewal fixed to Yes ──');
+checkEq('auto renewal', 'fresh quote starts Yes', true, APP._defaultQuote().autoRenewal);
+const appSrc = src; // the exact app.js source loaded above
+checkEq('auto renewal', 'no Auto renewal toggle rendered', false, /sqg-toggle-title'\s*},\s*'Auto renewal'/.test(appSrc));
+checkEq('auto renewal', 'restored quotes coerced to Yes', true, /state\.quote\.autoRenewal = true/.test(appSrc));
 
 /* ---- report ---- */
 console.log('\n================= RESULTS =================');
