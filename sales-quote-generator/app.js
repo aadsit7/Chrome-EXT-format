@@ -189,11 +189,13 @@ function defaultQuote() {
 
 /* ---------------- State ---------------- */
 
-/* Which calculator sections are expanded. Progressive disclosure: the two core
-   steps (deal + products) start open; the secondary steps (discounts + who)
-   start collapsed with a live summary, so a fresh quote is a short scroll.
+/* Which calculator sections are expanded. ALL four start COLLAPSED, each showing
+   its one-line summary ("Net new · 1 year", "0 products · $0/yr", "None",
+   "Not set"), so opening the tool is a clean, scannable overview — tap a section
+   to expand it. Sections still auto-expand when something fills them (voice,
+   page analyze, a validation miss on Create quote).
    Kept in memory only (not persisted) so every reload starts in this clean state. */
-function defaultSections() { return { deal: true, selling: true, discounts: false, who: false }; }
+function defaultSections() { return { deal: false, selling: false, discounts: false, who: false }; }
 
 const state = { view: 'calc', cfg: defaults(), quote: defaultQuote(), toast: '', toastTone: 'ok', addMenu: false, sheet: false, analyze: null, pwPrompt: false, newQuotePrompt: false, billingOpen: false, registerGate: false, sections: defaultSections(), voice: { on: false, interim: '', finalText: '', error: '', heard: '' }, pendingClampToast: '' };
 let toastTimer = null;
@@ -779,7 +781,7 @@ function newQuote() {
   state.addMenu = false;
   state.analyze = null;
   state.billingOpen = false;
-  state.sections = defaultSections(); // back to the clean deal+products-open layout
+  state.sections = defaultSections(); // back to the clean all-collapsed overview
   persist(); // clears the saved quote in localStorage the same way a manual edit would
   render();
   flash('Started a new quote — all fields cleared', 'ok');
