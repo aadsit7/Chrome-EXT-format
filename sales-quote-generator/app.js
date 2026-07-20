@@ -782,6 +782,7 @@ function newQuote() {
   state.analyze = null;
   state.billingOpen = false;
   state.sections = defaultSections(); // back to the clean all-collapsed overview
+  lastAutoLookupCompany = ''; // a fresh quote may auto-look-up the same company again
   persist(); // clears the saved quote in localStorage the same way a manual edit would
   render();
   flash('Started a new quote — all fields cleared', 'ok');
@@ -1346,10 +1347,14 @@ async function lookupAddressViaOpenStreetMap(companyName) {
   return disp.length > 1 ? disp.slice(1).join(', ') : '';
 }
 
-function lookupBillingAddress() {
+function lookupBillingAddress(opts) {
+  // quiet = an AUTOMATIC run (after a voice session, via SQG_APP.autoLookupAddress):
+  // failures stay silent — the user didn't click anything, so don't nag them.
+  const quiet = !!(opts && opts.auto);
   const q = state.quote;
   const company = String(q.customer || '').trim();
   if (!company) {
+    if (quiet) return;
     state.sections.who = true;
     flash('Add the customer / company name first — the lookup uses it', 'warn');
     return;
@@ -1359,7 +1364,7 @@ function lookupBillingAddress() {
   // an address body below the company line that is NOT auto-managed is theirs.
   const curBody = String(q.billToAddress || '').split('\n').slice(1).join('\n').trim();
   if (curBody && !auto.billTo) {
-    flash('You entered this address yourself — it won’t be overwritten', 'warn');
+    if (!quiet) flash('You entered this address yourself — it won’t be overwritten', 'warn');
     return;
   }
   flash('Looking up the address for ' + company + '…', 'ok');
@@ -1367,7 +1372,7 @@ function lookupBillingAddress() {
     .then(() => ADDRESS_LOOKUP_SERVICE(company))
     .then((address) => {
       address = (address == null ? '' : String(address)).trim();
-      if (!address) { flash('No address found for ' + company + ' — enter it manually', 'warn'); return; }
+      if (!address) { if (!quiet) flash('No address found for ' + company + ' — enter it manually', 'warn'); return; }
       // Re-check before writing: the user may have typed meanwhile — theirs wins.
       const now = state.quote;
       const nowAuto = normalizeBillingAuto(now);
@@ -1380,7 +1385,28 @@ function lookupBillingAddress() {
       state.billingOpen = true;
       flash('Address filled from lookup — please verify it before sending', 'ok');
     })
-    .catch(() => { flash('Address lookup failed — try again or enter it manually', 'warn'); });
+    .catch(() => { if (!quiet) flash('Address lookup failed — try again or enter it manually', 'warn'); });
+}
+
+/* v3.7 — automatic HQ-address fill after a voice session (called by voice.js's
+   AI reasoning pass via SQG_APP.autoLookupAddress). Runs the SAME guarded
+   lookup as the button, but only when it can act safely on its own: there must
+   be a company, the Bill To box must still be auto-managed (or empty) with no
+   address body yet, and each company is only attempted once — so it can never
+   overwrite anything or spam lookups. */
+let lastAutoLookupCompany = '';
+function maybeAutoLookupBillingAddress() {
+  const q = state.quote;
+  const company = String(q.customer || '').trim();
+  if (!company) return;
+  const auto = normalizeBillingAuto(q);
+  if (!auto.billTo && String(q.billToAddress || '').trim()) return; // manual Bill To — theirs
+  const body = String(q.billToAddress || '').split('\n').slice(1).join('\n').trim();
+  if (body) return; // an address is already there (looked up or typed)
+  const key = company.toLowerCase();
+  if (key === lastAutoLookupCompany) return; // one automatic attempt per company
+  lastAutoLookupCompany = key;
+  lookupBillingAddress({ auto: true });
 }
 
 /* ---- Collapsible: Billing details (for PDF) ---- */
@@ -2115,6 +2141,9 @@ window.SQG_APP = {
   // "Look up address" fallback candidate filter — exposed for the /tests
   // harness (pure: OSM result list in → best company-plausible hit or null).
   osmPick: pickOsmCandidate,
+  // v3.7 — automatic, guarded HQ-address fill; called by voice.js's AI
+  // reasoning pass after a dictation session ends.
+  autoLookupAddress: maybeAutoLookupBillingAddress,
   // Quote-type enablement helpers — exposed for the /tests harness (and available
   // to any future caller). The extension itself uses the top-level functions.
   defaults: defaults,

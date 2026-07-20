@@ -272,6 +272,22 @@ const FIXTURES = [
       checkNull('Email-glob', 'email (glob rejected)', scalar(cs, 'email'));
     },
   },
+
+  /* ---- v3.7: more natural company phrasings ---- */
+  {
+    name: '"customer name is X" captures the name, not "Name Is X"',
+    text: 'customer name is Acme Corporation',
+    assert: function (cs) {
+      checkEq('Customer-name kw', 'customer', 'Acme Corporation', scalar(cs, 'customer'));
+    },
+  },
+  {
+    name: '"the client is X" fills the customer',
+    text: 'the client is Globex Industries',
+    assert: function (cs) {
+      checkEq('Client kw', 'customer', 'Globex Industries', scalar(cs, 'customer'));
+    },
+  },
 ];
 
 /* ============================ RUN ============================ */
@@ -307,6 +323,50 @@ console.log('\n• No recap panel after stopping (Change 1)');
   global.state.voice = { on: false, interim: '', finalText: '', error: '', heard: 'right click tools 2500 endpoints', applied: ['Right Click Tools → 2,500 endpoints'] };
   checkEq('Silent stop', 'reviewBox() renders nothing', null, V.reviewBox());
   global.state.voice = {};
+})();
+
+/* ============ v3.7: AI reasoning pass — refine guardrails ============
+   When a voice session ends, the transcript goes to the Apps Script voice
+   brain and _buildRefinePatch decides what the AI may change. Rules: fill
+   empty fields; correct a field the live voice parse set this session IF the
+   user hasn't edited it since; NEVER touch a manual entry; reject invalid
+   emails; drop values that already match. */
+console.log('\n• AI refine guardrails (_buildRefinePatch)');
+(function () {
+  const AI = { customer: 'Gulfstream Aerospace Corporation', contactName: 'Travis Xiong', email: 'travis.xiong@gulfstream.com', partnerEmail: 'not-an-email' };
+
+  // 1. empty fields fill; a voice-set, unchanged field is corrected
+  let r = V._buildRefinePatch(AI, {
+    current: { customer: 'Goldstream Aerospace', contactName: '', email: '' },
+    atStop: { customer: 'Goldstream Aerospace', contactName: '', email: '' },
+    touched: { customer: true },
+  });
+  checkEq('Refine', 'voice-set customer corrected', 'Gulfstream Aerospace Corporation', r.patch.customer);
+  checkEq('Refine', 'empty contactName filled', 'Travis Xiong', r.patch.contactName);
+  checkEq('Refine', 'empty email filled', 'travis.xiong@gulfstream.com', r.patch.email);
+  checkTrue('Refine', 'invalid AI email rejected', !('partnerEmail' in r.patch));
+
+  // 2. user edited the field after the session → theirs wins
+  r = V._buildRefinePatch(AI, {
+    current: { customer: 'Hand Typed Co' },
+    atStop: { customer: 'Goldstream Aerospace' },
+    touched: { customer: true },
+  });
+  checkTrue('Refine', 'post-session manual edit never overwritten', !('customer' in r.patch));
+
+  // 3. a non-empty field voice did NOT set (typed before the session) → untouched
+  r = V._buildRefinePatch(AI, {
+    current: { customer: 'Typed Before Co' },
+    atStop: { customer: 'Typed Before Co' },
+    touched: {},
+  });
+  checkTrue('Refine', 'pre-session manual entry never overwritten', !('customer' in r.patch));
+
+  // 4. AI value identical to the current one → no patch, no toast
+  r = V._buildRefinePatch({ customer: 'Acme' }, {
+    current: { customer: 'Acme' }, atStop: { customer: 'Acme' }, touched: { customer: true },
+  });
+  checkTrue('Refine', 'identical value produces no patch', Object.keys(r.patch).length === 0);
 })();
 
 /* ============ Quote-type enablement guardrail (Task c) ============

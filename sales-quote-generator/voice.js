@@ -30,6 +30,13 @@
    recognition ends (CHANGE 1), so correcting a value means re-saying it (or
    editing the field directly).
 
+   When a session ends, an AI REASONING PASS (v3.7) sends the transcript to the
+   Apps Script voice brain, which works out exactly who the customer/company and
+   contact are and refines those fields — only ever overwriting what this voice
+   session itself filled (or empty fields); manual entries always win. It then
+   auto-fills the company's HQ billing address via the same guarded lookup as
+   the "Look up address" button.
+
    Applied changes go through setQ — exactly like a manual edit (visible, saved,
    reversible) — so the pricing engine still computes every total. Speech
    recognition itself is the browser's; accuracy of the transcription depends on
@@ -449,8 +456,10 @@ window.SQG_VOICE = (function () {
         { field: 'currency', kind: 'text', num: true, kw: ['currency'] },
         // num:'smart' (CHANGE 2a) — company names keep spelled-number words that
         // are part of the name ("Seven Hills Software"); real quantities still end
-        // the capture ("customer Acme two thousand endpoints").
-        { field: 'customer', kind: 'text', num: 'smart', kw: ['customer', 'company name', 'company', 'account name'] },
+        // the capture ("customer Acme two thousand endpoints"). 'customer name'
+        // must precede 'customer' so "customer name is Acme" captures "Acme",
+        // not "Name Is Acme"; 'client' covers "the client is Globex".
+        { field: 'customer', kind: 'text', num: 'smart', kw: ['customer name', 'customer', 'company name', 'company', 'account name', 'client'] },
       ];
       var ALL_KWS = [];
       FIELD_DEFS.forEach(function (d) { d.kw.forEach(function (k) { ALL_KWS.push(k); }); });
@@ -714,6 +723,78 @@ window.SQG_VOICE = (function () {
     return { patch: patch, labels: labels, hasChange: Object.keys(patch).length > 0 };
   }
 
+  /* ========================================================================
+     AI reasoning pass (v3.7) — runs once, when a voice session ENDS.
+     The LIVE deterministic parser fills fields instantly while speaking; when
+     the user stops, the full transcript is sent to the Apps Script voice
+     brain (Claude, mode:"voice") which REASONS about the sentence — who the
+     customer/company actually is, who the contact is — and the answer
+     refines what voice filled. Guardrails keep it 100% safe:
+       • a field is only overwritten if it is EMPTY, or if the live voice
+         parse itself set it this session AND the user hasn't edited it since
+         the session ended — a manual entry is never touched;
+       • emails must be a single valid address or they're ignored;
+       • a stale response (a new session started meanwhile) is dropped.
+     Afterwards the company's HQ billing address is looked up automatically
+     (SQG_APP.autoLookupAddress → the same guarded two-tier lookup as the
+     "Look up address" button), so Billing details fill without a click.
+     ======================================================================== */
+  var sessionFields = {}; // scalar fields the LIVE parse set during this session
+  var refineSeq = 0;      // invalidates an in-flight refinement when a new session starts
+
+  var REFINE_FIELDS = ['customer', 'contactName', 'email', 'partnerCompany', 'partnerEmail'];
+  var REFINE_LABEL = { customer: 'company', contactName: 'contact name', email: 'email', partnerCompany: 'partner company', partnerEmail: 'partner email' };
+  var FULL_EMAIL_RX = /^[a-z0-9._%+\-]+@[a-z0-9\-]+(?:\.[a-z0-9\-]+)*\.[a-z]{2,18}$/i;
+
+  // Pure: decide which AI-returned scalars may be applied. ctx carries, per
+  // field: current (value NOW), atStop (value when the session ended) and
+  // touched (did the live parse set it this session). Exposed for the tests.
+  function buildRefinePatch(data, ctx) {
+    var patch = {}, labels = [];
+    var cur = (ctx && ctx.current) || {}, atStop = (ctx && ctx.atStop) || {}, touched = (ctx && ctx.touched) || {};
+    var S = function (v) { return (v == null ? '' : String(v)).replace(/\s+/g, ' ').trim(); };
+    REFINE_FIELDS.forEach(function (f) {
+      var v = S(data && data[f]);
+      if (!v) return;
+      if ((f === 'email' || f === 'partnerEmail') && !FULL_EMAIL_RX.test(v)) return;
+      var c = S(cur[f]);
+      if (v === c) return;                        // already right
+      var wasAtStop = S(atStop[f]);
+      // Empty fields always fill; a voice-set field may be corrected as long as
+      // the user hasn't changed it since the session ended. Anything else is a
+      // manual entry — never touched.
+      if (!c || (touched[f] && c === wasAtStop)) { patch[f] = v; labels.push(REFINE_LABEL[f] || f); }
+    });
+    return { patch: patch, labels: labels };
+  }
+
+  // Network applier: transcript → Apps Script voice brain → guarded patch →
+  // auto HQ-address lookup. Fire-and-forget; silent unless something changes.
+  function refineSessionWithAI(text) {
+    var mySeq = ++refineSeq;
+    var touched = Object.assign({}, sessionFields);
+    var atStop = {};
+    REFINE_FIELDS.forEach(function (f) { atStop[f] = state.quote ? state.quote[f] : ''; });
+    var autoLookup = function () {
+      if (mySeq !== refineSeq) return;
+      try { if (window.SQG_APP && typeof window.SQG_APP.autoLookupAddress === 'function') window.SQG_APP.autoLookupAddress(); } catch (e) {}
+    };
+    if (!(window.SQG_SHEETS && typeof window.SQG_SHEETS.analyzePage === 'function')) { autoLookup(); return; }
+    window.SQG_SHEETS.analyzePage(text, catalog(), 'voice')
+      .then(function (data) {
+        if (mySeq !== refineSeq) return; // a new session started — stale
+        var current = {};
+        REFINE_FIELDS.forEach(function (f) { current[f] = state.quote ? state.quote[f] : ''; });
+        var built = buildRefinePatch(data, { current: current, atStop: atStop, touched: touched });
+        if (Object.keys(built.patch).length) {
+          setQ(built.patch); // the billing mirror follows automatically
+          flash('AI double-checked your dictation — updated ' + built.labels.join(', '), 'ok');
+        }
+      })
+      .catch(function () { /* AI unavailable — the live fill stands */ })
+      .then(autoLookup);
+  }
+
   // Parse the FULL running transcript and apply — called on every finalized
   // phrase so the form fills live and re-saying a value corrects it.
   function applyLive(fullText, interim) {
@@ -722,6 +803,9 @@ window.SQG_VOICE = (function () {
     res.commands.forEach(function (c) { map[cmdKey(c)] = c; }); // keep latest per target
     var cmds = Object.keys(map).map(function (k) { return map[k]; });
     var built = buildPatch(cmds);
+    // Remember which refine-eligible fields THIS session's live parse filled,
+    // so the AI pass may correct them (and only them) after the session ends.
+    REFINE_FIELDS.forEach(function (f) { if (Object.prototype.hasOwnProperty.call(built.patch, f)) sessionFields[f] = true; });
     state.voice = Object.assign({ on: false, interim: '', finalText: '', error: '', heard: '', applied: [] }, state.voice || {},
       { on: true, interim: interim || '', finalText: fullText, applied: built.labels, error: '' });
     if (built.hasChange) setQ(built.patch); // persists + renders (fields + applied list)
@@ -812,6 +896,10 @@ window.SQG_VOICE = (function () {
     if (applied.length) flash('Filled ' + applied.length + ' field' + (applied.length > 1 ? 's' : '') + ' from your voice', 'ok');
     else if (!text) flash('Didn’t catch anything — tap the microphone and try again', 'warn');
     else flash('Couldn’t pull any fields from that — try rephrasing', 'warn');
+    // v3.7 — AI reasoning pass: double-check the transcript server-side (who
+    // the customer/company really is, the contact) and then auto-fill the
+    // company's HQ billing address. Guarded; never touches manual entries.
+    if (text) refineSessionWithAI(text);
   }
 
   function stop() {
@@ -882,6 +970,8 @@ window.SQG_VOICE = (function () {
     teardown();           // never bail on a stale recognizer — replace it
     finalText = '';
     manualStop = false;
+    sessionFields = {};   // fresh session — the AI pass may only refine what THIS session fills
+    refineSeq++;          // and any refinement still in flight from a prior session is stale
     setVoice({ on: true, interim: '', finalText: '', error: '', heard: '', applied: [] });
     try {
       beginRecognition();
@@ -959,5 +1049,6 @@ window.SQG_VOICE = (function () {
     _start: start, _stop: stop, _transcript: transcript,
     _parse: function (text, known) { return parser.parse(text, catalog(), known || knownCompanies()); },
     _applyLive: applyLive, _buildPatch: buildPatch, _runActions: runActions,
+    _buildRefinePatch: buildRefinePatch, _refineSession: refineSessionWithAI,
   };
 })();

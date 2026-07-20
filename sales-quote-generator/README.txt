@@ -143,7 +143,19 @@ USING THE TOOL
   spoke are already in the form, a short toast reports how many fields
   were filled, and all voice state is cleared so nothing lingers on
   screen. To correct a misheard value, say it again (latest wins) or edit
-  the field directly. If the mic is blocked or nothing is heard you get a
+  the field directly.
+  When you stop, an AI REASONING PASS double-checks the transcript: the
+  words are sent to the tool's own Apps Script web app, whose AI works
+  out exactly who the customer/company and contact are (e.g. it
+  understands the company being sold to even from casual phrasing or a
+  mishear) and quietly corrects those fields — with strict guardrails:
+  it only ever overwrites a field that is empty or that this voice
+  session itself filled and you haven't touched since; anything you
+  typed yourself always wins. It then looks up that company's corporate
+  HQ address online and fills it into Billing details automatically
+  (same guarded lookup as the "Look up address" button, with the
+  "Auto-filled — please verify" note; failures stay silent). A toast
+  reports anything the AI updated. If the mic is blocked or nothing is heard you get a
   short message and the button resets — it's never left stuck listening.
   Speech is transcribed by the browser's built-in Web Speech API using
   the standard microphone permission prompt — allow mic access the first
@@ -216,9 +228,13 @@ USING THE TOOL
   land in the address; when nothing plausible is found it says "No
   address found" rather than filling the wrong place). The result is a
   best guess: it shows an "Auto-filled — please verify" note next to
-  the box, and an address you typed yourself is never overwritten. To
-  swap in a different provider later, replace ADDRESS_LOOKUP_SERVICE
-  in app.js (same shape: async company name → multi-line address).
+  the box, and an address you typed yourself is never overwritten. The
+  same lookup also runs AUTOMATICALLY after a "Speak to fill" session
+  (once per company, only while the Bill To box is still empty /
+  auto-managed, failures silent), so dictating a quote fills Billing
+  details without a click. To swap in a different provider later,
+  replace ADDRESS_LOOKUP_SERVICE in app.js (same shape: async company
+  name → multi-line address).
 - "Create quote" downloads a one-page Recast-branded quote PDF that
   matches the official Recast Software quote form: the Recast logo
   and company address, the quote number, a Bill To / Ship To block,
