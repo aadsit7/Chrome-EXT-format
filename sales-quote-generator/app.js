@@ -168,9 +168,15 @@ function defaultQuote() {
   const d = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
   return {
     number: 'QT-' + new Date().getFullYear() + '-' + String(Math.floor(1000 + Math.random() * 9000)),
-    customer: '', email: '', preparedBy: userFullName(), expires: d, partnerCompany: '', partnerEmail: '',
+    customer: '', email: '', contactName: '', preparedBy: userFullName(), expires: d, partnerCompany: '', partnerEmail: '',
     sourceUrl: '', aiSummary: '',
     billToAddress: '', shipToAddress: '', billingContact: '',
+    // Which billing fields are still AUTO-managed (mirrored from "Who's it for?"
+    // / filled by address lookup). A manual edit of a billing field flips its
+    // flag off, and from then on that field is never auto-overwritten again.
+    // lookedUp marks a Bill To address filled by "Look up address", which shows
+    // the "Auto-filled — please verify" note. (Changes 2c & 3.)
+    billingAuto: { billTo: true, contact: true, lookedUp: false },
     paymentMethod: 'Credit Card, ACH/Wire, Check', paymentTerms: 'Net 120', currency: 'USD', autoRenewal: false,
     lines: [], // start empty — the user adds products (no default Right Click Tools)
     years: 1, months: 12, partner: false, customerType: 'new', dealType: 'addon', marginNewPct: 20, marginRenPct: 15, extraPct: 0, supportAll: false,
@@ -198,6 +204,16 @@ try {
     const d = JSON.parse(raw);
     state.cfg = Object.assign(defaults(), d.cfg || {});
     state.quote = Object.assign(defaultQuote(), d.quote || {});
+    // Migration for quotes saved before the billing auto-mirror (Change 2c):
+    // billing values that already exist were typed by hand, so mark them manual;
+    // empty ones stay auto-managed.
+    if (!(d.quote && d.quote.billingAuto)) {
+      state.quote.billingAuto = {
+        billTo: !String(state.quote.billToAddress || '').trim(),
+        contact: !String(state.quote.billingContact || '').trim(),
+        lookedUp: false,
+      };
+    }
     // A restored in-progress quote may be a type the admin has since turned off
     // (or an install migrating to the new default where only net-new is on).
     // Clamp it to an enabled type and queue a one-time toast shown right after
@@ -218,7 +234,58 @@ state.registerGate = !isRegistered();
 function persist() {
   try { localStorage.setItem(KEY, JSON.stringify({ cfg: state.cfg, quote: state.quote })); } catch (e) {}
 }
-function setQ(p) { state.quote = Object.assign({}, state.quote, p); persist(); render(); }
+
+/* ---- Billing auto-mirror (Change 2c) ----
+   Whenever the company name (customer) or the contact name is set — typed,
+   spoken, or applied from page analysis — mirror them into Billing details:
+     customer    → the FIRST LINE of the Bill To address box
+     contactName → the Billing contact field
+   A billing field is only auto-filled while it is empty or still auto-managed
+   (per the quote's billingAuto flags). The moment the user edits a billing
+   field themselves — including by voice ("billing address …") or by applying a
+   page-detected address — its flag flips off and their entry always wins.
+   Centralized here inside setQ so every fill path behaves identically. */
+function normalizeBillingAuto(q) {
+  const a = (q && q.billingAuto) || {};
+  return { billTo: a.billTo !== false, contact: a.contact !== false, lookedUp: a.lookedUp === true };
+}
+function applyBillingMirror(patch, q) {
+  const out = Object.assign({}, patch);
+  const auto = normalizeBillingAuto(q);
+  const has = (k) => Object.prototype.hasOwnProperty.call(patch, k);
+  if (has('billingAuto')) {
+    // An explicit billingAuto in the patch marks a programmatic fill (the
+    // address lookup) — honor its flags instead of treating it as a manual edit.
+    Object.assign(auto, patch.billingAuto);
+  } else {
+    // A direct write to a billing field is a manual entry: it wins from now on.
+    // Clearing the field makes it fair game for auto-fill again ("still empty").
+    if (has('billToAddress')) { auto.billTo = !String(patch.billToAddress || '').trim(); auto.lookedUp = false; }
+    if (has('billingContact')) auto.contact = !String(patch.billingContact || '').trim();
+  }
+  if (has('customer')) {
+    const name = String(patch.customer || '').trim();
+    const curAddr = has('billToAddress') ? String(out.billToAddress || '') : String(q.billToAddress || '');
+    if (name && (auto.billTo || !curAddr.trim())) {
+      // First line = company name; keep any lines below it (a looked-up address).
+      const rest = curAddr.trim() ? curAddr.split('\n').slice(1) : [];
+      out.billToAddress = [name].concat(rest).join('\n');
+      auto.billTo = true;
+    }
+  }
+  if (has('contactName')) {
+    const cn = String(patch.contactName || '').trim();
+    const curContact = has('billingContact') ? String(out.billingContact || '') : String(q.billingContact || '');
+    if (cn && (auto.contact || !curContact.trim())) {
+      out.billingContact = cn;
+      auto.contact = true;
+    }
+  }
+  out.billingAuto = auto;
+  return out;
+}
+
+function setQ(p) { state.quote = Object.assign({}, state.quote, applyBillingMirror(p, state.quote)); persist(); render(); }
 function setCfg(p) { state.cfg = Object.assign({}, state.cfg, p); persist(); render(); }
 function uid() { return 'x' + Math.random().toString(36).slice(2, 8); }
 function flash(text, tone) {
@@ -1159,7 +1226,14 @@ function sectionWho(v) {
 
   const custFields = [
     labeledInput('Customer / company', { placeholder: 'Acme Corp', value: q.customer, dataK: 'customer', onChange: (e) => setQ({ customer: e.target.value }) }),
-    labeledInput('Contact email', { type: 'email', placeholder: 'name@acme.com', value: q.email, dataK: 'email', onChange: (e) => setQ({ email: e.target.value }) }),
+    // Contact email + the new Contact name (Change 2b) share one grid cell so the
+    // name field sits DIRECTLY below the email field at every panel width. The
+    // contact name mirrors into the Billing contact field until that field is
+    // edited by hand (Change 2c).
+    h('div', { style: 'display: flex; flex-direction: column; gap: 12px;' },
+      labeledInput('Contact email', { type: 'email', placeholder: 'name@acme.com', value: q.email, dataK: 'email', onChange: (e) => setQ({ email: e.target.value }) }),
+      labeledInput('Contact name', { placeholder: 'Jane Doe', value: q.contactName, dataK: 'contactName', onChange: (e) => setQ({ contactName: e.target.value }) })
+    ),
   ];
   const metaFields = [
     labeledInput('Prepared by', { placeholder: 'Your name', value: q.preparedBy, dataK: 'preparedBy', onChange: (e) => setQ({ preparedBy: e.target.value }) }),
@@ -1188,6 +1262,64 @@ function sectionWho(v) {
   return section;
 }
 
+/* ---- Billing-address lookup (Change 3) ----
+   "Look up address" uses the company name to look up the company's mailing /
+   headquarters address online and fills it into the Bill To address box, below
+   the company-name first line (Change 2c). The lookup SERVICE is not chosen
+   yet, so ADDRESS_LOOKUP_SERVICE stays null and the button only explains that a
+   service needs to be connected — it never crashes or throws.
+
+   TODO: connect the chosen address-lookup service here. Replace the `null`
+   below with an implementation of the form
+       async function (companyName) { ... return 'Street\nCity, State ZIP\nCountry'; }
+   returning the company's mailing/headquarters address as a multi-line string
+   (or ''/null when nothing is found). Everything else — the button, the
+   company-name first line, the "Auto-filled — please verify" note, and the
+   never-overwrite-a-hand-typed-address guard — is already wired up. */
+const ADDRESS_LOOKUP_SERVICE = null;
+
+function lookupBillingAddress() {
+  const q = state.quote;
+  if (typeof ADDRESS_LOOKUP_SERVICE !== 'function') {
+    // No lookup service configured yet — say so and do nothing else.
+    flash('Connect an address-lookup service to use this', 'warn');
+    return;
+  }
+  const company = String(q.customer || '').trim();
+  if (!company) {
+    state.sections.who = true;
+    flash('Add the customer / company name first — the lookup uses it', 'warn');
+    return;
+  }
+  const auto = normalizeBillingAuto(q);
+  // Never overwrite an address the user typed themselves (Change 3 guard):
+  // an address body below the company line that is NOT auto-managed is theirs.
+  const curBody = String(q.billToAddress || '').split('\n').slice(1).join('\n').trim();
+  if (curBody && !auto.billTo) {
+    flash('You entered this address yourself — it won’t be overwritten', 'warn');
+    return;
+  }
+  flash('Looking up the address for ' + company + '…', 'ok');
+  Promise.resolve()
+    .then(() => ADDRESS_LOOKUP_SERVICE(company))
+    .then((address) => {
+      address = (address == null ? '' : String(address)).trim();
+      if (!address) { flash('No address found for ' + company + ' — enter it manually', 'warn'); return; }
+      // Re-check before writing: the user may have typed meanwhile — theirs wins.
+      const now = state.quote;
+      const nowAuto = normalizeBillingAuto(now);
+      const nowBody = String(now.billToAddress || '').split('\n').slice(1).join('\n').trim();
+      if (nowBody && !nowAuto.billTo) return;
+      setQ({
+        billToAddress: company + '\n' + address,
+        billingAuto: { billTo: true, contact: nowAuto.contact, lookedUp: true },
+      });
+      state.billingOpen = true;
+      flash('Address filled from lookup — please verify it before sending', 'ok');
+    })
+    .catch(() => { flash('Address lookup failed — try again or enter it manually', 'warn'); });
+}
+
 /* ---- Collapsible: Billing details (for PDF) ---- */
 function sectionBillingDetails(q) {
   const open = state.billingOpen;
@@ -1204,12 +1336,24 @@ function sectionBillingDetails(q) {
   );
   const wrap = h('div', { class: 'sqg-collapse' }, header);
   if (open) {
+    // Bill To cell: the address box plus the "Look up address" button (Change 3)
+    // and, when the address came from lookup, the "Auto-filled — please verify"
+    // note. Grouped in one cell so the button sits right by its box.
+    const billAuto = normalizeBillingAuto(q);
+    const billToRow = h('div', { style: 'display: flex; align-items: center; gap: 10px; flex-wrap: wrap;' },
+      dsButton('Look up address', 'secondary', 'sm', false, lookupBillingAddress));
+    if (billAuto.lookedUp && String(q.billToAddress || '').trim()) {
+      billToRow.append(h('span', { class: 'sqg-hint', style: 'color: var(--text-accent); font-weight: 600;' }, 'Auto-filled — please verify'));
+    }
+    const billToCell = h('div', { style: 'display: flex; flex-direction: column; gap: 8px;' },
+      labeledTextarea('Bill To address', {
+        placeholder: 'Street address\nCity, State ZIP\nCountry', value: q.billToAddress, dataK: 'billToAddress',
+        onChange: (e) => setQ({ billToAddress: e.target.value }),
+      }),
+      billToRow);
     wrap.append(h('div', { class: 'sqg-collapse-body' },
       h('div', { class: 'sqg-form-grid' },
-        labeledTextarea('Bill To address', {
-          placeholder: 'Street address\nCity, State ZIP\nCountry', value: q.billToAddress, dataK: 'billToAddress',
-          onChange: (e) => setQ({ billToAddress: e.target.value }),
-        }),
+        billToCell,
         labeledTextarea('Ship To address', {
           placeholder: 'Street address\nCity, State ZIP\nCountry', value: q.shipToAddress, dataK: 'shipToAddress',
           onChange: (e) => setQ({ shipToAddress: e.target.value }),

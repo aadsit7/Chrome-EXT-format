@@ -199,6 +199,47 @@ const FIXTURES = [
       checkEq('New+name', 'customer', 'Globex Industries', scalar(cs, 'customer'));
     },
   },
+
+  /* ---- CHANGE 2a: full multi-word company capture ---- */
+  {
+    name: 'Company name containing "and" is captured in full (prepositional)',
+    text: 'deal with Johnson and Johnson',
+    assert: function (cs) {
+      checkEq('Name-with-and', 'customer (full name)', 'Johnson And Johnson', scalar(cs, 'customer'));
+    },
+  },
+  {
+    name: 'Company name starting with a number word is captured in full',
+    text: 'customer is Seven Hills Software',
+    assert: function (cs) {
+      checkEq('Number-word name', 'customer (full name)', 'Seven Hills Software', scalar(cs, 'customer'));
+    },
+  },
+  {
+    name: 'A real quantity after the name still ends the capture',
+    text: 'customer Acme two thousand endpoints',
+    assert: function (cs) {
+      checkEq('Name-then-qty', 'customer', 'Acme', scalar(cs, 'customer'));
+    },
+  },
+
+  /* ---- CHANGE 2b: spoken contact fills the new Contact name field ---- */
+  {
+    name: 'Spoken contact routes to the new contactName field',
+    text: 'contact name John Smith, billing contact Pat Lee',
+    assert: function (cs) {
+      checkEq('Contact fields', 'contactName', 'John Smith', scalar(cs, 'contactName'));
+      checkEq('Contact fields', 'billingContact', 'Pat Lee', scalar(cs, 'billingContact'));
+    },
+  },
+  {
+    name: 'Bare "contact" also fills Contact name',
+    text: 'contact is Mary Jones',
+    assert: function (cs) {
+      checkEq('Bare contact', 'contactName', 'Mary Jones', scalar(cs, 'contactName'));
+      checkNull('Bare contact', 'billingContact untouched', scalar(cs, 'billingContact'));
+    },
+  },
 ];
 
 /* ============================ RUN ============================ */
@@ -208,6 +249,33 @@ FIXTURES.forEach(function (fx) {
   console.log('    “' + fx.text + '”');
   fx.assert(parse(fx.text));
 });
+
+/* ============ CHANGE 2a: known-company spelling snap ============
+   _parse takes an optional list of company names the tool already knows
+   (in the extension: the quote's customer / partner company). A close mishear
+   or a leading-words match snaps to the known spelling; a genuinely different
+   or LONGER spoken name is kept as spoken. */
+console.log('\n• Known-company spelling snap (Change 2a)');
+(function () {
+  const KNOWN = ['Gulfstream Aerospace Corporation'];
+  const snap = (t) => { const c = V._parse(t, KNOWN).commands.find((x) => x.type === 'scalar' && x.field === 'customer'); return c ? c.value : null; };
+  checkEq('Known snap', 'mishear → known spelling', 'Gulfstream Aerospace Corporation', snap('customer goldstream aerospace corporation'));
+  checkEq('Known snap', 'leading words → full known name', 'Gulfstream Aerospace Corporation', snap('quote for gulfstream aerospace'));
+  checkEq('Known snap', 'different name stays as spoken', 'Initech', snap('customer is Initech'));
+  checkEq('Known snap', 'longer spoken name is never truncated', 'Gulfstream Aerospace Corporation Devco', snap('customer gulfstream aerospace corporation devco'));
+})();
+
+/* ============ CHANGE 1: voice is silent after stopping ============
+   The post-listening recap panel ("Filled live from your voice" + editable
+   transcript + Done / Re-apply) is retired: reviewBox() must render NOTHING,
+   even in the exact state that used to show it (stopped, with heard text and
+   applied fields). */
+console.log('\n• No recap panel after stopping (Change 1)');
+(function () {
+  global.state.voice = { on: false, interim: '', finalText: '', error: '', heard: 'right click tools 2500 endpoints', applied: ['Right Click Tools → 2,500 endpoints'] };
+  checkEq('Silent stop', 'reviewBox() renders nothing', null, V.reviewBox());
+  global.state.voice = {};
+})();
 
 /* ============ Quote-type enablement guardrail (Task c) ============
    A spoken command that targets a disabled quote type is SKIPPED through the

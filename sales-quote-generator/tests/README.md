@@ -27,6 +27,11 @@ returns (Task 2): `customerType`, `dealType`, `extraDiscountPct`,
 through the same state patches (with the clamp / max-discount rules) as the live
 voice parser.
 
+A detected contact (`contactName`, e.g. the Salesforce Contact Roles primary)
+now maps to the quote's **Contact name** field on both the rule-based and AI
+paths — never to a direct `billingContact` write (Billing contact fills via the
+app's billing auto-mirror instead), and both fixtures assert that.
+
 ### `voice.test.js` — "Speak to fill" live parser
 
 Drives the extension's own `window.SQG_VOICE._parse` with spoken-phrase fixtures
@@ -36,6 +41,15 @@ to Amazon with a fifteen percent discount. It's a new customer."* (product,
 customer = Amazon, extra discount = 15, customer type = new), a label-first
 fixture that must still parse identically (additive-only guard), `quote for
 Costco, …`, partner-margin phrasing, and a renewal phrasing.
+
+Also covers the "Who's it for?" upgrades: **full multi-word company capture**
+("Johnson and Johnson", "Seven Hills Software" come through whole while a real
+quantity still ends the capture), the **known-company spelling snap**
+(`_parse(text, knownNames)` — a close mishear or leading-words match snaps to
+the known spelling; different or longer spoken names are kept as spoken), the
+**Contact name routing** ("contact name John Smith" → `contactName`, "billing
+contact Pat Lee" → `billingContact`), and — Change 1 — that `reviewBox()`
+renders nothing (voice is silent after stopping; no recap panel).
 
 ### `layout.test.js` — flow-based one-page PDF (Bug 1)
 

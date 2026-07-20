@@ -14,20 +14,28 @@
        "annual increase 3 percent", "premium support"
      • term / type — "two year term", "net new", "current customer", "renewal"
      • text fields — "customer is Acme Corporation", "email jane at acme dot com",
-       "contact John Smith", "partner company Reseller Inc"
+       "contact name John Smith" (fills the Contact name field), "billing contact
+       Pat Lee", "partner company Reseller Inc"
+   Company names are captured in FULL — multi-word names, names containing
+   "and", and names that start with a number word ("Seven Hills Software") all
+   come through whole — and a captured name that closely matches a company name
+   the tool already has on hand (the quote's customer / partner company) snaps
+   to that known spelling (CHANGE 2a).
    Number words ("twenty five hundred", "two thousand five hundred") are
    understood. The parse is deterministic: the same words always route to the
    same fields. Because the whole running transcript is re-parsed on every phrase,
    simply re-saying a value corrects it (the latest wins), and the fields update
-   live so any mis-hear is visible instantly. After stopping, the transcript is
-   shown in an editable box so you can fix a misheard word and Re-apply.
+   live so any mis-hear is visible instantly. Stopping is silent: there is no
+   after-the-fact recap/confirmation step — all voice state is cleared the moment
+   recognition ends (CHANGE 1), so correcting a value means re-saying it (or
+   editing the field directly).
 
    Applied changes go through setQ — exactly like a manual edit (visible, saved,
    reversible) — so the pricing engine still computes every total. Speech
    recognition itself is the browser's; accuracy of the transcription depends on
    the mic/environment, which is why every change is shown live and is editable.
 
-   Relies on globals defined in app.js (state, render, flash, h, dsButton, setQ,
+   Relies on globals defined in app.js (state, render, flash, h, setQ,
    uid). Loaded after analyze.js / sheets.js and before app.js; its functions
    only touch those globals when called. */
 
@@ -189,9 +197,69 @@ window.SQG_VOICE = (function () {
 
     function labelFor(f) {
       var M = { customer: 'Customer', email: 'Email', partnerCompany: 'Partner company', partnerEmail: 'Partner email',
-        billingContact: 'Contact', preparedBy: 'Prepared by', billToAddress: 'Bill-to address',
+        billingContact: 'Billing contact', contactName: 'Contact name', preparedBy: 'Prepared by', billToAddress: 'Bill-to address',
         shipToAddress: 'Ship-to address', paymentTerms: 'Payment terms', paymentMethod: 'Payment method', currency: 'Currency' };
       return M[f] || f;
+    }
+
+    /* ---- CHANGE 2a: company-name capture helpers ---- */
+    // Spelled-number vocabulary shared by the two number boundaries below.
+    var NUM_WORD_SRC = '(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)';
+    // What may follow a spelled number for it to read as a QUANTITY (and not as
+    // part of a company name like "Seven Hills Software"): another number word,
+    // a digit, a unit, percent, or a term word — or nothing at all (end of text).
+    var QTYISH_RX = new RegExp('^\\s*(?:\\d|' + NUM_WORD_SRC + '\\b|point\\b|percent\\b|%|k\\b|endpoints?\\b|end ?points?\\b|devices?\\b|machines?\\b|nodes?\\b|seats?\\b|users?\\b|licen[cs]es?\\b|years?\\b|yrs?\\b|months?\\b|mos?\\b)', 'i');
+    // Index of the first number that should END a company-name capture, or -1.
+    // Single digits always bound (parity with the plain boundary); a spelled
+    // number bounds only when what follows makes it look like a quantity/term,
+    // so multi-word names that CONTAIN a number word are captured in full.
+    function smartNumBoundary(rest) {
+      var di = rest.search(/\b\d\b/);
+      var rx = new RegExp('\\b' + NUM_WORD_SRC + '\\b', 'g'), m;
+      while ((m = rx.exec(rest))) {
+        if (di >= 0 && m.index > di) break;
+        var after = rest.slice(m.index + m[0].length);
+        if (!/\S/.test(after) || QTYISH_RX.test(after)) { di = di >= 0 ? Math.min(di, m.index) : m.index; break; }
+      }
+      return di;
+    }
+    // Levenshtein distance (iterative, two rows) for the known-spelling snap.
+    function editDistance(a, b) {
+      var la = a.length, lb = b.length, i, j;
+      if (!la) return lb; if (!lb) return la;
+      var prev = [], cur = [];
+      for (j = 0; j <= lb; j++) prev[j] = j;
+      for (i = 1; i <= la; i++) {
+        cur[0] = i;
+        for (j = 1; j <= lb; j++) {
+          cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        }
+        var t = prev; prev = cur; cur = t;
+      }
+      return prev[lb];
+    }
+    function nameKey(s) { return low(s).replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+    // If the captured name closely matches a company name the tool already
+    // knows, return that KNOWN spelling; otherwise null (keep what was said).
+    // "Closely" = same words, a typo-level mishear (≥0.82 similarity), or the
+    // spoken words being the leading words of a longer known name. A spoken
+    // name that says MORE than the known one is kept as spoken — the snap
+    // expands or corrects a name, it never truncates one.
+    function snapKnownCompany(value, known) {
+      var v = nameKey(value);
+      if (!v || v.length < 2 || !known || !known.length) return null;
+      var best = null, bestScore = 0;
+      known.forEach(function (k) {
+        var kk = nameKey(k);
+        if (!kk) return;
+        var score;
+        if (kk === v) score = 1;
+        else if (kk.indexOf(v + ' ') === 0) score = 0.9;
+        else if (v.indexOf(kk + ' ') === 0) score = 0; // spoken says MORE than known — keep as spoken
+        else { var L = Math.max(v.length, kk.length); score = L ? 1 - editDistance(v, kk) / L : 0; }
+        if (score > bestScore) { bestScore = score; best = k; }
+      });
+      return bestScore >= 0.82 ? best : null;
     }
 
     /* Action / navigation commands (not field fills). NON-idempotent (scroll,
@@ -225,7 +293,7 @@ window.SQG_VOICE = (function () {
       return a;
     }
 
-    function parse(text, catalog) {
+    function parse(text, catalog, known) {
       var commands = [];
       var actions = detectActions(text);
       var t = ' ' + replaceNumberWords(low(text)) + ' ';
@@ -349,14 +417,23 @@ window.SQG_VOICE = (function () {
         { field: 'partnerEmail', kind: 'email', kw: ['partner email', 'reseller email'] },
         { field: 'email', kind: 'email', kw: ['email', 'e-mail', 'e mail'] },
         { field: 'partnerCompany', kind: 'text', kw: ['partner company', 'reseller company', 'partner name'] },
-        { field: 'billingContact', kind: 'text', num: true, kw: ['billing contact', 'contact name', 'contact'] },
+        // CHANGE 2b — a spoken contact now fills the new "Contact name" field in
+        // "Who's it for?" ("contact name John Smith", "contact is Mary Jones");
+        // "billing contact …" still targets the Billing details field directly.
+        // billingContact must stay FIRST so "billing contact" wins over the bare
+        // "contact" keyword.
+        { field: 'billingContact', kind: 'text', num: true, kw: ['billing contact'] },
+        { field: 'contactName', kind: 'text', num: true, kw: ['contact name', 'contact'] },
         { field: 'preparedBy', kind: 'text', num: true, kw: ['prepared by'] },
         { field: 'billToAddress', kind: 'text', kw: ['bill to address', 'bill-to address', 'billing address'] },
         { field: 'shipToAddress', kind: 'text', kw: ['ship to address', 'ship-to address', 'shipping address'] },
         { field: 'paymentTerms', kind: 'text', kw: ['payment terms'] },
         { field: 'paymentMethod', kind: 'text', kw: ['payment method'] },
         { field: 'currency', kind: 'text', num: true, kw: ['currency'] },
-        { field: 'customer', kind: 'text', num: true, kw: ['customer', 'company name', 'company', 'account name'] },
+        // num:'smart' (CHANGE 2a) — company names keep spelled-number words that
+        // are part of the name ("Seven Hills Software"); real quantities still end
+        // the capture ("customer Acme two thousand endpoints").
+        { field: 'customer', kind: 'text', num: 'smart', kw: ['customer', 'company name', 'company', 'account name'] },
       ];
       var ALL_KWS = [];
       FIELD_DEFS.forEach(function (d) { d.kw.forEach(function (k) { ALL_KWS.push(k); }); });
@@ -383,7 +460,14 @@ window.SQG_VOICE = (function () {
         var si = rest.search(/[.?!](?:\s|$)/); if (si >= 0) end = Math.min(end, vStart + si);
         var kb = firstMatch(orig, ALL_KWS.concat(CMD_WORDS), vStart); if (kb > vStart) end = Math.min(end, kb);
         if (prodPhrasesAll.length) { var pb = firstMatch(orig, prodPhrasesAll, vStart); if (pb > vStart) end = Math.min(end, pb); }
-        if (numBound) { var di = rest.search(/\b(?:\d|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)\b/); if (di >= 0) end = Math.min(end, vStart + di); }
+        if (numBound) {
+          // 'smart' (customer names, CHANGE 2a): a spelled number bounds only when
+          // it reads as a quantity; true keeps the original always-bound behavior.
+          var di = numBound === 'smart'
+            ? smartNumBoundary(rest)
+            : rest.search(new RegExp('\\b(?:\\d|' + NUM_WORD_SRC + ')\\b'));
+          if (di >= 0) end = Math.min(end, vStart + di);
+        }
         return end;
       }
       // Order of operations: blank phrase-level matches in the keyword-scan copy
@@ -415,7 +499,7 @@ window.SQG_VOICE = (function () {
           var m = rx.exec(work);
           if (!m) continue;
           var vStart = m.index + m[0].length;
-          var vEnd = valueEnd(vStart, !!def.num);
+          var vEnd = valueEnd(vStart, def.num === 'smart' ? 'smart' : !!def.num);
           var value = norm(raw.slice(vStart, vEnd)).replace(/[,.;:]+$/, '');
           if (def.kind === 'email') {
             // An email field may only ever hold ONE valid address. Extract the
@@ -439,6 +523,11 @@ window.SQG_VOICE = (function () {
             }
           }
           else value = value.replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+          // CHANGE 2a — snap a spoken company name to a known spelling when close.
+          if (value && def.field === 'customer') {
+            var snapped = snapKnownCompany(value, known);
+            if (snapped) value = snapped;
+          }
           if (value) { commands.push({ type: 'scalar', field: def.field, value: value, label: labelFor(def.field) + ' → ' + value }); blankWork(m.index, vEnd); }
           break;
         }
@@ -461,10 +550,20 @@ window.SQG_VOICE = (function () {
           return norm(s);
         };
         var custEnd = function (vStart) {
-          var end = valueEnd(vStart, true); // [,;] + field/command keywords + product phrases + numbers
+          // 'smart' numbers (CHANGE 2a): keep spelled-number words that are part
+          // of the name ("Seven Hills"); real quantities still end the capture.
+          var end = valueEnd(vStart, 'smart'); // [,;] + field/command keywords + product phrases + numbers
           var rest = orig.slice(vStart);
           var pi = rest.search(/[.!?]/); if (pi >= 0) end = Math.min(end, vStart + pi);
-          var wi = rest.search(/\b(?:with|at|plus|and)\b/); if (wi >= 0) end = Math.min(end, vStart + wi);
+          var wi = rest.search(/\b(?:with|at|plus)\b/); if (wi >= 0) end = Math.min(end, vStart + wi);
+          // "and" (CHANGE 2a) — many company names contain it ("Procter and
+          // Gamble", "Johnson and Johnson"), so it ends the name ONLY when the
+          // word after it is not a capitalized name word in the original text.
+          var arx = /\band\b/g, am;
+          while ((am = arx.exec(rest))) {
+            if (vStart + am.index >= end) break;
+            if (!/^\s+[A-Z]/.test(raw.slice(vStart + am.index + am[0].length))) { end = Math.min(end, vStart + am.index); break; }
+          }
           // Also stop at any run of digits — valueEnd's number boundary only
           // catches single digits and spelled numbers, so a bare "3000" ("quote
           // for 3000 endpoints") would otherwise be swallowed into the name.
@@ -490,6 +589,9 @@ window.SQG_VOICE = (function () {
           // the original), which the stronger verbs ("selling … to") don't need.
           if (!TRIGGERS[ti].strong && !/^[A-Z]/.test(cVal.replace(STOP_LEAD, '').replace(/^\s+/, ''))) continue;
           name = name.replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+          // CHANGE 2a — snap to a known company spelling when the name is close.
+          var snappedName = snapKnownCompany(name, known);
+          if (snappedName) name = snappedName;
           commands.push({ type: 'scalar', field: 'customer', value: name, label: labelFor('customer') + ' → ' + name });
           break;
         }
@@ -508,6 +610,19 @@ window.SQG_VOICE = (function () {
      ======================================================================== */
   function catalog() {
     return ((state.cfg && state.cfg.products) || []).map(function (p) { return { id: p.id, name: p.name, unit: p.unit }; });
+  }
+  /* CHANGE 2a — company names the tool already has on hand, used by the parser
+     to snap a spoken company name to its known spelling. Today that's the
+     current quote's customer and partner company (e.g. filled from "Analyze
+     this page" or typed earlier); anything added here is picked up automatically. */
+  function knownCompanies() {
+    var out = [];
+    var push = function (v) { v = (v == null ? '' : String(v)).trim(); if (v && out.indexOf(v) === -1) out.push(v); };
+    try {
+      push(state.quote && state.quote.customer);
+      push(state.quote && state.quote.partnerCompany);
+    } catch (e) {}
+    return out;
   }
   function cmdKey(c) {
     if (c.type === 'lineQty') return 'line:' + c.productId;
@@ -582,7 +697,7 @@ window.SQG_VOICE = (function () {
   // Parse the FULL running transcript and apply — called on every finalized
   // phrase so the form fills live and re-saying a value corrects it.
   function applyLive(fullText, interim) {
-    var res = parser.parse(fullText, catalog());
+    var res = parser.parse(fullText, catalog(), knownCompanies());
     var map = {};
     res.commands.forEach(function (c) { map[cmdKey(c)] = c; }); // keep latest per target
     var cmds = Object.keys(map).map(function (k) { return map[k]; });
@@ -665,24 +780,25 @@ window.SQG_VOICE = (function () {
   }
 
   // A listening session ended (manual stop, hand-off, or the service ended on
-  // its own): show the editable recap if anything was heard.
+  // its own). CHANGE 1 — no recap/confirmation step: clear every bit of voice
+  // state (transcript, heard text, applied chips) so nothing lingers on screen.
+  // The fields the user spoke are already filled (live, via applyLive); only a
+  // transient toast reports the outcome.
   function finalizeSession() {
     var text = transcript();
     var applied = (state.voice && state.voice.applied) || [];
-    if (!text && !applied.length) {
-      setVoice({ on: false, interim: '', heard: '' });
-      flash('Didn’t catch anything — tap the microphone and try again', 'warn');
-      return;
-    }
-    setVoice({ on: false, interim: '', heard: text }); // keep transcript editable for corrections
+    finalText = '';
+    setVoice({ on: false, interim: '', finalText: '', heard: '', applied: [] });
     if (applied.length) flash('Filled ' + applied.length + ' field' + (applied.length > 1 ? 's' : '') + ' from your voice', 'ok');
+    else if (!text) flash('Didn’t catch anything — tap the microphone and try again', 'warn');
+    else flash('Couldn’t pull any fields from that — try rephrasing', 'warn');
   }
 
   function stop() {
     var wasActive = !!recog || !!(state.voice && state.voice.on);
     manualStop = true;
     teardown();
-    if (!wasActive) { setVoice({ on: false, interim: '' }); return; }
+    if (!wasActive) { setVoice({ on: false, interim: '', heard: '', applied: [] }); return; }
     finalizeSession();
   }
 
@@ -766,24 +882,6 @@ window.SQG_VOICE = (function () {
   // Toggle keyed off the REAL recognizer, so a stale flag can never block start.
   function toggle() { if (recog) stop(); else start(); }
 
-  // Re-apply an edited transcript (correction path after stopping).
-  function reapply(text) {
-    text = (text == null ? '' : String(text)).replace(/\s+/g, ' ').trim();
-    if (!text) { flash('Nothing to apply — tap the microphone and try again', 'warn'); return; }
-    finalText = text;
-    var res = parser.parse(text, catalog());
-    var map = {};
-    res.commands.forEach(function (c) { map[cmdKey(c)] = c; });
-    var cmds = Object.keys(map).map(function (k) { return map[k]; });
-    var built = buildPatch(cmds);
-    state.voice = Object.assign({ on: false, interim: '', finalText: '', error: '', heard: '', applied: [] }, state.voice || {},
-      { on: false, heard: text, applied: built.labels });
-    if (built.hasChange) { setQ(built.patch); flash('Applied ' + built.labels.length + ' field' + (built.labels.length > 1 ? 's' : ''), 'ok'); }
-    else { render(); flash('Couldn’t pull any fields from that — try rephrasing', 'warn'); }
-  }
-
-  function done() { setVoice({ on: false, interim: '', heard: '', applied: [] }); }
-
   /* ---- UI ---- */
   function button() {
     if (!supported()) return null;
@@ -827,38 +925,19 @@ window.SQG_VOICE = (function () {
     return panel;
   }
 
-  // After stopping: recap of what was filled + editable transcript to correct
-  // and Re-apply. Not shown while listening or when nothing was heard.
-  function reviewBox() {
-    var v = state.voice || {};
-    if (v.on || (!v.heard && !(v.applied && v.applied.length))) return null;
-    var ta = h('textarea', {
-      class: 'sqg-voice-review-ta', dataK: 'sqg-voice-review', rows: 3,
-      'aria-label': 'What we heard — edit and re-apply to correct', spellcheck: 'true',
-      value: v.heard || '',
-      onInput: function (e) { if (state.voice) state.voice.heard = e.target.value; },
-    });
-    var box = h('div', { class: 'sqg-voice-review' },
-      h('span', { class: 'sqg-voice-review-title' }, (v.applied && v.applied.length) ? 'Filled live from your voice' : 'Here’s what I heard'));
-    var c = chips(v.applied);
-    if (c) box.append(c);
-    box.append(
-      h('span', { class: 'sqg-voice-review-sub' }, 'Fix any misheard word below and Re-apply:'),
-      ta,
-      h('p', { class: 'sqg-voice-review-note' },
-        'Fields fill live as you speak — this uses your browser’s speech recognition. Re-saying a value (or editing here) corrects it.'),
-      h('div', { class: 'sqg-voice-review-actions' },
-        dsButton('Done', 'secondary', 'md', false, done),
-        dsButton('Re-apply', 'primary', 'md', false, function () { reapply(ta.value); })
-      ));
-    return box;
-  }
+  // CHANGE 1 — the after-listening recap panel ("Filled live from your voice",
+  // editable transcript, Done / Re-apply) is retired: voice is now fully silent
+  // after you stop talking. Fields still fill live while speaking (liveStrip
+  // above); once recognition stops, finalizeSession() clears all voice state so
+  // nothing lingers. Kept as a null-returning stub because analyze.js's bar()
+  // still calls it.
+  function reviewBox() { return null; }
 
   return {
     button: button, liveStrip: liveStrip, reviewBox: reviewBox, toggle: toggle, supported: supported,
     stop: stop, isListening: function () { return !!(state.voice && state.voice.on); },
-    _start: start, _stop: stop, _transcript: transcript, _reapply: reapply,
-    _parse: function (text) { return parser.parse(text, catalog()); },
+    _start: start, _stop: stop, _transcript: transcript,
+    _parse: function (text, known) { return parser.parse(text, catalog(), known || knownCompanies()); },
     _applyLive: applyLive, _buildPatch: buildPatch, _runActions: runActions,
   };
 })();
