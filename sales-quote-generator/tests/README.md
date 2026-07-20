@@ -17,6 +17,11 @@ candidate filter behind "Look up address"'s OpenStreetMap fallback: the input is
 always a COMPANY name, so rivers / cities / bare place names are rejected and
 office/headquarters hits with a real street address win.
 
+v3.8 adds the **auto-renewal policy checks**: a fresh quote
+(`_defaultQuote()`) starts with `autoRenewal: true`, quotes restored from
+older versions are coerced to true, and app.js renders no "Auto renewal"
+toggle — the value is fixed to Yes and only surfaces on the PDF.
+
 ### `analyze.test.js` — "Analyze this page" + the AI review path
 
 Feeds two fixtures modeled on the attached PDFs (`fixtures.js` — a

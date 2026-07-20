@@ -177,7 +177,10 @@ function defaultQuote() {
     // lookedUp marks a Bill To address filled by "Look up address", which shows
     // the "Auto-filled — please verify" note. (Changes 2c & 3.)
     billingAuto: { billTo: true, contact: true, lookedUp: false },
-    paymentMethod: 'Credit Card, ACH/Wire, Check', paymentTerms: 'Net 120', currency: 'USD', autoRenewal: false,
+    paymentMethod: 'Credit Card, ACH/Wire, Check', paymentTerms: 'Net 120', currency: 'USD',
+    // Auto renewal is ALWAYS Yes (v3.8) and has no UI control — it only
+    // surfaces as "Auto Renewal: Yes" on the PDF and in the saved sheet row.
+    autoRenewal: true,
     lines: [], // start empty — the user adds products (no default Right Click Tools)
     years: 1, months: 12, partner: false, customerType: 'new', dealType: 'addon', marginNewPct: 20, marginRenPct: 15, extraPct: 0, supportAll: false,
     coTermDate: new Date(Date.now() + 182 * 864e5).toISOString().slice(0, 10),
@@ -216,6 +219,10 @@ try {
         lookedUp: false,
       };
     }
+    // v3.8: auto renewal is always Yes and its toggle is gone. A quote saved
+    // by an older version may carry false — flip it on restore so no quote
+    // can print "Auto Renewal: No" again.
+    state.quote.autoRenewal = true;
     // A restored in-progress quote may be a type the admin has since turned off
     // (or an install migrating to the new default where only net-new is on).
     // Clamp it to an enabled type and queue a one-time toast shown right after
@@ -1453,13 +1460,9 @@ function sectionBillingDetails(q) {
         labeledInput('Payment method', { value: q.paymentMethod, dataK: 'paymentMethod', onChange: (e) => setQ({ paymentMethod: e.target.value }) }),
         labeledInput('Payment terms', { value: q.paymentTerms, dataK: 'paymentTerms', onChange: (e) => setQ({ paymentTerms: e.target.value }) }),
         labeledInput('Currency', { value: q.currency, dataK: 'currency', onChange: (e) => setQ({ currency: e.target.value }) })
-      ),
-      h('div', { class: 'sqg-toggle-row' },
-        h('div', { class: 'sqg-toggle-titles' },
-          h('span', { class: 'sqg-toggle-title' }, 'Auto renewal'),
-          h('span', { class: 'sqg-toggle-desc' }, 'Printed on the quote PDF as Yes / No')),
-        switchEl(!!q.autoRenewal, (e) => setQ({ autoRenewal: e.target.checked }))
       )
+      // No Auto renewal control (v3.8): it is fixed to Yes on every quote and
+      // prints on the PDF automatically.
     ));
   }
   return wrap;
@@ -2141,6 +2144,9 @@ window.SQG_APP = {
   // "Look up address" fallback candidate filter — exposed for the /tests
   // harness (pure: OSM result list in → best company-plausible hit or null).
   osmPick: pickOsmCandidate,
+  // Fresh-quote factory — exposed for the /tests harness (v3.8 asserts auto
+  // renewal starts Yes; there is no UI control for it).
+  _defaultQuote: defaultQuote,
   // v3.7 — automatic, guarded HQ-address fill; called by voice.js's AI
   // reasoning pass after a dictation session ends.
   autoLookupAddress: maybeAutoLookupBillingAddress,

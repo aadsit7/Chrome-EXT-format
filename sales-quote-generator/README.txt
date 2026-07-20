@@ -206,9 +206,12 @@ USING THE TOOL
   "Who's it for?". It holds the fields that only appear on the quote
   PDF: Bill To address and Ship To address (multi-line), Billing
   Contact, Payment Method (default "Credit Card, ACH/Wire, Check"),
-  Payment Terms (default "Net 120"), Currency (default "USD"), and an
-  Auto Renewal Yes/No toggle (default No). All of it is optional —
-  fields left blank print as blank space on the PDF. Like every other
+  Payment Terms (default "Net 120"), and Currency (default "USD").
+  Auto renewal is ALWAYS Yes (v3.8): it has no toggle in the panel —
+  every quote simply prints "Auto Renewal: Yes" on the PDF (quotes
+  saved by older versions are flipped to Yes on restore). All of the
+  fields are optional — fields left blank print as blank space on the
+  PDF. Like every other
   field, these save with the quote (localStorage) and are restored
   when you reopen the panel.
 - "Look up address" (a small button under the Bill To address box)
