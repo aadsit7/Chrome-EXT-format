@@ -240,6 +240,38 @@ const FIXTURES = [
       checkNull('Bare contact', 'billingContact untouched', scalar(cs, 'billingContact'));
     },
   },
+  {
+    // Regression: the boundary at the next field keyword used to leave a
+    // dangling article on the name — "customer Amazon the email is …"
+    // captured "Amazon The". The tail trim must drop it.
+    name: 'Dangling article before the next keyword is trimmed',
+    text: 'customer Amazon the email is johnsmith at amazon dot com',
+    assert: function (cs) {
+      checkEq('Dangling-article', 'customer', 'Amazon', scalar(cs, 'customer'));
+      checkEq('Dangling-article', 'email', 'johnsmith@amazon.com', scalar(cs, 'email'));
+    },
+  },
+
+  /* ---- PDF output-formatting guards (v3.5) — from a real broken PDF ---- */
+  {
+    // "Contact: John Smith At Amazon.Com The" on the PDF: a person-name field
+    // must end where the company/email attachment begins.
+    name: 'Person name ends at "at" in run-on dictation',
+    text: 'contact name john smith at amazon dot com the lookup address should be automatically working',
+    assert: function (cs) {
+      checkEq('Person-at-cut', 'contactName', 'John Smith', scalar(cs, 'contactName'));
+    },
+  },
+  {
+    // "johnsmith@amazon.comthelookupaddressshoul" on the PDF: dictation with no
+    // pause after "dot com" fuses into a glob with no valid TLD boundary — NO
+    // email is captured (the field stays as it was; garbage never lands).
+    name: 'Run-on dictation glob is never captured as an email',
+    text: 'email john smith at amazon dot com the lookup address should be automatically working for the user',
+    assert: function (cs) {
+      checkNull('Email-glob', 'email (glob rejected)', scalar(cs, 'email'));
+    },
+  },
 ];
 
 /* ============================ RUN ============================ */

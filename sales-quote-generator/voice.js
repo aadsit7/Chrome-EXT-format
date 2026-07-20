@@ -110,7 +110,11 @@ window.SQG_VOICE = (function () {
     // The FIRST syntactically valid email in a (possibly noisy / fused) span. The
     // domain is matched non-greedily up to the first plausible TLD, so a fused
     // "a@x.com.partneremail.b@x.com" yields just "a@x.com" — never the whole run.
-    var EMAIL_ONE = /[a-z0-9._%+\-]+@[a-z0-9\-]+(?:\.[a-z0-9\-]+)*?\.[a-z]{2,24}/i;
+    // The TLD must NOT be followed by another letter: a run-on dictation with no
+    // pause ("… dot com the lookup address should …" → "….comthelookupaddress…")
+    // has no valid TLD boundary, so NO email is captured — the field stays as it
+    // was instead of holding a garbage glob.
+    var EMAIL_ONE = /[a-z0-9._%+\-]+@[a-z0-9\-]+(?:\.[a-z0-9\-]+)*?\.[a-z]{2,24}(?![a-z])/i;
     function firstEmail(s) { var m = String(s == null ? '' : s).match(EMAIL_ONE); return m ? m[0] : ''; }
 
     function groupToNumber(tokens) {
@@ -239,6 +243,17 @@ window.SQG_VOICE = (function () {
       return prev[lb];
     }
     function nameKey(s) { return low(s).replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+    // Trailing connectives/articles are never part of a company name. A labeled
+    // capture like "customer Amazon the email is …" ends at the "email" keyword
+    // and would otherwise keep the dangling "the" ("Amazon The") — trim such
+    // tails (repeatedly, with trailing punctuation) until the name is clean.
+    var STOP_TAIL_RX = /(?:^|\s)(?:with|at|for|to|of|and|plus|via|through|the|a|an|is|are|be|our|their|this|that)$/i;
+    function trimNameTail(s) {
+      s = norm(s).replace(/[,.;:!?]+$/, '');
+      var prev;
+      do { prev = s; s = norm(s.replace(STOP_TAIL_RX, '')).replace(/[,.;:!?]+$/, ''); } while (s !== prev);
+      return norm(s);
+    }
     // If the captured name closely matches a company name the tool already
     // knows, return that KNOWN spelling; otherwise null (keep what was said).
     // "Closely" = same words, a typo-level mishear (≥0.82 similarity), or the
@@ -421,10 +436,12 @@ window.SQG_VOICE = (function () {
         // "Who's it for?" ("contact name John Smith", "contact is Mary Jones");
         // "billing contact …" still targets the Billing details field directly.
         // billingContact must stay FIRST so "billing contact" wins over the bare
-        // "contact" keyword.
-        { field: 'billingContact', kind: 'text', num: true, kw: ['billing contact'] },
-        { field: 'contactName', kind: 'text', num: true, kw: ['contact name', 'contact'] },
-        { field: 'preparedBy', kind: 'text', num: true, kw: ['prepared by'] },
+        // "contact" keyword. person:true = the value is a PERSON's name: it ends
+        // where a company/email attachment begins ("john smith at amazon dot com"
+        // → "John Smith") and dangling connectives are trimmed.
+        { field: 'billingContact', kind: 'text', num: true, person: true, kw: ['billing contact'] },
+        { field: 'contactName', kind: 'text', num: true, person: true, kw: ['contact name', 'contact'] },
+        { field: 'preparedBy', kind: 'text', num: true, person: true, kw: ['prepared by'] },
         { field: 'billToAddress', kind: 'text', kw: ['bill to address', 'bill-to address', 'billing address'] },
         { field: 'shipToAddress', kind: 'text', kw: ['ship to address', 'ship-to address', 'shipping address'] },
         { field: 'paymentTerms', kind: 'text', kw: ['payment terms'] },
@@ -523,8 +540,16 @@ window.SQG_VOICE = (function () {
             }
           }
           else value = value.replace(/\b\w/g, function (c) { return c.toUpperCase(); });
-          // CHANGE 2a — snap a spoken company name to a known spelling when close.
+          // Person-name fields: cut at a standalone "at"/"@" (the start of a
+          // company or email attachment in run-on dictation) and trim dangling
+          // connectives, so the PDF's Contact lines never carry a spoken tail.
+          if (value && def.person) {
+            value = trimNameTail(value.split(/\s+(?:at|@)\s+/i)[0]);
+          }
+          // CHANGE 2a — drop a dangling connective/article the boundary left on
+          // the name ("Amazon The"), then snap to a known spelling when close.
           if (value && def.field === 'customer') {
+            value = trimNameTail(value);
             var snapped = snapKnownCompany(value, known);
             if (snapped) value = snapped;
           }
@@ -542,13 +567,8 @@ window.SQG_VOICE = (function () {
       var haveCustomer = commands.some(function (c) { return c.type === 'scalar' && c.field === 'customer'; });
       if (!haveCustomer) {
         var STOP_LEAD = /^(?:the|a|an|our|their|this|that)\s+/i;
-        var STOP_TAIL = /(?:^|\s)(?:with|at|for|to|of|and|plus|via|through|the|a|an|is|are|be|our|their|this|that)$/i;
-        var trimName = function (s) {
-          s = norm(s).replace(/[,.;:!?]+$/, '').replace(STOP_LEAD, '');
-          var prev;
-          do { prev = s; s = norm(s.replace(STOP_TAIL, '')).replace(/[,.;:!?]+$/, ''); } while (s !== prev);
-          return norm(s);
-        };
+        // Lead-article strip + the shared tail trim (see trimNameTail above).
+        var trimName = function (s) { return trimNameTail(norm(s).replace(STOP_LEAD, '')); };
         var custEnd = function (vStart) {
           // 'smart' numbers (CHANGE 2a): keep spelled-number words that are part
           // of the name ("Seven Hills"); real quantities still end the capture.
