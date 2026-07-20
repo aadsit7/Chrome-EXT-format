@@ -33,12 +33,14 @@ async function activateSharon() {
     // Couldn't open the panel — nothing more to do, the toolbar icon still works.
     return;
   }
-  // Ask an already-open panel to wake the mic. A freshly-opened panel wakes the
-  // mic itself on boot, so a missing receiver here is fine — swallow the error.
+  // Ask an already-open panel to wake the mic. A freshly-opened panel boots
+  // with the mic MUTED (the voice assistant is opt-in), so a missing receiver
+  // just means the panel opens quiet and the next press — or a tap on the mic
+  // button — turns her on. Swallow the error.
   try {
     await chrome.runtime.sendMessage({ type: "sharon-activate" });
   } catch (_) {
-    /* no panel listening yet — it will go live on its own */
+    /* no panel listening yet — it opens muted; the user unmutes with a tap */
   }
 }
 

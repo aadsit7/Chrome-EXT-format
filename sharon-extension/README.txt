@@ -1,4 +1,4 @@
-Sharon — a voice assistant for your browser side panel  (v7.5.1)
+Sharon — a voice assistant for your browser side panel  (v7.5.2)
 ================================================================
 
 Sharon is a hands-free voice assistant that lives in Chrome/Edge's side panel.
@@ -27,6 +27,19 @@ the secret key, calls the model WITH TOOLS (save/search/update/summarize
 memory, act on page), executes the database tools against the Sheet, and
 returns one combined answer. One round trip per turn keeps her fast.
 
+
+What's new in v7.5.2 — the voice assistant is fully opt-in
+----------------------------------------------------------
+- The panel ALWAYS opens with the microphone muted — on Notes, on the
+  first-run welcome, everywhere — and NOTHING turns it on automatically,
+  not even switching views (this supersedes the v7.5.1 behavior below).
+  The voice assistant runs only when you explicitly turn it on: tap the mic
+  button in the bottom bar (which also brings the conversation on screen),
+  tap Unmute on the live card, tap "Allow" in the welcome or in Settings,
+  or press the "Activate Sharon" keyboard shortcut.
+- Dictating in Notes and recording a voice memo are unchanged: those
+  buttons run the microphone for their own job and put it back to muted
+  when they finish.
 
 What's new in v7.5.1 — the mic waits for you
 --------------------------------------------
