@@ -2,8 +2,9 @@
 //
 // The pencil button in the mode bar swaps the conversation for Notes exactly
 // the way the book button swaps in the memory view — and Notes is also the
-// view the panel opens on (the boot sequence calls openNotesView()). Two
-// screens live inside the one view:
+// view the panel opens on (the boot sequence calls openNotesView(), keeping
+// the mic MUTED until the user switches to the conversation — reading notes
+// is not talking to Sharon). Two screens live inside the one view:
 //
 //   LIST   — every saved note (entry_type "note" in the Sheet, up to 500),
 //            newest first, via the same search_memory call the memory view
@@ -164,6 +165,12 @@ export function openNotesView() {
 // auto-saves). A no-op unless Notes is open.
 export function closeNotesView() {
   if (notesOpen()) closeNotes();
+}
+
+// Lets the orchestrator ask whether Notes is on screen — the boot sequence
+// keeps the mic muted while it is (reading notes is not talking to Sharon).
+export function notesViewOpen() {
+  return notesOpen();
 }
 
 function onViewChanged() {
