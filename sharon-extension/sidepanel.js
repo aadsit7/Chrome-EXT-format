@@ -26,6 +26,8 @@ import * as page from "./page.js";
 import * as speech from "./speech.js";
 import * as ui from "./ui.js";
 import * as notes from "./notes.js";
+import * as tabs from "./tabs.js";
+import * as videostore from "./videostore.js";
 import { MODES, initModes, enterMode, inMode } from "./mode.js";
 
 /* ------------------------------------------------------------------ *
@@ -246,8 +248,8 @@ let hearing = false; // interim speech is actively streaming
 // on screen (closing Notes/memory through their normal auto-save paths) so
 // the live-presence card and her replies are actually visible.
 function showConversationForVoice() {
-  notes.closeNotesView();
-  if (ui.memoryOpen()) ui.closeMemory();
+  notes.closeNotesView(); // auto-saves an open, edited note on the way out
+  tabs.goTo("chat"); // navigation only — no mode is touched here
 }
 
 function updateStatus() {
@@ -935,10 +937,9 @@ function renderEvents(userText, events) {
         ui.addNotesCard({
           question: userText,
           hits,
-          onRowTap: () => {
-            ui.openMemory();
-            loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
-          },
+          // The Library tab's own opener resets the filter and reloads the
+          // full list, so tapping a row just goes there.
+          onRowTap: () => tabs.goTo("library"),
           onListen: (h) => playRecordingFromHit(h),
         });
       }
@@ -947,10 +948,9 @@ function renderEvents(userText, events) {
         recordings: Array.isArray(d.recordings) ? d.recordings : [],
         onListen: (h) => playRecordingFromHit(h),
         onOpenAll: () => {
-          memShowingRecordings = true;
-          ui.selectFilter("recordings");
-          ui.openMemory();
-          loadRecordings();
+          // "See all recordings" goes to the Audio tab now — that's where
+          // voice recordings live.
+          tabs.goTo("audio");
         },
       });
     } else if (d.kind === "updated") {
@@ -1189,7 +1189,7 @@ async function evaluateActiveTab() {
 }
 
 /* ------------------------------------------------------------------ *
- * Memory view — the Sheet, browsable and editable
+ * Library view — the Sheet, browsable and editable (formerly "memory")
  * ------------------------------------------------------------------ */
 let memReqSeq = 0;
 
@@ -1304,28 +1304,43 @@ async function loadRecordings() {
   }
 }
 
-// The memory view's filter pills. Recordings needs its own source; every
-// other filter is a client-side re-slice of the already-loaded list. Return
-// true when we take over loading so ui.js doesn't also re-render.
+// True while the Library is showing the Video filter — those rows come from
+// the LOCAL IndexedDB store, not the Sheet, so they render through their own
+// path and leaving the filter needs a reload of the normal entries.
+let memShowingVideo = false;
+
+// The Library's filter pills. Audio (voice recordings) and Video (local
+// clips) each need their own source; every other filter is a client-side
+// re-slice of the already-loaded list. Return true when we take over loading
+// so ui.js doesn't also re-render.
 function onMemFilterChange(filter) {
-  if (filter === "recordings") {
+  if (filter === "audio") {
+    memShowingVideo = false;
     memShowingRecordings = true;
     loadRecordings();
     return true;
   }
-  if (memShowingRecordings) {
-    // Coming back from Recordings — reload the normal memory entries.
+  if (filter === "video") {
     memShowingRecordings = false;
+    memShowingVideo = true;
+    loadVideosInto("library");
+    return true;
+  }
+  if (memShowingRecordings || memShowingVideo) {
+    // Coming back from Audio or Video — reload the normal Sheet entries.
+    memShowingRecordings = false;
+    memShowingVideo = false;
     loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
     return true;
   }
   return false; // pure client-side filter — let ui.js re-slice
 }
 
-// Reload whichever list the memory view is currently showing — recordings
-// have their own source, so a single delete/edit must refresh the right one.
+// Reload whichever list the Library is currently showing — each source has its
+// own loader, so a single delete/edit must refresh the right one.
 function reloadMemoryView() {
-  if (memShowingRecordings) loadRecordings();
+  if (memShowingVideo) loadVideosInto("library");
+  else if (memShowingRecordings) loadRecordings();
   else loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
 }
 
@@ -1501,6 +1516,218 @@ async function undoBatchDelete(rows) {
     ui.renderMemory(memHits, memCallbacks());
     updateMemMeta();
     ui.showUndoToast({ label: "Couldn't restore those — check your connection." });
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Audio tab — the Record button's screen. The list below it is the same
+ * data the Library's Audio filter loads (the recordings sheet); tapping a
+ * row plays it in the panel. Loading this list NEVER touches the recorder
+ * or the mode — it is a plain fetch-and-render.
+ * ------------------------------------------------------------------ */
+let audioListSeq = 0;
+
+async function loadAudioTab() {
+  const seq = ++audioListSeq;
+  ui.audioListLoading();
+  try {
+    const recs = await api.listRecordings({ limit: 100 });
+    if (seq !== audioListSeq) return;
+    markSetup("memory");
+    const list = Array.isArray(recs) ? recs : [];
+    ui.setAudioSubtitle(
+      (list.length === 1 ? "1 voice recording" : list.length + " voice recordings") +
+        " · tap any to play it here"
+    );
+    ui.renderAudioList(list, { onListen: (h) => playRecordingFromHit(h) });
+  } catch (_) {
+    if (seq !== audioListSeq) return;
+    ui.setAudioSubtitle("Voice recordings · saved to your Drive");
+    ui.renderAudioList([], {});
+    ui.showUndoToast({ label: "Couldn't load your recordings — check your connection." });
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Video tab — the local library of screen recordings.
+ *
+ * Saving a screen recording is UNCHANGED: it still downloads to the computer
+ * through chrome.downloads exactly as before. On top of that, a copy is kept
+ * in IndexedDB (videostore.js) so it can be replayed here — with a title, the
+ * date, its length, its file size and a still frame for the thumbnail. The
+ * local store is capped at 2 GB and nothing is ever evicted behind the user's
+ * back: they're warned BEFORE recording when it's full. No video is ever
+ * uploaded anywhere — not the backend, not Drive.
+ * ------------------------------------------------------------------ */
+let videoListSeq = 0;
+
+function videoTitleNow() {
+  const d = new Date();
+  let stamp = "";
+  try {
+    // Same Pacific display clock as every other timestamp on screen, so a
+    // title and the date beside it can never disagree.
+    stamp = d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: ui.DISPLAY_TZ,
+    });
+  } catch (_) {
+    stamp = d.toISOString().slice(0, 16).replace("T", " ");
+  }
+  return "Screen recording — " + stamp;
+}
+
+// One renderer, two homes: the Video tab's list and the Library's Video filter.
+async function loadVideosInto(where) {
+  const seq = ++videoListSeq;
+  const intoLibrary = where === "library";
+  if (intoLibrary) ui.memLoading();
+  else ui.videoListLoading();
+  let list = [];
+  let quota = { used: 0, cap: videostore.CAP_BYTES, free: videostore.CAP_BYTES };
+  try {
+    list = await videostore.listVideos();
+    quota = await videostore.usage();
+  } catch (err) {
+    if (seq !== videoListSeq) return;
+    const msg = "I couldn't open the local video library in this browser.";
+    if (intoLibrary) ui.memError(msg);
+    else ui.setVideoQuota(msg, true);
+    return;
+  }
+  if (seq !== videoListSeq) return;
+
+  const container = intoLibrary ? ui.els.memList : ui.els.videoList;
+  ui.renderVideoRows(container, list, {
+    onPlay: (v, body) => playLocalVideo(v, body),
+    onDelete: (v) => deleteLocalVideo(v),
+    fmtSize: videostore.fmtBytes,
+    fmtLen: videostore.fmtLength,
+  });
+
+  const usedLine =
+    videostore.fmtBytes(quota.used) + " of " + videostore.fmtBytes(quota.cap) + " used here";
+  if (intoLibrary) {
+    ui.setMemorySubtitleText(
+      (list.length === 1 ? "1 screen recording" : list.length + " screen recordings") +
+        " · kept on this computer"
+    );
+    // The Library footer tells the truth per filter: videos never leave here.
+    ui.setSyncedFooter("Screen recordings stay in this browser — never uploaded · " + usedLine);
+  } else {
+    ui.setVideoSubtitle(
+      (list.length === 1 ? "1 screen recording" : list.length + " screen recordings") +
+        " · " +
+        usedLine
+    );
+    ui.setVideoQuota(videoQuotaLine(quota), quota.free <= 0);
+  }
+}
+
+function videoQuotaLine(quota) {
+  if (quota.free <= 0) {
+    return (
+      "The local video library is full (" +
+      videostore.fmtBytes(quota.cap) +
+      "). New recordings will still download to your computer, but I can't keep a copy to play here until you delete some below."
+    );
+  }
+  return (
+    videostore.fmtBytes(quota.free) +
+    " free of " +
+    videostore.fmtBytes(quota.cap) +
+    ". Every recording also downloads to your computer — these copies are only so you can play them back here."
+  );
+}
+
+// Play a local clip inside its expanded row.
+async function playLocalVideo(v, body) {
+  try {
+    const blob = await videostore.getVideoBlob(v.id);
+    if (!blob) {
+      ui.videoPlayerError(body, "That local copy is gone. The file you saved on your computer is fine.");
+      return;
+    }
+    // Sharon's voice and a playing recording never overlap.
+    if (speech.isSpeaking()) speech.stopSpeaking();
+    pausePlaybackForUser();
+    ui.mountVideoPlayer(body, URL.createObjectURL(blob));
+  } catch (_) {
+    ui.videoPlayerError(body, "I couldn't open that recording just now — try again in a moment.");
+  }
+}
+
+// Delete the LOCAL copy only. The downloaded file on the computer is a
+// separate file and is never touched.
+async function deleteLocalVideo(v) {
+  try {
+    await videostore.deleteVideo(v.id);
+    ui.showUndoToast({
+      label: "Deleted my copy — the file on your computer is untouched.",
+      duration: 5000,
+    });
+  } catch (_) {
+    ui.showUndoToast({ label: "Couldn't delete that copy — try again in a moment." });
+  }
+  await loadVideosInto(memShowingVideo && ui.libraryOpen() ? "library" : "video");
+}
+
+// Keep a local copy of a finished screen recording, alongside the download
+// that has already been handed to Chrome. Best-effort and non-blocking: if it
+// doesn't fit, or IndexedDB refuses, the user is told plainly — the downloaded
+// file is unaffected either way.
+async function keepLocalVideoCopy(blob, durationSeconds) {
+  if (!blob || !blob.size) return;
+  try {
+    // One decode pass gives us the still frame AND the real length (the trim
+    // path knows it already; the untouched-blob fallbacks don't).
+    const { thumb, duration } = await videostore.probeClip(blob, durationSeconds);
+    const res = await videostore.saveVideo({
+      blob,
+      title: videoTitleNow(),
+      durationSeconds: duration || durationSeconds,
+      thumb,
+    });
+    if (!res.ok) {
+      if (res.reason === "full") {
+        ui.showUndoToast({
+          label: "Saved to your computer. No room here (2 GB) to keep a copy — delete some on the Video tab.",
+          duration: 7000,
+        });
+      } else if (res.reason !== "empty") {
+        ui.showUndoToast({
+          label: "Saved to your computer, but I couldn't keep a copy to play here.",
+          duration: 6000,
+        });
+      }
+      return;
+    }
+  } catch (_) {
+    ui.showUndoToast({
+      label: "Saved to your computer, but I couldn't keep a copy to play here.",
+      duration: 6000,
+    });
+    return;
+  }
+  // Refresh whichever list is on screen so the new clip appears immediately.
+  if (ui.libraryOpen() && memShowingVideo) loadVideosInto("library");
+  else loadVideosInto("video");
+}
+
+// Before a screen recording starts: if the 2 GB local library is full, say so
+// NOW rather than silently dropping the local copy 20 minutes from now.
+async function warnIfVideoStoreFull() {
+  try {
+    const quota = await videostore.usage();
+    if (quota.free > 0) return;
+    hint(
+      "The Video tab's 2 GB library is full — this will still download to your computer, but I can't keep a copy to play here."
+    );
+  } catch (_) {
+    /* the store is unavailable — the download path is unaffected */
   }
 }
 
@@ -1786,6 +2013,11 @@ async function finishRecording(mimeType, durationSeconds, transcript, segments) 
     });
     ui.hideRecorder();
     const minutes = Math.max(1, Math.round(durationSeconds / 60));
+    // The distilled-notes card is Sharon's answer to this recording and it
+    // lives in the thread, so bring the Sharon tab forward to show it. Pure
+    // navigation, after the flow has finished — nothing about the recording,
+    // the upload or the mode depends on it.
+    tabs.goTo("chat");
     ui.addRecordingCard({
       driveUrl: result.drive_file_url,
       recordingId: result.recording_id,
@@ -1812,6 +2044,7 @@ async function finishRecording(mimeType, durationSeconds, transcript, segments) 
         ". The audio is linked on its card if you want to listen back to it."
     );
     refreshMemoryCount();
+    loadAudioTab(); // the new recording belongs in the Audio tab's list
   } catch (err) {
     ui.hideRecorder();
     reportProblem(
@@ -1990,12 +2223,15 @@ async function startScreenRecordingCmd() {
     );
     return;
   }
+  // Warn BEFORE recording if the 2 GB local library has no room left — never
+  // silently drop the local copy after the fact.
+  await warnIfVideoStoreFull();
   try {
     await srSend("start");
   } catch (_) {
     reportProblem(
       "I couldn't start the screen recorder.",
-      "Give it a second and tap the screen-record button again."
+      "Give it a second and tap Record screen on the Video tab again."
     );
   }
 }
@@ -2096,6 +2332,11 @@ async function onScreenStopped(info) {
   screenReviewFilename = screenRecFilename();
   screenReviewUrl = URL.createObjectURL(blob);
   screenRecPhase = "reviewing";
+  // The review/trim card lives in the thread, so bring the Sharon tab forward
+  // to show it. Pure navigation — the mode stays SCREEN_REC and the clip is
+  // untouched; it is the recording ENDING that moves the view, never the other
+  // way round.
+  tabs.goTo("chat");
   screenReviewCard = ui.addScreenReviewCard({
     url: screenReviewUrl,
     onSave: (start, end, dur) => saveScreenReview(start, end, dur),
@@ -2271,6 +2512,9 @@ function saveScreenReview(startSec, endSec, durationSec) {
     // the preview URL is revoked separately by the mode-exit teardown.
     if (screenReviewBlob) {
       downloadScreenRecording(URL.createObjectURL(screenReviewBlob), filename);
+      // ALSO keep a local copy so the Video tab can replay it. Fire and
+      // forget — the download above is the archive and is already under way.
+      keepLocalVideoCopy(screenReviewBlob, durationSec);
     }
     srClear(); // release the background recorder's copy
     enterMode(MODES.LISTENING);
@@ -2290,7 +2534,10 @@ async function trimAndDownload(startSec, endSec, filename) {
 
   // Save the whole clip instead of losing it if we can't trim here.
   const saveWholeInstead = () => {
-    if (sourceBlob) downloadScreenRecording(URL.createObjectURL(sourceBlob), filename);
+    if (sourceBlob) {
+      downloadScreenRecording(URL.createObjectURL(sourceBlob), filename);
+      keepLocalVideoCopy(sourceBlob, 0);
+    }
     srClear();
     enterMode(MODES.LISTENING);
     updateStatus();
@@ -2396,10 +2643,13 @@ async function trimAndDownload(startSec, endSec, filename) {
       const trimmed = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
       // Hand a dedicated URL to the download path (it revokes on settle); the
       // preview URL + off-screen video are freed by the mode-exit teardown.
+      // Whichever blob is downloaded is also the one kept locally.
       if (trimmed.size) {
         downloadScreenRecording(URL.createObjectURL(trimmed), filename);
+        keepLocalVideoCopy(trimmed, total);
       } else if (sourceBlob) {
         downloadScreenRecording(URL.createObjectURL(sourceBlob), filename);
+        keepLocalVideoCopy(sourceBlob, 0);
       }
       srClear(); // release the background recorder's copy
       enterMode(MODES.LISTENING);
@@ -2952,9 +3202,12 @@ function wireControls() {
     });
   }
 
-  // Mode bar — the three tappable icons. Mic toggles mute (mute stays
-  // independent of the mode); record starts/stops the recorder; screen
-  // enters/exits the one-look SCREEN mode. The globe is an indicator only.
+  // The action buttons, each now on the screen it belongs to (and mute in the
+  // header). Same handlers as before — only their location changed:
+  //   header mic      → mute / unmute
+  //   Audio tab       → start / stop a voice memo
+  //   Video tab       → start / stop a screen recording
+  //   page pill       → one look at this tab (the old #screenBtn)
   if (e.micBtn) e.micBtn.addEventListener("click", toggleMic);
   if (e.recordBtn)
     e.recordBtn.addEventListener("click", () =>
@@ -2975,6 +3228,8 @@ function wireControls() {
         }
       })
     );
+  // "Look at this tab" — the same behavior the old monitor icon had, now on
+  // the page-awareness pill whose label already says whether she's reading it.
   if (e.screenBtn)
     e.screenBtn.addEventListener("click", () => runModeAction(toggleScreenMode));
   // Screen record: start/stop the BACKGROUND recorder, mirroring the voice
@@ -3082,22 +3337,7 @@ function wireControls() {
       ui.setVoiceIndicator(settings.readAloud);
       updateStatus();
     });
-  const openMemoryView = () => {
-    // Always open on the full memory list, never a stale Recordings filter.
-    memShowingRecordings = false;
-    ui.selectFilter("all");
-    ui.openMemory();
-    loadMemory(e.memSearchInput ? e.memSearchInput.value.trim() : "");
-  };
-  if (e.memoryBtn) e.memoryBtn.addEventListener("click", openMemoryView);
-  // Bottom-bar toggle: flip between the conversation and the memory view from
-  // a fixed spot, so you can bounce back and forth without hunting the header.
-  if (e.memNavBtn)
-    e.memNavBtn.addEventListener("click", () => {
-      if (ui.memoryOpen()) ui.closeMemory();
-      else openMemoryView();
-    });
-  if (e.memBack) e.memBack.addEventListener("click", ui.closeMemory);
+  if (e.memoryBtn) e.memoryBtn.addEventListener("click", () => tabs.goTo("library"));
   if (e.settingsBtn)
     e.settingsBtn.addEventListener("click", () => {
       applySettingsToUI();
@@ -3110,22 +3350,24 @@ function wireControls() {
   document.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape") return;
     if (ui.settingsOpen()) ui.closeSettings();
-    else if (ui.memoryOpen()) {
-      // Escape backs out one layer at a time: selection first, then the view.
+    else if (ui.libraryOpen()) {
+      // Escape backs out one layer at a time: selection first, then back to
+      // the Sharon tab. Navigation only — no mode is touched.
       if (ui.memSelectActive()) ui.exitMemSelect();
-      else ui.closeMemory();
+      else tabs.goTo("chat");
     }
   });
 
-  // Memory search (debounced, live filtering via the backend).
+  // Library search (debounced, live filtering via the backend).
   let memSearchTimer = null;
   if (e.memSearchInput)
     e.memSearchInput.addEventListener("input", () => {
       const q = e.memSearchInput.value.trim();
-      // Searching always works against the full memory list (a keyword search
-      // also surfaces recording transcripts), so drop the Recordings filter.
-      if (memShowingRecordings) {
+      // Searching always works against the full Sheet list (a keyword search
+      // also surfaces recording transcripts), so drop the Audio/Video filters.
+      if (memShowingRecordings || memShowingVideo) {
         memShowingRecordings = false;
+        memShowingVideo = false;
         ui.selectFilter("all");
       }
       if (memSearchTimer) clearTimeout(memSearchTimer);
@@ -3268,6 +3510,24 @@ function wireControls() {
   ui.initUI();
   ui.setMemFilterHandler(onMemFilterChange);
 
+  // The bottom tab bar. Tapping a tab ONLY changes which screen is showing —
+  // these hooks fetch and render that screen's list and nothing else. No hook
+  // here starts, stops or pauses a recording, and none of them calls
+  // enterMode(): tab state and mode state are separate, so a recording started
+  // on the Audio or Video tab keeps running while you browse anywhere else.
+  tabs.initTabs({
+    onOpen: {
+      library: () => {
+        memShowingRecordings = false;
+        memShowingVideo = false;
+        ui.selectFilter("all");
+        loadMemory(ui.els.memSearchInput ? ui.els.memSearchInput.value.trim() : "");
+      },
+      audio: () => loadAudioTab(),
+      video: () => loadVideosInto("video"),
+    },
+  });
+
   // The Notes view wires its own controls; it only needs the redeploy
   // walkthrough for a stale backend, and a guard so dictation can never
   // start while a voice or screen recording owns the ears.
@@ -3350,11 +3610,9 @@ function wireControls() {
     ui.showWelcome();
   }
 
-  // Notes is the panel's home view — open it unless the welcome walkthrough
-  // is on screen (first run always wins). The moment the user actually
-  // addresses Sharon, handleUserUtterance/sendTyped close Notes back to the
-  // conversation, so her replies are never hidden behind it.
-  if (!ui.welcomeVisible()) notes.openNotesView();
+  // Sharon — the conversation — is the default tab, so the panel opens there
+  // (data-view="chat" in the markup) unless the first-run welcome is on screen.
+  // Every other screen is one tap away in the bar at the bottom.
 
   // The voice assistant NEVER starts on its own: whatever view is showing
   // (Notes, the welcome, the conversation), the panel opens with the mic

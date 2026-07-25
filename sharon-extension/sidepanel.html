@@ -23,6 +23,23 @@
           </div>
         </div>
         <div class="hd-actions">
+          <!-- Persistent recording indicator — visible from EVERY tab while a
+               voice or screen recording is running, because a recording now
+               keeps going while you browse the other tabs. Tapping it jumps to
+               the Audio or Video tab (navigation only; the recording is never
+               touched). It disappears the moment recording stops. -->
+          <button class="recpill hidden" id="recPill" type="button" data-kind="audio" aria-label="Recording — go to the recording">
+            <span class="rp-dot" aria-hidden="true"></span>
+            <span class="rp-l" id="recPillLabel">Recording</span>
+            <span class="rp-t" id="recPillTimer">00:00</span>
+          </button>
+          <!-- Mute lives in the header, not in the tab bar: it's a permanent
+               on/off state, not a destination, and it must be reachable from
+               every tab. The mic glyph now means ONLY mute. -->
+          <button class="hd-btn" id="micBtn" type="button" aria-label="Microphone is on — tap to mute" aria-pressed="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
+            <span class="m-slash" aria-hidden="true"></span>
+          </button>
           <button class="hd-btn" id="settingsBtn" type="button" aria-label="Settings">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.16.55.62.96 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
@@ -30,11 +47,14 @@
       </header>
 
       <!-- Page-awareness pill — only ever claims "Seeing" when page context
-           will genuinely be sent (screen access is opt-in) -->
-      <div class="tabpill" id="tabPill" data-seeing="off">
+           will genuinely be sent (screen access is opt-in). It is ALSO the
+           "look at this tab" button now (the old #screenBtn's behavior moved
+           here): its label reads "Not reading this tab", so tapping it to
+           change that explains itself. The eye is the one glyph for looking. -->
+      <button class="tabpill" id="tabPill" type="button" data-seeing="off" aria-label="Look at this tab — I'll answer one question about it" aria-pressed="false">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/><path class="eye-slash" d="m4 4 16 16"/></svg>
         <span id="tabSeeing">Not reading this tab</span>&nbsp;—&nbsp;<b id="tabTitle">open a website</b>
-      </div>
+      </button>
 
       <!-- ================= Live-presence card ================= -->
       <div class="live-card" id="liveCard">
@@ -59,47 +79,20 @@
         </div>
       </div>
 
-      <!-- ================= Recorder card ================= -->
-      <div class="rec-card hidden" id="recCard" data-stage="recording">
-        <div class="rc-row">
-          <span class="rc-dot" aria-hidden="true"></span>
-          <span class="rc-label" id="recLabel">Recording</span>
-          <span class="rc-timer" id="recTimer">00:00 / 30:00</span>
-          <button class="pill-btn danger" id="recStop" type="button">Stop</button>
-        </div>
-        <div class="rc-transcript hidden" id="recTranscript" aria-live="polite">
-          <span id="recText"></span>
-        </div>
-        <div class="rc-hint" id="recHint">Closing the panel ends the recording.</div>
-      </div>
-
-      <!-- ================= Screen-recorder card =================
-           A SEPARATE live card from the voice recorder above, so the two
-           never interfere. Downloads straight to the computer — nothing here
-           touches the backend or Drive. -->
-      <div class="screenrec-card hidden" id="screenRecCard">
-        <div class="rc-row">
-          <span class="rc-dot" aria-hidden="true"></span>
-          <span class="rc-label" id="screenRecLabel">Recording your screen</span>
-          <span class="rc-timer" id="screenRecTimer">00:00 / 30:00</span>
-          <button class="pill-btn danger" id="screenRecStop" type="button">Stop</button>
-        </div>
-        <div class="rc-hint">Keeps recording if you collapse the panel — stop or pause with your keyboard shortcut (Settings) or the toolbar icon.</div>
-      </div>
-
       <!-- ================= Thread ================= -->
       <div class="thread" id="thread">
         <div class="empty-state" id="emptyState">Nothing here yet — I'm listening. Ask about this page, save a thought, or find an old note.</div>
       </div>
 
-      <!-- ================= Memory view ================= -->
-      <div class="memory" id="memoryView" role="region" aria-label="Sharon's memory">
+      <!-- ================= Library view =================
+           Today's memory view, reused as-is under the Library tab: the search
+           box, the filter pills, the select / multi-select bar, the action bar
+           and the synced footer are all unchanged. The back arrow is gone —
+           with real tabs there is nowhere to go "back" to. -->
+      <div class="memory" id="libraryView" role="region" aria-label="Library — everything saved">
         <div class="mem-head">
-          <button class="hd-btn" id="memBack" type="button" aria-label="Back to the conversation">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
-          </button>
           <div class="mem-hd-txt">
-            <div class="mem-title">Sharon's memory.</div>
+            <div class="mem-title">Library.</div>
             <div class="mem-sub" id="memSubtitle">Everything saved to your Sheet</div>
           </div>
           <button class="pill-btn" id="memSelectBtn" type="button" aria-label="Select multiple items">Select</button>
@@ -120,7 +113,8 @@
           <button class="m-pill" type="button" data-filter="notes" aria-pressed="false">Notes</button>
           <button class="m-pill" type="button" data-filter="tasks" aria-pressed="false">Tasks</button>
           <button class="m-pill" type="button" data-filter="done" aria-pressed="false">Done</button>
-          <button class="m-pill" type="button" data-filter="recordings" aria-pressed="false">Recordings</button>
+          <button class="m-pill" type="button" data-filter="audio" aria-pressed="false">Audio</button>
+          <button class="m-pill" type="button" data-filter="video" aria-pressed="false">Video</button>
         </div>
         <div class="mem-list" id="memList"></div>
         <div class="mem-actbar" id="memActBar">
@@ -136,18 +130,14 @@
       </div>
 
       <!-- ================= Notes view =================
-           A sibling of the memory view: the pencil button in the mode bar
-           swaps the conversation for Notes the same way the book button
-           swaps in memory (and Notes is the view the panel opens on). Two
-           screens live inside the one view — the list (with the paste-to-save
-           composer, its always-on dictation mic, and the notes grouped into
-           collapsible sections) and the editor a row opens. -->
+           A sibling of the Library view, reached from the Notes tab.
+           Unchanged: the compose box, the dictation mic, the sections
+           dropdown and the editor sub-screen. The LIST's back arrow is gone
+           (the tab bar is the way out); the EDITOR keeps its back arrow,
+           because that one is a real back — editor to list. -->
       <div class="notes" id="notesView" role="region" aria-label="Notes" data-screen="list">
         <div class="notes-screen" id="notesListScreen">
           <div class="mem-head">
-            <button class="hd-btn" id="notesBack" type="button" aria-label="Back to the conversation">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
-            </button>
             <div class="mem-hd-txt">
               <div class="mem-title">Notes.</div>
               <div class="mem-sub" id="notesSubtitle">Saved in your Sheet</div>
@@ -199,6 +189,78 @@
         </div>
       </div>
 
+      <!-- ================= Audio view (tab 4) =================
+           The ONE place voice memos start now. The big Record button carries
+           the old #recordBtn's exact behavior (same handler, same 30-minute
+           cap, same upload-and-organize flow); the live recorder card below it
+           is the same #recCard as before, just relocated onto this screen. -->
+      <div class="audio" id="audioView" role="region" aria-label="Audio — voice recordings">
+        <div class="mem-head">
+          <div class="mem-hd-txt">
+            <div class="mem-title">Audio.</div>
+            <div class="mem-sub" id="audioSubtitle">Voice recordings · saved to your Drive</div>
+          </div>
+        </div>
+        <button class="big-rec" id="recordBtn" type="button" aria-label="Record a voice memo — up to 30 minutes" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="12" cy="12" r="7"/></svg>
+          <span class="br-l" id="recordBtnLabel">Record</span>
+        </button>
+
+        <!-- ================= Recorder card ================= -->
+        <div class="rec-card hidden" id="recCard" data-stage="recording">
+          <div class="rc-row">
+            <span class="rc-dot" aria-hidden="true"></span>
+            <span class="rc-label" id="recLabel">Recording</span>
+            <span class="rc-timer" id="recTimer">00:00 / 30:00</span>
+            <button class="pill-btn danger" id="recStop" type="button">Stop</button>
+          </div>
+          <div class="rc-transcript hidden" id="recTranscript" aria-live="polite">
+            <span id="recText"></span>
+          </div>
+          <div class="rc-hint" id="recHint">Closing the panel ends the recording.</div>
+        </div>
+
+        <div class="av-list" id="audioList"></div>
+      </div>
+
+      <!-- ================= Video view (tab 5) =================
+           The big Record-screen button carries the old #screenRecBtn's exact
+           behavior (same getDisplayMedia flow, same 30-minute cap, same
+           pause/resume, same offscreen document); the live card below is the
+           same #screenRecCard, relocated. The list underneath is the LOCAL
+           copy of each recording (IndexedDB, capped at 2 GB) so clips can be
+           replayed right here — the download to your computer is unchanged and
+           nothing is ever uploaded. -->
+      <div class="video" id="videoView" role="region" aria-label="Video — screen recordings">
+        <div class="mem-head">
+          <div class="mem-hd-txt">
+            <div class="mem-title">Video.</div>
+            <div class="mem-sub" id="videoSubtitle">Screen recordings · kept on this computer</div>
+          </div>
+        </div>
+        <button class="big-rec" id="screenRecBtn" type="button" aria-label="Record your screen — up to 30 minutes" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10.5 5.2-3.1a.5.5 0 0 1 .8.44v8.32a.5.5 0 0 1-.8.42L16 13.5z"/></svg>
+          <span class="br-l" id="screenRecBtnLabel">Record screen</span>
+        </button>
+
+        <!-- ================= Screen-recorder card =================
+             A SEPARATE live card from the voice recorder, so the two never
+             interfere. Downloads straight to the computer — nothing here
+             touches the backend or Drive. -->
+        <div class="screenrec-card hidden" id="screenRecCard">
+          <div class="rc-row">
+            <span class="rc-dot" aria-hidden="true"></span>
+            <span class="rc-label" id="screenRecLabel">Recording your screen</span>
+            <span class="rc-timer" id="screenRecTimer">00:00 / 30:00</span>
+            <button class="pill-btn danger" id="screenRecStop" type="button">Stop</button>
+          </div>
+          <div class="rc-hint">Keeps recording if you collapse the panel — stop or pause with your keyboard shortcut (Settings) or the toolbar icon.</div>
+        </div>
+
+        <div class="av-quota hidden" id="videoQuota"></div>
+        <div class="av-list" id="videoList"></div>
+      </div>
+
       <!-- ================= In-panel audio player ================= -->
       <div class="player hidden" id="playerBar" data-state="loading" data-playing="false">
         <button class="pl-toggle" id="plToggle" type="button" aria-label="Play">
@@ -230,38 +292,38 @@
         </button>
       </div>
 
-      <!-- ================= Mode bar =================
-           Sharon is in exactly ONE mode at a time; the lit icon shows which.
-           Notes sits first, on its own — the pencil toggles the Notes view
-           (the one the panel opens on) and the conversation. Then the
-           controls: mic (tap = mute), record (tap = start/stop), screen
-           (tap = one look at this tab) and screen-record. Past the second
-           divider, the memory button toggles the notes/tasks/recordings view
-           so you can flip back and forth without reaching for the header. -->
-      <div class="modebar" id="modeBar" role="group" aria-label="Sharon's mode">
-        <button class="mode-btn" id="notesNavBtn" type="button" aria-label="Notes — write, paste and dictate notes" aria-pressed="false">
+      <!-- ================= Tab bar =================
+           Five DESTINATIONS, each with an icon and a visible label. No actions
+           live here: tapping a tab only ever changes which screen you're
+           looking at — it never starts, stops or interrupts a recording, and
+           it never changes Sharon's mode. Every glyph means exactly one thing
+           (eye = look at this tab, mic = mute, waveform = audio,
+           camcorder = video, layers = library, pencil = notes,
+           speech bubble = the conversation). Settings is NOT a tab — it stays
+           on the gear in the header. -->
+      <nav class="tabbar" id="tabBar" role="tablist" aria-label="Sharon's screens">
+        <button class="tab on" id="tabChat" type="button" role="tab" data-tab="chat" aria-selected="true" aria-label="Sharon — the conversation">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3.5 21l1.9-5.2A8.5 8.5 0 0 1 4.5 11.5 8.5 8.5 0 0 1 13 3a8.5 8.5 0 0 1 8 8.5z"/></svg>
+          <span class="tab-l">Sharon</span>
+        </button>
+        <button class="tab" id="tabLibrary" type="button" role="tab" data-tab="library" aria-selected="false" aria-label="Library — everything saved">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2.7 9 4.3-9 4.3-9-4.3z"/><path d="m3 12 9 4.3 9-4.3"/><path d="m3 16.7 9 4.3 9-4.3"/></svg>
+          <span class="tab-l">Library</span>
+          <span class="badge hidden" id="tabLibraryBadge"></span>
+        </button>
+        <button class="tab" id="tabNotes" type="button" role="tab" data-tab="notes" aria-selected="false" aria-label="Notes — write, paste and dictate notes">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>
+          <span class="tab-l">Notes</span>
         </button>
-        <span class="mode-sep" aria-hidden="true"></span>
-        <button class="mode-btn" id="micBtn" type="button" aria-label="Microphone is on — tap to mute" aria-pressed="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
-          <span class="m-slash" aria-hidden="true"></span>
+        <button class="tab" id="tabAudio" type="button" role="tab" data-tab="audio" aria-selected="false" aria-label="Audio — voice recordings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 10v4"/><path d="M6 6v12"/><path d="M10 3v18"/><path d="M14 7v10"/><path d="M18 5v14"/><path d="M22 10v4"/></svg>
+          <span class="tab-l">Audio</span>
         </button>
-        <button class="mode-btn" id="recordBtn" type="button" aria-label="Record a voice memo — up to 30 minutes" aria-pressed="false">
-          <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
+        <button class="tab" id="tabVideo" type="button" role="tab" data-tab="video" aria-selected="false" aria-label="Video — screen recordings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10.5 5.2-3.1a.5.5 0 0 1 .8.44v8.32a.5.5 0 0 1-.8.42L16 13.5z"/></svg>
+          <span class="tab-l">Video</span>
         </button>
-        <button class="mode-btn" id="screenBtn" type="button" aria-label="Look at this tab — I'll answer one question about it" aria-pressed="false">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
-        </button>
-        <button class="mode-btn" id="screenRecBtn" type="button" aria-label="Record your screen — up to 30 minutes" aria-pressed="false">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="2.5" fill="currentColor" stroke="none"/></svg>
-        </button>
-        <span class="mode-sep" aria-hidden="true"></span>
-        <button class="mode-btn" id="memNavBtn" type="button" aria-label="Sharon's memory — notes, tasks and recordings" aria-pressed="false">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-          <span class="badge hidden" id="memNavBadge"></span>
-        </button>
-      </div>
+      </nav>
 
       <!-- Undo toast -->
       <div class="toast hidden" id="undoToast">
