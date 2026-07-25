@@ -1,10 +1,9 @@
 // notes.js — the Notes view: a simple notes app inside the side panel.
 //
-// The pencil button in the mode bar swaps the conversation for Notes exactly
-// the way the book button swaps in the memory view — and Notes is also the
-// view the panel opens on (the boot sequence calls openNotesView(); the
-// voice assistant stays MUTED until the user explicitly turns it on — the
-// orchestrator owns that rule). Two screens live inside the one view:
+// The Notes TAB in the bottom bar swaps the conversation for Notes exactly the
+// way the Library tab swaps in the Library view (the voice assistant stays
+// MUTED until the user explicitly turns it on — the orchestrator owns that
+// rule). Two screens live inside the one view:
 //
 //   LIST   — every saved note (entry_type "note" in the Sheet, up to 500),
 //            newest first, via the same search_memory call the memory view
@@ -49,9 +48,7 @@ import * as ui from "./ui.js";
 
 const els = {
   html: document.documentElement,
-  navBtn: document.getElementById("notesNavBtn"),
   view: document.getElementById("notesView"),
-  back: document.getElementById("notesBack"),
   subtitle: document.getElementById("notesSubtitle"),
   newBtn: document.getElementById("noteNewBtn"),
   newSectionBtn: document.getElementById("noteNewSectionBtn"),
@@ -126,7 +123,7 @@ export function initNotes(options) {
 }
 
 /* ------------------------------------------------------------------ *
- * View toggling — mirrors ui.openMemory / ui.closeMemory
+ * View toggling — mirrors ui.openLibrary / ui.closeLibrary
  * ------------------------------------------------------------------ */
 function notesOpen() {
   return els.html.getAttribute("data-view") === "notes";
@@ -136,9 +133,8 @@ function editorOpen() {
 }
 
 function openNotes() {
-  // Never leave the memory view half-open underneath (selection state, the
-  // lit book button) — close it properly first.
-  if (ui.memoryOpen()) ui.closeMemory();
+  // Never leave a half-finished Library selection behind underneath.
+  ui.exitMemSelect();
   showList();
   els.html.setAttribute("data-view", "notes");
   loadNotes();
@@ -152,8 +148,7 @@ function closeNotes() {
   els.html.setAttribute("data-view", "chat");
 }
 
-// The boot sequence opens Notes as the panel's home view (unless the
-// first-run welcome is showing) — same path as tapping the pencil.
+// The Notes tab opens this view — the list, freshly loaded.
 export function openNotesView() {
   openNotes();
 }
@@ -168,11 +163,9 @@ export function closeNotesView() {
 }
 
 function onViewChanged() {
-  const open = notesOpen();
-  if (els.navBtn) els.navBtn.setAttribute("aria-pressed", open ? "true" : "false");
-  if (open) return;
-  // The view left Notes through a path that isn't ours (memory button,
-  // welcome replay): same cleanup as closeNotes.
+  if (notesOpen()) return;
+  // The view left Notes through a path that isn't ours (a tab tap, the user
+  // addressing Sharon, the welcome replay): same cleanup as closeNotes.
   stopDictationUI();
   if (editorOpen() && editorDirty()) saveEditor({ quiet: true });
 }
@@ -812,9 +805,9 @@ const I_X = '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>';
  * Wiring
  * ------------------------------------------------------------------ */
 function wire() {
-  if (els.navBtn)
-    els.navBtn.addEventListener("click", () => (notesOpen() ? closeNotes() : openNotes()));
-  if (els.back) els.back.addEventListener("click", closeNotes);
+  // The Notes TAB opens this view (tabs.js) — there is no in-view back arrow
+  // on the list any more, because the tab bar is the way out. The editor keeps
+  // its own back arrow below: that one is a real back, editor → list.
   if (els.newBtn) els.newBtn.addEventListener("click", () => openEditor(null));
   if (els.newSectionBtn) els.newSectionBtn.addEventListener("click", createSection);
   if (els.composeArea) els.composeArea.addEventListener("input", syncComposeRow);

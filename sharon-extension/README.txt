@@ -1,4 +1,4 @@
-Sharon — a voice assistant for your browser side panel  (v7.5.2)
+Sharon — a voice assistant for your browser side panel  (v7.6.0)
 ================================================================
 
 Sharon is a hands-free voice assistant that lives in Chrome/Edge's side panel.
@@ -28,13 +28,61 @@ memory, act on page), executes the database tools against the Sheet, and
 returns one combined answer. One round trip per turn keeps her fast.
 
 
+What's new in v7.6.0 — a real tab bar, and every action on its own screen
+------------------------------------------------------------------------
+The bottom bar used to mix navigation with actions in one row of look-alike
+icons. It is now a proper 5-tab navigation bar — icon plus a visible label,
+with the current tab clearly highlighted — and every action moved onto the
+screen it belongs to:
+
+  Sharon   the conversation (the default tab)
+  Library  everything saved, in one list — All / Notes / Tasks / Done /
+           Audio / Video
+  Notes    the notes screen, unchanged
+  Audio    one big Record button, the live recorder, and your past voice
+           recordings (tap any to play it here)
+  Video    one big Record screen button, the live recorder, and your past
+           screen recordings (playable right in the panel)
+
+Where things went:
+- "Look at this tab" is now the page-awareness pill itself — the pill already
+  says "Not reading this tab", so tapping it to change that explains itself.
+  Its icon is an eye.
+- Mute moved to the HEADER, beside the gear, so it is reachable from every
+  tab. The mic glyph now means mute and nothing else.
+- Voice memos start ONLY on the Audio tab; screen recordings ONLY on the
+  Video tab. Same handlers, same 30-minute caps, same flows as before.
+- Settings is not a tab: it is still the gear in the header.
+- Look-alike icons are gone: eye = look at this tab, waveform = Audio,
+  camcorder = Video, stacked layers = Library, pencil = Notes, speech
+  bubble = Sharon.
+
+While a recording runs, a small red "Recording" pill with the live timer sits
+in the header on EVERY tab; tapping it jumps to the Audio or Video tab. And
+the rule that matters: switching tabs is navigation only. It never starts,
+stops, pauses or interrupts a recording, and it never changes Sharon's mode —
+a recording started on Audio or Video keeps running while you browse anywhere
+else in the panel.
+
+Screen recordings can now be replayed in the panel:
+- They still download to your computer exactly as before.
+- On top of that, a copy is kept inside the extension (IndexedDB) with a
+  title, the date, the length, the file size and a still frame as its
+  thumbnail, so the Video tab can play it back.
+- That local store is capped at 2 GB. When it is full you are warned BEFORE
+  recording — nothing is ever silently dropped.
+- Every video row has a Delete button that removes ONLY Sharon's local copy;
+  the file already saved on your computer is untouched.
+- No video is ever uploaded: not to the backend, not to Drive.
+
+
 What's new in v7.5.2 — the voice assistant is fully opt-in
 ----------------------------------------------------------
 - The panel ALWAYS opens with the microphone muted — on Notes, on the
   first-run welcome, everywhere — and NOTHING turns it on automatically,
   not even switching views (this supersedes the v7.5.1 behavior below).
   The voice assistant runs only when you explicitly turn it on: tap the mic
-  button in the bottom bar (which also brings the conversation on screen),
+  button in the header (which also brings the conversation on screen),
   tap Unmute on the live card, tap "Allow" in the welcome or in Settings,
   or press the "Activate Sharon" keyboard shortcut.
 - Dictating in Notes and recording a voice memo are unchanged: those
@@ -170,8 +218,8 @@ Everything else goes to the brain, which decides on its own whether to:
 While she reads a page or answer aloud, just start talking — she'll stop.
 
 
-Settings (the gear in the dock)
--------------------------------
+Settings (the gear in the header)
+----------------------------------
 - "Read pages to me automatically" (on) — she reads each page as you switch
   tabs. Turn off and she stays quiet until you ask.
 - "Sharon's voice" + speed — pick the read-aloud voice; Auto picks the most
@@ -187,16 +235,16 @@ Settings (the gear in the dock)
   mic live; change it from Chrome's own shortcuts page.
 
 
-Notes (the notebook in the dock)
---------------------------------
+Library (the Library tab)
+-------------------------
 Browse and search everything she's saved. Tasks show a Done/Reopen button,
 and anything can be deleted. It's the same memory_log tab in your Sheet —
 edits here write straight back to the database.
 
 
-Record your screen (the monitor button in the mode bar)
--------------------------------------------------------
-Tap the "Record your screen" button, pick a screen/window/tab in Chrome's own
+Record your screen (the Video tab)
+----------------------------------
+Tap "Record screen" on the Video tab, pick a screen/window/tab in Chrome's own
 picker, and Sharon records the current desktop — the screen video and its own
 system/desktop audio, up to 30 minutes. It records STRICTLY the desktop: it
 never opens your microphone, so other apps keep full, undisrupted mic access
@@ -217,7 +265,11 @@ rebind any of them from Chrome's own shortcuts page.
 After a screen recording stops, Sharon shows a preview with an iPhone-Photos-
 style trim slider: drag the start and end handles to keep just part of the
 clip, then Save — or Save without moving them to keep the whole clip. Trimming
-is optional, and either way the video downloads to your computer.
+is optional, and either way the video downloads to your computer. A copy is
+also kept inside the extension so the Video tab can play it back here; that
+local library holds up to 2 GB, warns you before recording once it's full, and
+each row's Delete removes only that local copy — never the file on your
+computer. Nothing is ever uploaded.
 
 
 Troubleshooting

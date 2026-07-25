@@ -1,9 +1,16 @@
-// ui.js — everything Sharon draws: the header status line, the page-awareness
-// pill, the live-presence card (streaming transcript → countdown → edit), the
+// ui.js — everything Sharon draws: the header status line (with the mute
+// button and the persistent recording pill), the page-awareness pill, the
+// live-presence card (streaming transcript → countdown → edit), the
 // conversation thread (user bubbles, quiet captures, answer cards, the
-// spoken-aloud layer, undo toast), the memory view, the first-run welcome,
-// and the settings bottom sheet. No business logic lives here; the
-// orchestrator registers callbacks and drives state.
+// spoken-aloud layer, undo toast), the Library view, the Audio and Video
+// screens' lists, the first-run welcome, and the settings bottom sheet. No
+// business logic lives here; the orchestrator registers callbacks and drives
+// state.
+//
+// Views are still switched the way they always were — one attribute on
+// <html>: data-view="chat" | "library" | "notes" | "audio" | "video" |
+// "welcome". tabs.js owns the bar that sets it; nothing here knows or cares
+// about Sharon's mode.
 
 export const els = {
   html: document.documentElement,
@@ -13,6 +20,9 @@ export const els = {
   memoryBtn: document.getElementById("memoryBtn"),
   memBadge: document.getElementById("memBadge"),
   settingsBtn: document.getElementById("settingsBtn"),
+  recPill: document.getElementById("recPill"),
+  recPillLabel: document.getElementById("recPillLabel"),
+  recPillTimer: document.getElementById("recPillTimer"),
   tabPill: document.getElementById("tabPill"),
   tabSeeing: document.getElementById("tabSeeing"),
   tabTitle: document.getElementById("tabTitle"),
@@ -29,8 +39,7 @@ export const els = {
   lcDiscard: document.getElementById("lcDiscard"),
   thread: document.getElementById("thread"),
   emptyState: document.getElementById("emptyState"),
-  memoryView: document.getElementById("memoryView"),
-  memBack: document.getElementById("memBack"),
+  libraryView: document.getElementById("libraryView"),
   memSubtitle: document.getElementById("memSubtitle"),
   memSearchInput: document.getElementById("memSearchInput"),
   memFilters: document.getElementById("memFilters"),
@@ -49,12 +58,22 @@ export const els = {
   composerInput: document.getElementById("composerInput"),
   sendBtn: document.getElementById("sendBtn"),
   micBtn: document.getElementById("micBtn"),
+  // The Audio tab's one big Record button — the old #recordBtn's exact job.
   recordBtn: document.getElementById("recordBtn"),
-  screenBtn: document.getElementById("screenBtn"),
+  recordBtnLabel: document.getElementById("recordBtnLabel"),
+  // "Look at this tab" now lives on the page-awareness pill.
+  screenBtn: document.getElementById("tabPill"),
+  // The Video tab's one big Record-screen button — the old #screenRecBtn's job.
   screenRecBtn: document.getElementById("screenRecBtn"),
+  screenRecBtnLabel: document.getElementById("screenRecBtnLabel"),
   searchIcon: document.getElementById("searchIcon"),
-  memNavBtn: document.getElementById("memNavBtn"),
-  memNavBadge: document.getElementById("memNavBadge"),
+  libraryTab: document.getElementById("tabLibrary"),
+  libraryTabBadge: document.getElementById("tabLibraryBadge"),
+  audioSubtitle: document.getElementById("audioSubtitle"),
+  audioList: document.getElementById("audioList"),
+  videoSubtitle: document.getElementById("videoSubtitle"),
+  videoQuota: document.getElementById("videoQuota"),
+  videoList: document.getElementById("videoList"),
   recCard: document.getElementById("recCard"),
   recLabel: document.getElementById("recLabel"),
   recTimer: document.getElementById("recTimer"),
@@ -116,8 +135,9 @@ export const els = {
 
 // The user lives in Lake Tapps, WA — every date and time on screen is shown
 // in their Pacific clock, so displayed timestamps stay honest even if the
-// device's own timezone differs.
-const DISPLAY_TZ = "America/Los_Angeles";
+// device's own timezone differs. Exported so anything else that builds a
+// user-facing timestamp (a saved video's title) uses the same clock.
+export const DISPLAY_TZ = "America/Los_Angeles";
 
 export function initUI() {
   wireMemoryFilters();
@@ -148,7 +168,12 @@ const I_TASKS = '<path d="m9 11 3 3 8-8"/><path d="M21 12v6a2 2 0 0 1-2 2H5a2 2 
 const I_GLOBE = '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>';
 const I_VOLUME = '<path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>';
 const I_X = '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>';
-const I_MONITOR = '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>';
+// One glyph, one meaning: the camcorder is video (screen recordings), the
+// waveform is audio (voice recordings), the eye is "look at this tab", the mic
+// means mute and nothing else.
+const I_VIDEO = '<rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10.5 5.2-3.1a.5.5 0 0 1 .8.44v8.32a.5.5 0 0 1-.8.42L16 13.5z"/>';
+const I_WAVE = '<path d="M2 10v4"/><path d="M6 6v12"/><path d="M10 3v18"/><path d="M14 7v10"/><path d="M18 5v14"/><path d="M22 10v4"/>';
+const I_TRASH = '<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>';
 const I_DOWNLOAD = '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>';
 const I_PLAY = '<polygon points="6 3 20 12 6 21 6 3"/>';
 const I_PAUSE = '<path d="M9 4v16"/><path d="M15 4v16"/>';
@@ -183,11 +208,14 @@ export function setPhase(phase) {
 
 export function setMicIndicator(live) {
   els.html.setAttribute("data-mic", live ? "live" : "muted");
-  if (els.micBtn)
+  if (els.micBtn) {
     els.micBtn.setAttribute(
       "aria-label",
       live ? "Microphone is on — tap to mute" : "Microphone is off — tap to talk"
     );
+    // The header button's job is "mute", so pressed = muted.
+    els.micBtn.setAttribute("aria-pressed", live ? "false" : "true");
+  }
   if (els.lcMute) {
     els.lcMute.textContent = live ? "Mute" : "Unmute";
     els.lcMute.setAttribute("aria-label", live ? "Mute the microphone" : "Unmute the microphone");
@@ -212,13 +240,14 @@ export function setTabAwareness(seeing) {
   if (els.tabSeeing) els.tabSeeing.textContent = seeing ? "Seeing this tab" : "Not reading this tab";
 }
 
-// The mode bar reflects the manager's word: exactly one icon is lit, in the
-// mode's color (the CSS keys off data-mode). aria-pressed follows on the
-// tappable icons; the aria-live status line announces the mode change.
+// The mode is reflected wherever its action button now lives — the Audio
+// tab's Record button, the Video tab's Record-screen button, the "look at this
+// tab" pill (the CSS keys off data-mode). aria-pressed follows on those
+// buttons; the aria-live status line announces the mode change. NOTE: nothing
+// about the tab bar is touched here — mode state and tab state are separate.
 export function setMode(m) {
   els.html.setAttribute("data-mode", m);
   const pressed = {
-    listening: els.micBtn,
     recording: els.recordBtn,
     screen_rec: els.screenRecBtn,
     screen: els.screenBtn,
@@ -247,12 +276,11 @@ export function setMode(m) {
     );
 }
 
-// Blue badge on the memory (book) buttons = open-task count. The same count
-// rides both the header button and the bottom-bar toggle so they stay in step.
+// Blue badge on the Library tab = open-task count.
 export function setMemBadge(openTasks) {
   const n = Number(openTasks) || 0;
-  const label = n > 0 ? "Sharon's memory — " + n + " open task" + (n === 1 ? "" : "s") : "Sharon's memory";
-  for (const badge of [els.memBadge, els.memNavBadge]) {
+  const label = n > 0 ? "Library — " + n + " open task" + (n === 1 ? "" : "s") : "Library — everything saved";
+  for (const badge of [els.memBadge, els.libraryTabBadge]) {
     if (!badge) continue;
     if (n > 0) {
       badge.textContent = n > 25 ? "25+" : String(n);
@@ -262,11 +290,7 @@ export function setMemBadge(openTasks) {
     }
   }
   if (els.memoryBtn) els.memoryBtn.setAttribute("aria-label", label);
-  if (els.memNavBtn)
-    els.memNavBtn.setAttribute(
-      "aria-label",
-      n > 0 ? label + " (notes, tasks and recordings)" : "Sharon's memory — notes, tasks and recordings"
-    );
+  if (els.libraryTab) els.libraryTab.setAttribute("aria-label", label);
 }
 
 export function setComposerHasText(hasText) {
@@ -374,20 +398,36 @@ const REC_HINT = {
   organizing: "Distilling what mattered into your memory…",
 };
 
+// The big Record button on the Audio tab says what a tap will do right now.
+const BIG_REC_LABEL = {
+  recording: "Stop recording",
+  uploading: "Saving…",
+  organizing: "Organizing…",
+};
+
 export function showRecorder() {
   els.html.setAttribute("data-record", "on");
   if (els.recCard) els.recCard.classList.remove("hidden");
   if (els.recordBtn) els.recordBtn.setAttribute("aria-label", "Stop recording");
+  showRecordingPill("audio");
 }
 export function hideRecorder() {
   els.html.removeAttribute("data-record");
+  els.html.removeAttribute("data-recstage");
   if (els.recCard) els.recCard.classList.add("hidden");
   if (els.recordBtn)
     els.recordBtn.setAttribute("aria-label", "Record a voice memo — up to 30 minutes");
+  if (els.recordBtnLabel) els.recordBtnLabel.textContent = "Record";
+  hideRecordingPill("audio");
 }
 
 // stage: recording | uploading | organizing
 export function setRecorderStage(stage) {
+  els.html.setAttribute("data-recstage", stage);
+  if (els.recordBtnLabel) els.recordBtnLabel.textContent = BIG_REC_LABEL[stage] || "Record";
+  // The pill means "a recording is RUNNING" — it goes the moment the mic
+  // stops, even though the upload/organize flow is still finishing.
+  if (stage !== "recording") hideRecordingPill("audio");
   if (!els.recCard) return;
   els.recCard.setAttribute("data-stage", stage);
   if (els.recLabel) els.recLabel.textContent = REC_LABEL[stage] || stage;
@@ -397,6 +437,7 @@ export function setRecorderStage(stage) {
 
 export function setRecTimer(text) {
   if (els.recTimer) els.recTimer.textContent = text;
+  setRecordingPillTime("audio", text);
 }
 
 // Same two-tone pattern as the listening flow: confirmed text normal,
@@ -426,6 +467,8 @@ export function showScreenRecorder() {
   els.html.setAttribute("data-screenrec", "on");
   if (els.screenRecCard) els.screenRecCard.classList.remove("hidden");
   if (els.screenRecBtn) els.screenRecBtn.setAttribute("aria-label", "Recording your screen — tap to stop");
+  if (els.screenRecBtnLabel) els.screenRecBtnLabel.textContent = "Stop recording";
+  showRecordingPill("video");
 }
 export function hideScreenRecorder() {
   els.html.removeAttribute("data-screenrec");
@@ -436,14 +479,56 @@ export function hideScreenRecorder() {
   if (els.screenRecLabel) els.screenRecLabel.textContent = "Recording your screen";
   if (els.screenRecBtn)
     els.screenRecBtn.setAttribute("aria-label", "Record your screen — up to 30 minutes");
+  if (els.screenRecBtnLabel) els.screenRecBtnLabel.textContent = "Record screen";
+  hideRecordingPill("video");
 }
 export function setScreenRecTimer(text) {
   if (els.screenRecTimer) els.screenRecTimer.textContent = text;
+  setRecordingPillTime("video", text);
 }
 // Reflect the paused state on the live card (label + a data hook for the dot).
 export function setScreenRecPaused(paused) {
   if (els.screenRecCard) els.screenRecCard.setAttribute("data-paused", paused ? "true" : "false");
   if (els.screenRecLabel) els.screenRecLabel.textContent = paused ? "Paused" : "Recording your screen";
+  if (els.recPill && els.recPill.getAttribute("data-kind") === "video") {
+    els.recPill.setAttribute("data-paused", paused ? "true" : "false");
+    if (els.recPillLabel) els.recPillLabel.textContent = paused ? "Paused" : "Recording";
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * The persistent recording indicator (header) — a red dot, the word
+ * "Recording", and the running timer, visible from EVERY tab because a
+ * recording now keeps going while the user browses other screens. Tapping it
+ * jumps to the tab that owns the recording (tabs.js wires that); it disappears
+ * the moment recording stops. Purely an indicator: it never touches the
+ * recorder or Sharon's mode.
+ * ------------------------------------------------------------------ */
+function showRecordingPill(kind) {
+  if (!els.recPill) return;
+  els.recPill.setAttribute("data-kind", kind);
+  els.recPill.setAttribute("data-paused", "false");
+  els.recPill.setAttribute(
+    "aria-label",
+    kind === "video" ? "Recording your screen — go to Video" : "Recording — go to Audio"
+  );
+  if (els.recPillLabel) els.recPillLabel.textContent = "Recording";
+  els.recPill.classList.remove("hidden");
+}
+
+// Only the kind that owns the pill may take it down, so a stray call from the
+// other recorder's idle path can't hide a live indicator.
+function hideRecordingPill(kind) {
+  if (!els.recPill) return;
+  if (kind && els.recPill.getAttribute("data-kind") !== kind) return;
+  els.recPill.classList.add("hidden");
+}
+
+// The cards' timers read "MM:SS / 30:00"; the pill shows just the elapsed part.
+function setRecordingPillTime(kind, text) {
+  if (!els.recPill || !els.recPillTimer) return;
+  if (els.recPill.getAttribute("data-kind") !== kind) return;
+  els.recPillTimer.textContent = String(text || "").split("/")[0].trim();
 }
 
 /* ------------------------------------------------------------------ *
@@ -798,7 +883,7 @@ export function addWebSearchCard({ question, bullets, sources }) {
 // is already in memory with the audio linked; the footer plays the source
 // recording right in the panel (with the Drive link as the fallback).
 export function addRecordingCard({ driveUrl, recordingId, durationLabel, notes, onListen }) {
-  const card = cardShell(I_MIC, "Recording saved", durationLabel || "");
+  const card = cardShell(I_WAVE, "Recording saved", durationLabel || "");
   const list = Array.isArray(notes) ? notes : [];
   if (list.length) {
     const intro = document.createElement("p");
@@ -873,8 +958,12 @@ export function addScreenReviewCard({ url, onSave, onDiscard } = {}) {
   // after the panel was reopened (where the timer card was never shown).
   els.html.setAttribute("data-screenrec", "on");
   if (els.screenRecCard) els.screenRecCard.classList.add("hidden");
+  // Recording has stopped — the persistent indicator goes, and the Video tab's
+  // big button stops offering to stop something that already ended.
+  hideRecordingPill("video");
+  if (els.screenRecBtnLabel) els.screenRecBtnLabel.textContent = "Record screen";
 
-  const card = cardShell(I_MONITOR, "Review your recording", "");
+  const card = cardShell(I_VIDEO, "Review your recording", "");
   const hint = document.createElement("p");
   hint.className = "ac-q";
   hint.textContent = "Drag the handles to trim, or just Save to keep the whole clip.";
@@ -1157,7 +1246,7 @@ export function addScreenReviewCard({ url, onSave, onDiscard } = {}) {
 export function addRecordingsListCard({ recordings, onListen, onOpenAll } = {}) {
   const list = Array.isArray(recordings) ? recordings : [];
   const card = cardShell(
-    I_MIC,
+    I_WAVE,
     "Your recordings",
     list.length + (list.length === 1 ? " recording" : " recordings")
   );
@@ -1318,19 +1407,23 @@ export function dismissToast() {
 }
 
 /* ------------------------------------------------------------------ *
- * Memory view — "Sharon's memory"
+ * Library view — everything saved, in one list (formerly "Sharon's memory")
  * ------------------------------------------------------------------ */
-export function openMemory() {
-  els.html.setAttribute("data-view", "memory");
-  if (els.memNavBtn) els.memNavBtn.setAttribute("aria-pressed", "true");
+// The one door for switching screens: set data-view and nothing else. Called
+// by tabs.js on a tab tap — navigation only, never a mode change.
+export function setView(view) {
+  if (view !== "library") exitMemSelect(); // no half-finished selection left behind
+  els.html.setAttribute("data-view", view);
 }
-export function closeMemory() {
+export function openLibrary() {
+  els.html.setAttribute("data-view", "library");
+}
+export function closeLibrary() {
   exitMemSelect(); // never leave a half-finished selection behind
   els.html.setAttribute("data-view", "chat");
-  if (els.memNavBtn) els.memNavBtn.setAttribute("aria-pressed", "false");
 }
-export function memoryOpen() {
-  return els.html.getAttribute("data-view") === "memory";
+export function libraryOpen() {
+  return els.html.getAttribute("data-view") === "library";
 }
 
 export function setMemorySubtitle(n, atLimit) {
@@ -1339,6 +1432,16 @@ export function setMemorySubtitle(n, atLimit) {
     (atLimit ? n + "+" : String(n)) +
     (n === 1 && !atLimit ? " thing saved" : " things saved") +
     " · your “Speaking Assistant” Sheet";
+}
+
+// A plain subtitle line for the Library's non-Sheet filters (local videos).
+export function setMemorySubtitleText(text) {
+  if (els.memSubtitle) els.memSubtitle.textContent = text;
+}
+
+// The Library footer, worded for whatever the list is actually showing.
+export function setSyncedFooter(text) {
+  if (els.memSynced) els.memSynced.textContent = text;
 }
 
 export function setRecordingsSubtitle(n) {
@@ -1353,6 +1456,9 @@ export function memorySyncedNow() {
 
 export function memLoading() {
   if (els.memList) els.memList.innerHTML = '<div class="mem-loading">Looking through your Sheet…</div>';
+  // Whatever the last filter left in the footer, a fresh load starts from the
+  // honest default (the Video filter overwrites it again once it has loaded).
+  setSyncedFooter("Synced with your Google Sheet");
 }
 export function memError(message) {
   if (!els.memList) return;
@@ -1431,6 +1537,9 @@ export function setMemFilterHandler(fn) {
 }
 
 function applyFilterPills(name) {
+  // The active filter is a styling hook too: the Video filter shows locally
+  // stored clips, which aren't Sheet rows and so can't be multi-selected.
+  els.html.setAttribute("data-lib-filter", name || "all");
   if (!els.memFilters) return;
   els.memFilters.querySelectorAll(".m-pill").forEach((b) => {
     const on = (b.getAttribute("data-filter") || "all") === name;
@@ -1462,9 +1571,12 @@ function wireMemoryFilters() {
 
 function passesFilter(h) {
   const isRecording = h.entry_type === "recording";
-  // Recordings only ever appear under their own filter — never mixed into
-  // All / Notes / Tasks / Done.
-  if (memFilter === "recordings") return isRecording;
+  // Video is backed by the local IndexedDB store, not the Sheet — the
+  // orchestrator renders those rows itself (see renderLocalVideos).
+  if (memFilter === "video") return false;
+  // Voice recordings only ever appear under the Audio filter — never mixed
+  // into All / Notes / Tasks / Done.
+  if (memFilter === "audio") return isRecording;
   if (isRecording) return false;
   const isTask = h.entry_type === "task";
   const isDone = String(h.status) === "done";
@@ -1619,8 +1731,10 @@ function emptyMessage() {
   if (memFilter === "tasks") return "No tasks here — say “remind me to…” and I'll save one.";
   if (memFilter === "done") return "Nothing marked done yet — tap a task's box when it's finished.";
   if (memFilter === "notes") return "No notes here — say “make a note…” and I'll save one.";
-  if (memFilter === "recordings")
-    return "No voice recordings yet — tap the round record button to make one.";
+  if (memFilter === "audio")
+    return "No voice recordings yet — tap Record on the Audio tab to make one.";
+  if (memFilter === "video")
+    return "No screen recordings kept here yet — tap Record screen on the Video tab.";
   return "Nothing saved yet — just talk, and what matters lands in your Sheet.";
 }
 
@@ -1633,6 +1747,9 @@ function kindOf(h) {
 
 function renderMemList() {
   if (!els.memList) return;
+  // Under the Video filter the list belongs to the local video store, which
+  // the orchestrator draws — never overwrite it from the Sheet-backed cache.
+  if (memFilter === "video") return;
   els.memList.innerHTML = "";
   const shown = memCache.hits.filter(passesFilter);
   if (!shown.length) {
@@ -1794,6 +1911,262 @@ function renderMemList() {
 
     groupCard.appendChild(item);
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Audio tab — the list of past voice recordings under the Record button.
+ * Same data the Library's Audio filter loads (the recordings sheet); tapping
+ * a row plays it in the panel through the existing player bar.
+ * ------------------------------------------------------------------ */
+function listShell(container, message) {
+  if (!container) return null;
+  // Free any in-panel video player this list was holding before the rows go.
+  container.querySelectorAll("[data-url]").forEach(releasePlayer);
+  container.innerHTML = "";
+  if (message) {
+    const empty = document.createElement("div");
+    empty.className = "mem-empty";
+    empty.textContent = message;
+    container.appendChild(empty);
+    return null;
+  }
+  const card = document.createElement("div");
+  card.className = "mg-card";
+  container.appendChild(card);
+  return card;
+}
+
+export function audioListLoading() {
+  if (els.audioList)
+    els.audioList.innerHTML = '<div class="mem-loading">Looking through your recordings…</div>';
+}
+
+export function setAudioSubtitle(text) {
+  if (els.audioSubtitle) els.audioSubtitle.textContent = text;
+}
+
+export function renderAudioList(recordings, { onListen } = {}) {
+  const list = Array.isArray(recordings) ? recordings : [];
+  const card = listShell(
+    els.audioList,
+    list.length ? "" : "No voice recordings yet — tap Record above and start talking."
+  );
+  if (!card) return;
+  for (const h of list) {
+    const item = document.createElement("div");
+    item.className = "mi";
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "mi-row";
+    const ic = document.createElement("span");
+    ic.className = "av-ic";
+    ic.appendChild(svgOf(I_WAVE));
+    row.appendChild(ic);
+    const txt = document.createElement("div");
+    txt.className = "mi-txt";
+    const t = document.createElement("div");
+    t.className = "mi-t";
+    t.textContent = h.title || "Recording";
+    txt.appendChild(t);
+    const when = metaTime(h.created_at);
+    const notes = Number(h.notes_saved) || 0;
+    const meta =
+      (when ? when : "") + (notes ? (when ? " · " : "") + notes + (notes === 1 ? " note" : " notes") : "");
+    if (meta) {
+      const m = document.createElement("div");
+      m.className = "mi-m";
+      m.textContent = meta;
+      txt.appendChild(m);
+    }
+    row.appendChild(txt);
+    const play = document.createElement("span");
+    play.className = "av-go";
+    play.appendChild(svgOf(I_PLAY));
+    row.appendChild(play);
+    row.addEventListener("click", () => onListen && onListen(h));
+    item.appendChild(row);
+    card.appendChild(item);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Video tab (and the Library's Video filter) — the LOCAL clips: title, date,
+ * length, file size, a still-frame thumbnail, in-panel playback, and a Delete
+ * that removes ONLY this local copy. Nothing here uploads anything.
+ * ------------------------------------------------------------------ */
+export function videoListLoading() {
+  if (els.videoList)
+    els.videoList.innerHTML = '<div class="mem-loading">Looking through your screen recordings…</div>';
+}
+
+export function setVideoSubtitle(text) {
+  if (els.videoSubtitle) els.videoSubtitle.textContent = text;
+}
+
+// The 2 GB local cap, stated plainly (and loudly when it's full).
+export function setVideoQuota(text, full) {
+  if (!els.videoQuota) return;
+  els.videoQuota.textContent = text || "";
+  els.videoQuota.classList.toggle("hidden", !text);
+  els.videoQuota.setAttribute("data-full", full ? "true" : "false");
+}
+
+// Draw the local-video rows into any container (the Video tab's list, or the
+// Library list when its Video filter is on).
+export function renderVideoRows(container, videos, { onPlay, onDelete, fmtSize, fmtLen } = {}) {
+  const list = Array.isArray(videos) ? videos : [];
+  const card = listShell(
+    container,
+    list.length
+      ? ""
+      : "No screen recordings kept here yet. Recordings you save always download to your computer; a copy is kept here so you can play it back in the panel."
+  );
+  if (!card) return;
+  for (const v of list) {
+    const item = document.createElement("div");
+    item.className = "mi";
+
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "mi-row";
+    row.setAttribute("aria-expanded", "false");
+
+    const thumb = document.createElement("span");
+    thumb.className = "av-thumb";
+    if (v.thumb) {
+      const img = document.createElement("img");
+      img.src = v.thumb;
+      img.alt = "";
+      thumb.appendChild(img);
+    } else {
+      thumb.appendChild(svgOf(I_VIDEO));
+    }
+    row.appendChild(thumb);
+
+    const txt = document.createElement("div");
+    txt.className = "mi-txt";
+    const t = document.createElement("div");
+    t.className = "mi-t";
+    t.textContent = v.title || "Screen recording";
+    txt.appendChild(t);
+    const bits = [
+      metaTime(v.createdAt),
+      fmtLen ? fmtLen(v.durationSeconds) : "",
+      fmtSize ? fmtSize(v.size) : "",
+    ].filter(Boolean);
+    if (bits.length) {
+      const m = document.createElement("div");
+      m.className = "mi-m";
+      m.textContent = bits.join(" · ");
+      txt.appendChild(m);
+    }
+    row.appendChild(txt);
+    const go = document.createElement("span");
+    go.className = "av-go";
+    go.appendChild(svgOf(I_PLAY));
+    row.appendChild(go);
+    item.appendChild(row);
+
+    // The player and the actions live in the row's expanded area, so a tap
+    // never navigates away from the list.
+    const body = document.createElement("div");
+    body.className = "av-body";
+    item.appendChild(body);
+
+    const actions = document.createElement("div");
+    actions.className = "mi-actions av-actions";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "pill-btn danger";
+    del.appendChild(svgOf(I_TRASH));
+    del.appendChild(document.createTextNode("Delete"));
+    const note = document.createElement("span");
+    note.className = "av-note";
+    note.textContent = "Removes Sharon's copy only — the file you saved on your computer stays put.";
+    // One in-place confirmation, the same pattern as the Library's bulk delete.
+    let armed = null;
+    del.addEventListener("click", () => {
+      if (!armed) {
+        del.setAttribute("data-confirm", "1");
+        del.lastChild.textContent = "Delete this copy?";
+        armed = setTimeout(() => {
+          armed = null;
+          del.removeAttribute("data-confirm");
+          del.lastChild.textContent = "Delete";
+        }, 4000);
+        return;
+      }
+      clearTimeout(armed);
+      armed = null;
+      onDelete && onDelete(v);
+    });
+    actions.appendChild(del);
+    actions.appendChild(note);
+    item.appendChild(actions);
+
+    row.addEventListener("click", () => {
+      const open = item.classList.toggle("open");
+      row.setAttribute("aria-expanded", open ? "true" : "false");
+      if (!open) {
+        releasePlayer(body);
+        return;
+      }
+      onPlay && onPlay(v, body);
+    });
+
+    card.appendChild(item);
+  }
+}
+
+// Drop an in-panel <video> into an expanded row. The orchestrator hands over
+// the object URL it created; releasePlayer revokes it again.
+export function mountVideoPlayer(body, url) {
+  if (!body) return;
+  releasePlayer(body);
+  const v = document.createElement("video");
+  v.className = "av-video";
+  v.src = url;
+  v.controls = true;
+  v.playsInline = true;
+  v.preload = "metadata";
+  body.appendChild(v);
+  body.setAttribute("data-url", url);
+  v.play().catch(() => {
+    /* the controls are right there if autoplay is refused */
+  });
+}
+
+export function videoPlayerError(body, message) {
+  if (!body) return;
+  releasePlayer(body);
+  const p = document.createElement("div");
+  p.className = "av-err";
+  p.textContent = message;
+  body.appendChild(p);
+}
+
+export function releasePlayer(body) {
+  if (!body) return;
+  const v = body.querySelector("video");
+  if (v) {
+    try {
+      v.pause();
+      v.removeAttribute("src");
+      v.load();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  const url = body.getAttribute("data-url");
+  if (url) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch (_) {
+      /* ignore */
+    }
+    body.removeAttribute("data-url");
+  }
+  body.innerHTML = "";
 }
 
 /* ------------------------------------------------------------------ *
