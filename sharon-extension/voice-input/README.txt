@@ -39,6 +39,47 @@ Four quiet details that make it actually work on real websites:
 It follows the field as you scroll and resize, and disappears the moment you
 click away or the field is removed from the page.
 
+
+Site access — "On all sites" is the default
+--------------------------------------------
+Right-click the extension icon → "This can read and change site data" offers
+three choices: "When you click the extension", "On <this site>", and "On all
+sites". Sharon installs with ON ALL SITES already selected, and nothing needs
+to be turned on by hand.
+
+That default is not a setting stored anywhere — Chrome decides it from the
+manifest, and two things there produce it:
+
+  "host_permissions": ["http://*/*", "https://*/*"]   ← REQUIRED, not optional
+  "content_scripts": [{ "matches": ["http://*/*", "https://*/*"], … }]
+
+Because the host permissions are required rather than optional, Chrome grants
+them at install time and the toggle lands on "On all sites". (Had they been
+listed under "optional_host_permissions", or had the extension relied on
+"activeTab" alone, the default would be "When you click the extension" and
+the microphone button would only appear after clicking the icon on each site.)
+
+The content script also carries:
+
+  "all_frames": true              every frame on the page, not just the top one
+  "match_about_blank": true       text boxes inside about:blank / srcdoc frames
+  "match_origin_as_fallback": true  …and the other frame types editors use
+
+Those three are what make the button show up inside rich-text editors that
+build their editing area in an iframe (TinyMCE, CKEditor, a lot of webmail and
+ticketing tools) instead of only in plain page text boxes.
+
+If someone has since narrowed the access by hand, put it back the same way:
+right-click Sharon's icon → This can read and change site data → On all sites.
+Chrome remembers that per extension; reloading the unpacked folder does not
+reset it.
+
+A note on what is NOT requested: "<all_urls>" is deliberately absent.
+"http://*/*" plus "https://*/*" already covers every ordinary website, and
+adding "<all_urls>" would only widen the install warning. Chrome pages
+(chrome://…, the Web Store) are off limits to every extension, so the button
+will never appear there — that is Chrome's rule, not a setting.
+
 It fails quietly. If speech recognition is unavailable, or the microphone has
 not been allowed, the button shows two words for two seconds and stops. It
 never fills the website's console with errors.
