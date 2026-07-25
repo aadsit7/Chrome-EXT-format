@@ -36,6 +36,14 @@ class Component extends DCLogic {
     this.loadData();
     this._attached = false;
     this._toastT = null;
+    // Latest partial ("interim") speech result. Continuous recognition emits
+    // these many times a second, but the only thing that displays them is the
+    // voice overlay's {{ transcript }}. So the live value is kept here on the
+    // instance, and only mirrored into state (coalesced to one update per
+    // animation frame) while that overlay is actually on screen.
+    this._interim = '';
+    this._interimNext = '';
+    this._interimRaf = 0;
   }
 
   /* ---------- persistence ---------- */
@@ -1042,8 +1050,11 @@ class Component extends DCLogic {
         if (res.isFinal) { fin += t + ' '; for (let k = 1; k < res.length; k++) { const a = res[k] && res[k].transcript; if (a) alts.push(a); } }
         else interim += t;
       }
-      if (fin) { this.setState({ interim: '' }); this.handleTranscript(fin, alts); }
-      else if (interim) this.setState({ interim: interim.trim() });
+      // FINAL results are unchanged: clear the partial text and run the command
+      // grammar, whether or not the overlay is open. This is what makes voice
+      // work, so it is never gated or deferred.
+      if (fin) { this.cancelInterimFrame(); this._interim = ''; this.setState({ interim: '' }); this.handleTranscript(fin, alts); }
+      else if (interim) this.pushInterim(interim.trim());
     };
     r.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { this.stopListen(); this.toast('Allow microphone access, then try again', 'mic-off'); } };
     // Any sign of life resets the stall clock so the watchdog never aborts a
@@ -1054,11 +1065,34 @@ class Component extends DCLogic {
     r.onend = () => { this._running = false; if (this._want && this.state.listening) this.kick(); };
     this._rec = r; return r;
   }
+  // Record a partial speech result. The overlay's {{ transcript }} lives inside
+  // <sc-if value="{{ voiceOpen }}">, so while the overlay is closed a state
+  // update would rebuild the whole element tree for zero visible change: keep
+  // the text on the instance instead. While the overlay IS open the text has to
+  // stay live, but the engine fires far faster than the screen refreshes, so the
+  // updates are coalesced to at most one setState per animation frame.
+  pushInterim(text) {
+    this._interim = text;
+    if (!this.state.voiceOpen) return;
+    this._interimNext = text;
+    if (this._interimRaf) return;
+    this._interimRaf = requestAnimationFrame(() => {
+      this._interimRaf = 0;
+      const t = this._interimNext;
+      if (!this.state.voiceOpen || this.state.interim === t) return;
+      this.setState({ interim: t });
+    });
+  }
+  cancelInterimFrame() {
+    if (this._interimRaf) { try { cancelAnimationFrame(this._interimRaf); } catch {} this._interimRaf = 0; }
+    this._interimNext = '';
+  }
   kick(attempt = 0) { if (!this._want || !this.state.listening || this._running) return; const r = this.ensureRec(); if (!r) return; try { r.start(); } catch (err) { if (/already started/i.test(err && err.message || '')) return; if (attempt < 6) setTimeout(() => this.kick(attempt + 1), 200 * (attempt + 1)); } }
   startListen() {
     const r = this.ensureRec();
     if (!r) { this.setState({ voiceOpen: true }); return; }
     this.holdMic();
+    this.cancelInterimFrame(); this._interim = '';
     this._want = true; this.setState({ listening: true, interim: '', heard: '' }); this.kick();
     // Reliability watchdog. Web Speech silently dies on long sessions, so every
     // few seconds we (a) revive a recognizer that has stopped and (b) abort()+
@@ -1083,8 +1117,16 @@ class Component extends DCLogic {
     }
   }
   stopRec() { this._want = false; if (this._rec) { try { this._rec.stop(); } catch {} } if (this._mic) { this._mic.getTracks().forEach(t => t.stop()); this._mic = null; } }
-  stopListen() { this.stopRec(); if (this._wd) { clearInterval(this._wd); this._wd = null; } this.setState({ listening: false, interim: '' }); }
-  launchVoiceFn() { this.setState({ voiceOpen: true, settingsOpen: false, adding: false, folderOpen: null, search: '' }); this.startListen(); }
+  stopListen() { this.stopRec(); if (this._wd) { clearInterval(this._wd); this._wd = null; } this.cancelInterimFrame(); this._interim = ''; this.setState({ listening: false, interim: '' }); }
+  launchVoiceFn() {
+    // Whatever is mid-utterance right now was only being kept on the instance
+    // (the overlay wasn't there to show it), so seed the overlay with it — grab
+    // it before startListen(), which resets the partial text.
+    const pending = this._interim || '';
+    this.setState({ voiceOpen: true, settingsOpen: false, adding: false, folderOpen: null, search: '' });
+    this.startListen();
+    if (pending) { this._interim = pending; this.setState({ interim: pending }); }
+  }
   closeVoiceFn() { this.stopListen(); this.setState({ voiceOpen: false }); }
   speakIf(text) { if (this.state.speak && window.speechSynthesis) { try { window.speechSynthesis.cancel(); window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch {} } }
 
@@ -1118,7 +1160,17 @@ class Component extends DCLogic {
       '--bb-orb-sh': this.state.listening ? '0 0 0 8px rgba(49,209,255,.26),0 14px 40px rgba(22,31,91,.18)' : '0 12px 30px rgba(3,114,255,.4)'
     };
   }
-  applyTheme() { const root = document.querySelector('.bb-root'); if (!root) return; const v = this.themeVars(); for (const k in v) root.style.setProperty(k, v[k]); const orb = root.querySelector('.bb-vring'); }
+  // Every one of the ~28 custom properties is a pure function of (dark,
+  // listening), so once they're on the root element re-writing them on every
+  // render is pure cost. Skip while the signature — and the element they were
+  // written to — is unchanged.
+  applyTheme() {
+    const root = document.querySelector('.bb-root'); if (!root) return;
+    const sig = (this.state.dark ? 'd' : 'l') + (this.state.listening ? 'L' : '-');
+    if (this._themeRoot === root && this._themeSig === sig) return;
+    this._themeRoot = root; this._themeSig = sig;
+    const v = this.themeVars(); for (const k in v) root.style.setProperty(k, v[k]);
+  }
   applyTransform(animate) {
     const track = document.querySelector('.bb-track'); if (!track) return;
     // A freshly (re)mounted track — returning from search or the list view —
@@ -1128,7 +1180,31 @@ class Component extends DCLogic {
     track.style.transition = (animate === false || fresh) ? 'none' : 'transform .26s cubic-bezier(.16,1,.3,1)';
     track.style.transform = 'translateX(' + (-this.state.currentPage * 100) + '%)';
   }
+  // The jiggle / ring animations are a pure function of (editMode, folderEdit,
+  // listening) applied to whatever tiles are mounted, so the sweep only needs to
+  // re-run when one of those flags flips or when the mounted markup changed.
+  // Live class collections make the counts free to read, `pages` identity catches
+  // any board mutation (a drop, a delete, a page reorder), and the drag flag
+  // catches a lift/release — after which the drag engine's own inline animation
+  // overrides have to be replaced with the jiggle again.
+  applyEditDirty() {
+    const root = document.querySelector('.bb-root'); if (!root) return null;
+    const st = this.state;
+    const sig = {
+      root, edit: st.editMode, fedit: st.folderEdit, listening: st.listening, pages: st.pages, dragging: !!this._drag,
+      nCell: root.getElementsByClassName('bb-cell').length,
+      nFapp: root.getElementsByClassName('bb-fapp').length,
+      nRing: root.getElementsByClassName('bb-vring').length
+    };
+    const p = this._editSig;
+    if (p && p.root === sig.root && p.edit === sig.edit && p.fedit === sig.fedit && p.listening === sig.listening &&
+        p.pages === sig.pages && p.dragging === sig.dragging &&
+        p.nCell === sig.nCell && p.nFapp === sig.nFapp && p.nRing === sig.nRing) return null;
+    return sig;
+  }
   applyEdit() {
+    const sig = this.applyEditDirty(); if (!sig) return;
+    this._editSig = sig;
     const editing = this.state.editMode;
     document.querySelectorAll('.bb-root .bb-cell').forEach((el, i) => {
       el.style.animation = editing ? ('bbJiggle .32s infinite ' + (i % 2 ? '-.16s' : '0s')) : '';
@@ -1168,7 +1244,7 @@ class Component extends DCLogic {
   postRender() { this.applyTheme(); this.applyTransform(); this.applyEdit(); this.refreshIcons(); this.handleIcons(); this.applyHit(); }
   componentDidMount() { this.postRender(); this.attachGestures(); this.attachFolderGestures(); this.attachPageGestures(); this.attachKeys(); this.attachLifecycle(); this.sheetBoot(); this.autoStartMic(); }
   componentDidUpdate() { this.postRender(); }
-  componentWillUnmount() { this.stopListen(); this.detachLifecycle(); this.sheetDetachConnectivity(); if (this._hitT) clearTimeout(this._hitT); if (this._keyH) window.removeEventListener('keydown', this._keyH); }
+  componentWillUnmount() { this.stopListen(); this.cancelInterimFrame(); this.detachLifecycle(); this.sheetDetachConnectivity(); if (this._hitT) clearTimeout(this._hitT); if (this._keyH) window.removeEventListener('keydown', this._keyH); }
 
   /* ---------- side-panel lifecycle (revive-only) ----------
    * A side panel keeps its own document alive for the whole session; clicking
@@ -2009,7 +2085,13 @@ class Component extends DCLogic {
 
   renderVals() {
     const s = this.state;
-    const byId = id => s.bookmarks.find(b => b.id === id);
+    // One pass to index the list, instead of a linear scan per lookup — byId is
+    // called dozens of times per render (tiles, folder minis, list rows), which
+    // made the whole render quadratic in the number of bookmarks. First entry
+    // wins, exactly like the Array#find it replaces.
+    const bmIndex = new Map();
+    for (const b of s.bookmarks) if (!bmIndex.has(b.id)) bmIndex.set(b.id, b);
+    const byId = id => bmIndex.get(id);
     const cellOf = (c, idx) => {
       if (c.type === 'folder') {
         c.__id = c.__id || ('f' + idx + '_' + (c.name || '').replace(/\s/g, ''));
@@ -2043,8 +2125,14 @@ class Component extends DCLogic {
         .map(({ b }) => ({ id: b.id, name: b.name || this.hostCore(b.url), host: this.hostOf(b.url), icon: this.iconFor(b), letter: this.letterOf(b), onTap: () => this.openBookmark(b, false) }));
     }
 
-    const have = new Set(s.bookmarks.map(b => this.hostOf(b.url)));
-    const suggestions = this.STARTERS.filter(x => !have.has(this.hostOf(x.url))).slice(0, 6).map(x => ({ name: x.name, icon: this.favicon(x.url), letter: x.name[0], add: () => this.addBookmark(x.name, x.url) }));
+    // Quick-add chips only render inside <sc-if value="{{ adding }}"> (the add
+    // sheet), so the host Set and the STARTERS filter are only worth building
+    // while that sheet is open.
+    let suggestions = [];
+    if (s.adding) {
+      const have = new Set(s.bookmarks.map(b => this.hostOf(b.url)));
+      suggestions = this.STARTERS.filter(x => !have.has(this.hostOf(x.url))).slice(0, 6).map(x => ({ name: x.name, icon: this.favicon(x.url), letter: x.name[0], add: () => this.addBookmark(x.name, x.url) }));
+    }
 
     const hour = new Date().getHours();
     const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
@@ -2052,39 +2140,76 @@ class Component extends DCLogic {
     const transcript = s.interim || s.heard || (s.listening ? 'Listening… try “open ' + fname + '”' : 'Tap the mic, then say “open ' + fname + '”');
     const folder = s.folderOpen;
 
+    const scrollToLetter = (L) => { const el = document.getElementById('bb-sec-' + L); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+
     // ----- List view: one flat, deduped, A→Z sectioned list of every site -----
     // Folders are dissolved here — every bookmark is its own row, exactly like
     // the iPhone App Library list. Rows reuse the search-result open behaviour.
-    const seenIds = new Set();
-    const flat = [];
-    s.pages.forEach(pg => pg.forEach(c => {
-      if (!c) return;
-      (c.type === 'folder' ? c.items : [c.id]).forEach(id => {
-        if (seenIds.has(id)) return; seenIds.add(id);
-        const bm = byId(id); if (bm) flat.push(bm);
+    // All of it (listSections, azIndex, listEmpty) renders only inside
+    // <sc-if value="{{ showList }}">, so the flatten/dedupe/sort/section work
+    // only runs when the list is the visible view.
+    const showList = !showResults && s.view === 'list';
+    let listSections = [], azIndex = [], listEmpty = false;
+    if (showList) {
+      const seenIds = new Set();
+      const flat = [];
+      s.pages.forEach(pg => pg.forEach(c => {
+        if (!c) return;
+        (c.type === 'folder' ? c.items : [c.id]).forEach(id => {
+          if (seenIds.has(id)) return; seenIds.add(id);
+          const bm = byId(id); if (bm) flat.push(bm);
+        });
+      }));
+      // Any bookmark the layout hasn't placed still belongs in "all sites".
+      s.bookmarks.forEach(bm => { if (!seenIds.has(bm.id)) { seenIds.add(bm.id); flat.push(bm); } });
+      const dispName = bm => bm.name || this.hostCore(bm.url);
+      flat.sort((a, b) => dispName(a).toLowerCase().localeCompare(dispName(b).toLowerCase()));
+      const secMap = Object.create(null);
+      flat.forEach(bm => {
+        let L = (dispName(bm).trim()[0] || '#').toUpperCase();
+        if (L < 'A' || L > 'Z') L = '#';
+        (secMap[L] = secMap[L] || []).push({
+          id: bm.id, name: dispName(bm), host: this.hostOf(bm.url),
+          icon: this.iconFor(bm), letter: this.letterOf(bm),
+          onTap: () => this.openBookmark(bm, false)
+        });
       });
-    }));
-    // Any bookmark the layout hasn't placed still belongs in "all sites".
-    s.bookmarks.forEach(bm => { if (!seenIds.has(bm.id)) { seenIds.add(bm.id); flat.push(bm); } });
-    const dispName = bm => bm.name || this.hostCore(bm.url);
-    flat.sort((a, b) => dispName(a).toLowerCase().localeCompare(dispName(b).toLowerCase()));
-    const secMap = Object.create(null);
-    flat.forEach(bm => {
-      let L = (dispName(bm).trim()[0] || '#').toUpperCase();
-      if (L < 'A' || L > 'Z') L = '#';
-      (secMap[L] = secMap[L] || []).push({
-        id: bm.id, name: dispName(bm), host: this.hostOf(bm.url),
-        icon: this.iconFor(bm), letter: this.letterOf(bm),
-        onTap: () => this.openBookmark(bm, false)
-      });
+      const sectionLetters = Object.keys(secMap).filter(L => L !== '#').sort();
+      if (secMap['#']) sectionLetters.push('#');       // "#" section always last
+      listSections = sectionLetters.map(letter => ({ letter, rows: secMap[letter] }));
+      // Bindings are property paths (no call expressions), so each rail entry
+      // carries its own pre-bound handler — same pattern as the page dots' d.go.
+      azIndex = sectionLetters.map(letter => ({ letter, go: () => scrollToLetter(letter) }));
+      listEmpty = flat.length === 0;
+    }
+
+    // ----- Pages manager: only rendered inside <sc-if value="{{ pagesOpen }}"> -----
+    const pagesManager = !s.pagesOpen ? [] : s.pages.map((pg, i) => {
+      const ids = [];
+      pg.forEach(c => { if (!c) return; if (c.type === 'folder') ids.push.apply(ids, c.items); else ids.push(c.id); });
+      const n = ids.length;
+      const mini = ids.slice(0, 5).map(id => { const bm = byId(id); return { src: bm ? this.iconFor(bm) : '', letter: bm ? this.letterOf(bm) : '?' }; });
+      const more = n - mini.length;
+      return {
+        idx: i, label: this.pageName(i),
+        count: n + (n === 1 ? ' site' : ' sites'),
+        mini, more: more > 0 ? ('+' + more) : '', hasMore: more > 0,
+        empty: n === 0, isCurrent: i === s.currentPage,
+        rowStyle: i === s.currentPage ? 'border-color:var(--bb-accent);' : '',
+        jump: () => this.setState({ currentPage: i, pagesOpen: false })
+      };
     });
-    const sectionLetters = Object.keys(secMap).filter(L => L !== '#').sort();
-    if (secMap['#']) sectionLetters.push('#');       // "#" section always last
-    const listSections = sectionLetters.map(letter => ({ letter, rows: secMap[letter] }));
-    const scrollToLetter = (L) => { const el = document.getElementById('bb-sec-' + L); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
-    // Bindings are property paths (no call expressions), so each rail entry
-    // carries its own pre-bound handler — same pattern as the page dots' d.go.
-    const azIndex = sectionLetters.map(letter => ({ letter, go: () => scrollToLetter(letter) }));
+
+    // ----- Page rows in the add sheet: only rendered inside <sc-if value="{{ adding }}"> -----
+    const pageList = !s.adding ? [] : s.pages.map((pg, i) => {
+      const n = pg.reduce((t, c) => t + (c && c.type === 'folder' ? c.items.length : 1), 0);
+      return {
+        label: this.pageName(i), count: n + (n === 1 ? ' site' : ' sites'),
+        moveUp: () => this.movePage(i, -1), moveDown: () => this.movePage(i, 1),
+        upStyle: i === 0 ? 'opacity:.28; pointer-events:none;' : '',
+        downStyle: i === s.pages.length - 1 ? 'opacity:.28; pointer-events:none;' : ''
+      };
+    });
 
     return {
       greeting, subtitle: s.bookmarks.length + ' sites · swipe to browse',
@@ -2092,8 +2217,8 @@ class Component extends DCLogic {
       showResults, showBoard: !showResults && s.view !== 'list', noResults: showResults && results.length === 0, results,
       pages, dots, showDots: s.pages.length > 1 && !s.editMode && s.view !== 'list', editMode: s.editMode,
       // ----- List view (A→Z, App Library style) -----
-      showList: !showResults && s.view === 'list',
-      listSections, azIndex, listEmpty: flat.length === 0,
+      showList,
+      listSections, azIndex, listEmpty,
       scrollToLetter,
       toggleList: () => this.setState({ view: s.view === 'list' ? 'grid' : 'list', search: '' }, () => this.saveSettings()),
       listBtnStyle: s.view === 'list' ? 'background:var(--bb-accent); color:#fff; box-shadow:0 4px 14px rgba(3,114,255,.4);' : '',
@@ -2105,21 +2230,7 @@ class Component extends DCLogic {
       // and drop straight into edit mode so the springboard is already wiggling.
       openRearrange: () => this.setState({ settingsOpen: false, editMode: true }),
       closePages: () => this.setState({ pagesOpen: false }),
-      pagesManager: s.pages.map((pg, i) => {
-        const ids = [];
-        pg.forEach(c => { if (!c) return; if (c.type === 'folder') ids.push.apply(ids, c.items); else ids.push(c.id); });
-        const n = ids.length;
-        const mini = ids.slice(0, 5).map(id => { const bm = byId(id); return { src: bm ? this.iconFor(bm) : '', letter: bm ? this.letterOf(bm) : '?' }; });
-        const more = n - mini.length;
-        return {
-          idx: i, label: this.pageName(i),
-          count: n + (n === 1 ? ' site' : ' sites'),
-          mini, more: more > 0 ? ('+' + more) : '', hasMore: more > 0,
-          empty: n === 0, isCurrent: i === s.currentPage,
-          rowStyle: i === s.currentPage ? 'border-color:var(--bb-accent);' : '',
-          jump: () => this.setState({ currentPage: i, pagesOpen: false })
-        };
-      }),
+      pagesManager,
       openAdd: () => this.setState({ adding: true, draftName: '', draftUrl: '' }), closeAdd: () => this.setState({ adding: false }),
       launchVoice: () => this.launchVoiceFn(), closeVoice: () => this.closeVoiceFn(), toggleListen: () => { if (s.listening) this.stopListen(); else this.startListen(); },
       // Dock mic button: pulses while the mic is live; tapping it pauses
@@ -2165,15 +2276,7 @@ class Component extends DCLogic {
       confirmDeleteEdit: () => this.confirmDeleteEdit(),
       suggestions,
       addPage: () => this.addPage(),
-      pageList: s.pages.map((pg, i) => {
-        const n = pg.reduce((t, c) => t + (c && c.type === 'folder' ? c.items.length : 1), 0);
-        return {
-          label: this.pageName(i), count: n + (n === 1 ? ' site' : ' sites'),
-          moveUp: () => this.movePage(i, -1), moveDown: () => this.movePage(i, 1),
-          upStyle: i === 0 ? 'opacity:.28; pointer-events:none;' : '',
-          downStyle: i === s.pages.length - 1 ? 'opacity:.28; pointer-events:none;' : ''
-        };
-      }),
+      pageList,
       // ----- voice disambiguation chooser -----
       choosing: !!(s.choosing && s.choosing.length), choiceQuery: s.choiceQuery || '',
       choices: (s.choosing || []).map((bm, i) => ({
