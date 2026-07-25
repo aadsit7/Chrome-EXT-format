@@ -9,5 +9,9 @@
          no visible UI; it captures the screen and holds the MediaRecorder so a
          recording keeps going even when the side panel is collapsed. -->
     <script type="module" src="offscreen.js"></script>
+    <!-- The Voice Input Overlay's speech engine shares this one page (Chrome
+         allows only one offscreen document per extension). It is a separate
+         module with its own "vi:" messages and touches nothing above. -->
+    <script type="module" src="voice-input/recognizer.js"></script>
   </body>
 </html>
