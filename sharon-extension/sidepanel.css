@@ -33,8 +33,10 @@
 
   --ease:cubic-bezier(.22,1,.36,1);
 
-  --f-head:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif;
-  --f-ui:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif;
+  /* One system font stack for the whole panel (tokens.css) — no webfont, so
+     the panel renders in the OS's own UI face on every platform. */
+  --f-head:var(--font-system);
+  --f-ui:var(--font-system);
   --f-mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
 }
 
@@ -86,6 +88,19 @@ a.pill-btn{text-decoration:none;display:inline-flex;align-items:center}
 }
 .txt-link:hover{text-decoration:underline}
 .txt-link.center{align-self:center;margin:4px auto 0;display:block}
+
+/* Plain text button in a header (Notes' "Edit" / "Done"): no fill, no border,
+   so exactly ONE filled primary button ever sits next to a title. */
+.txt-btn{
+  flex:none;min-height:var(--hit);padding:0 var(--sp-2);
+  border:none;background:transparent;cursor:pointer;
+  font-family:inherit;font-size:15px;font-weight:500;color:var(--blue);
+  border-radius:8px;white-space:nowrap;
+  transition:background .15s var(--ease);
+}
+.txt-btn:hover{background:var(--blue-tint)}
+.txt-btn:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
+.txt-btn[aria-pressed="true"]{font-weight:700}
 
 /* ================= Header ================= */
 .hdr{
@@ -716,7 +731,7 @@ html[data-mem-select="on"] .mem-head{display:none}
 html[data-mem-select="on"] .mem-selbar{display:flex}
 .sel-count{flex:1;min-width:0;font-size:14px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mi-sel{
-  width:21px;height:21px;border-radius:50%;flex:none;margin-top:1px;
+  width:21px;height:21px;border-radius:50%;flex:none;
   border:1.5px solid var(--hairline-strong);background:#fff;color:#fff;
   display:grid;place-items:center;
   transition:background .15s var(--ease),border-color .15s var(--ease);
@@ -745,57 +760,125 @@ html[data-mem-select="on"] .mem-foot{display:none}
 .mem-search svg{width:16px;height:16px;color:var(--tertiary);flex:none}
 .mem-search input{border:none;outline:none;font-family:inherit;font-size:16px;width:100%;color:var(--ink);background:transparent}
 .mem-search input::placeholder{color:var(--placeholder)}
-.mem-filters{flex:none;display:flex;flex-wrap:wrap;gap:8px;padding:12px 0 4px}
-.m-pill{
-  border:none;background:var(--card);color:var(--gray);
-  font-family:inherit;font-size:12.5px;font-weight:600;
-  padding:6px 13px;border-radius:var(--r-pill);cursor:pointer;
-  transition:background .15s var(--ease),color .15s var(--ease);
+/* ---- the filter row, as ONE iOS segmented control ----
+   A single rounded gray track; the selected filter is a white pill raised
+   inside it. Same six buttons, same handlers — this is styling only. Narrow
+   panels scroll the track sideways rather than wrapping it into two rows. */
+.mem-filters{
+  flex:none;display:flex;gap:0;margin:var(--sp-3) 0 var(--sp-1);
+  background:var(--track);border-radius:var(--radius-seg);
+  padding:2px;overflow-x:auto;scrollbar-width:none;
 }
-.m-pill:hover{color:var(--blue)}
+.mem-filters::-webkit-scrollbar{height:0}
+.m-pill{
+  flex:1 0 auto;min-width:0;
+  border:none;background:transparent;color:var(--ink);
+  font-family:inherit;font-size:13px;font-weight:500;line-height:1.5;
+  padding:var(--sp-1) var(--sp-2);border-radius:calc(var(--radius-seg) - 2px);cursor:pointer;
+  white-space:nowrap;text-align:center;
+  transition:background .15s var(--ease),color .15s var(--ease),box-shadow .15s var(--ease);
+}
+.m-pill:hover{color:var(--ink)}
 .m-pill:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
-.m-pill.on{background:var(--blue);color:#fff}
+/* the selected segment: white, raised, and slightly heavier */
+.m-pill.on{
+  background:var(--surface);color:var(--ink);font-weight:600;
+  box-shadow:0 3px 8px rgba(0,0,0,.12),0 1px 1px rgba(0,0,0,.04);
+}
+.m-pill.on:hover{background:var(--surface);color:var(--ink)}
 
-.mem-list{flex:1;min-height:0;overflow-y:auto;padding:8px 0 12px;display:flex;flex-direction:column;gap:8px}
+/* ================= Inset grouped lists =================
+   The Notes list, the Library list and the Audio/Video lists all share one
+   shape: rounded white cards on a grouped gray surface, inset --list-inset
+   from the panel's edges, with --group-gap between cards. The negative
+   margin pulls the scrolling surface out to the panel edge; the padding
+   puts the cards back at the inset. */
+.mem-list,.notes-list,.av-list{
+  flex:1;min-height:0;overflow-y:auto;
+  display:flex;flex-direction:column;gap:var(--group-gap);
+  margin:var(--sp-3) calc(-1 * var(--list-inset)) 0;
+  padding:var(--sp-4) var(--list-inset) var(--sp-6);
+  background:var(--grouped-bg);
+}
 /* Group cards use overflow:hidden, which zeroes a flex item's automatic
    minimum height — without this, a full list SQUASHES the cards to fit
    (rows clip mid-item and there's nothing to scroll) instead of
    overflowing. flex:none keeps every card its natural height so the
    list actually scrolls. */
-.mem-list>*{flex:none}
-.mem-list::-webkit-scrollbar{width:0}
+.mem-list>*,.notes-list>*,.av-list>*{flex:none}
+.mem-list::-webkit-scrollbar,.notes-list::-webkit-scrollbar,.av-list::-webkit-scrollbar{width:0}
+
+/* one section = its header, then ONE continuous card directly under it */
+.mg-group,.nsec{display:flex;flex-direction:column;gap:var(--sp-2)}
+
+/* THE SECTION HEADER — sentence case exactly as it was typed, 17px
+   semibold, sitting --row-inset in from the left, directly above its card. */
 .mg-head{
-  font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
-  color:var(--gray-light);margin:12px 2px 6px;
+  display:flex;align-items:center;gap:var(--sp-2);
+  padding-left:var(--row-inset);min-height:var(--hit);
+  font-size:17px;font-weight:600;letter-spacing:-.01em;text-transform:none;
+  color:var(--ink);margin:0;
 }
-.mg-head:first-child{margin-top:0}
-.mg-card{background:var(--card);border:none;border-radius:var(--r-card);overflow:hidden}
-.mi{border-top:1px solid var(--hairline)}
-.mi:first-child{border-top:none}
+.mg-head-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* the count is plain text beside the name, never a badge */
+.mg-head-n{flex:none;font-size:13px;font-weight:400;letter-spacing:0;color:var(--gray)}
+
+/* THE CARD — one continuous rounded surface, white, not gray */
+.mg-card{background:var(--surface);border:none;border-radius:var(--radius-group);overflow:hidden}
+
+/* THE ROW — a hairline starting --row-inset in, none after the last row */
+.mi{position:relative}
+.mi + .mi::before{
+  content:"";position:absolute;left:var(--row-inset);right:0;top:0;height:1px;
+  background:var(--separator);transform:scaleY(.5);transform-origin:top;z-index:1;
+}
 .mi-row{
-  width:100%;display:flex;align-items:flex-start;gap:10px;
+  width:100%;min-height:var(--row-min-h);
+  display:flex;align-items:center;gap:var(--sp-3);
   border:none;background:transparent;text-align:left;cursor:pointer;
-  font-family:inherit;padding:14px 16px;
+  font-family:inherit;padding:var(--sp-3) var(--sp-3) var(--sp-3) var(--row-inset);
   transition:background .15s var(--ease);
 }
 .mi-row:hover{background:var(--hover)}
+.mi-row:active{background:var(--surface-press)}
 .mi-row:focus-visible{outline:none;box-shadow:inset 0 0 0 3px var(--blue-halo)}
+.mi-txt{flex:1;min-width:0}
+/* line 1 — the title: bold, dark, ONE line, clean ellipsis */
+.mi-t{
+  font-size:15px;font-weight:600;color:var(--ink);line-height:1.35;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.mi.done .mi-t{color:var(--tertiary);text-decoration:line-through}
+/* line 2 — a preview of the body: regular, gray, ONE line */
+.mi-p{
+  font-size:14px;font-weight:400;color:var(--gray);line-height:1.35;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+/* line 3 — the date, with the kind chip beside it */
+.mi-m{
+  display:flex;align-items:center;gap:var(--sp-2);
+  font-size:12px;color:var(--gray-light);margin-top:var(--sp-1);
+  min-width:0;
+}
+.mi-when{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .kind{
-  flex:none;margin-top:1px;
+  flex:none;
   font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
-  padding:3px 8px;border-radius:var(--r-pill);
+  padding:2px 7px;border-radius:var(--r-pill);
   background:var(--hover);color:var(--secondary);
 }
 .kind.task{background:var(--blue-tint);color:var(--blue-deep)}
 .kind.done{background:var(--green-tint);color:var(--green)}
 .kind.recording{background:var(--coral-tint);color:var(--coral-deep)}
-.mi-txt{flex:1;min-width:0}
-.mi-t{font-size:15px;color:var(--ink);line-height:1.4;word-break:break-word}
-.mi.done .mi-t{color:var(--tertiary);text-decoration:line-through}
-.mi-m{font-size:12px;color:var(--placeholder);margin-top:2px}
+/* the disclosure chevron at the right edge: small, light gray */
+.mi-chev{
+  width:15px;height:15px;flex:none;color:var(--chevron);
+  transition:transform .15s var(--ease);
+}
+.mi.open .mi-chev{transform:rotate(90deg)}
 .mi-actions{
-  display:none;align-items:center;gap:8px;
-  padding:0 16px 14px 16px;
+  display:none;align-items:center;gap:var(--sp-2);
+  padding:0 var(--sp-4) var(--sp-3) var(--row-inset);
 }
 .mi.open .mi-actions{display:flex}
 .mi-actions .spacer{flex:1}
@@ -836,14 +919,28 @@ html[data-view="notes"] .notes{display:flex}
 }
 .note-compose textarea::placeholder{color:var(--placeholder)}
 .note-compose textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-halo)}
-/* the always-visible row under the box — same bones as .note-ed-bar: the
-   dictation mic, the live "Listening" hint, then the section picker on the
-   right so a pasted or dictated note saves straight into its section */
-.note-compose-bar{flex:none;display:flex;align-items:center;gap:10px;padding:8px 0 0}
+/* The always-visible row under the box: the live "Listening" hint on the
+   left, then the section picker and — immediately beside it, with no dead
+   space between them — the dictation mic. Pick where the note goes, then
+   speak it; the two controls that decide that are one pair. */
+.note-compose-bar{
+  flex:none;display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) 0 0;
+}
 .note-compose-bar .spacer{flex:1}
+/* the picker and the mic are one pair — 4px apart, not the bar's 8px */
+.note-compose-bar .note-sec + .note-mic{margin-left:calc(var(--sp-1) - var(--sp-2))}
 /* the section picker — .sel's look, sized to sit inside a bar */
 .note-sec{width:auto;max-width:45%;flex:none}
-.note-compose-row{display:flex;gap:8px;margin-top:8px}
+.note-compose-row{display:flex;gap:var(--sp-2);margin-top:var(--sp-2)}
+
+/* edit mode's own bar: "+ New section" lives here, not beside the title */
+.notes-editbar{
+  flex:none;display:none;align-items:center;gap:var(--sp-3);
+  padding:var(--sp-2) 0 0;
+}
+.notes[data-edit="on"] .notes-editbar{display:flex}
+.notes-editbar .pill-btn{flex:none;white-space:nowrap}
+.notes-edit-hint{font-size:12px;color:var(--gray-light);line-height:1.4;min-width:0}
 
 /* errors say what happened and what to do next, right inside the view */
 .notes-err{
@@ -862,54 +959,140 @@ html[data-view="notes"] .notes{display:flex}
 .nerr-x:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
 .nerr-x svg{width:13px;height:13px}
 
-/* --- list screen: the rows --- */
-.notes-list{flex:1;min-height:0;overflow-y:auto;padding:12px 0;display:flex;flex-direction:column;gap:8px}
-/* same squash guard as .mem-list: cards keep their natural height */
-.notes-list>*{flex:none}
-.notes-list::-webkit-scrollbar{width:0}
-.nrow{display:flex;align-items:stretch;border-top:1px solid var(--hairline)}
-.nrow:first-child{border-top:none}
+/* --- list screen: the rows ---
+   The card, the grouped surface and the gaps come from the shared inset
+   grouped-list block above (.notes-list is listed there alongside .mem-list).
+   What follows is only what a NOTE row adds: three lines, a chevron, a "…",
+   and the swipe actions hiding underneath it. */
+.nrow{position:relative;overflow:hidden;background:var(--surface)}
+/* the hairline between rows: starts --row-inset in, runs to the right edge,
+   and never appears after the last row */
+.nrow + .nrow::before{
+  content:"";position:absolute;left:var(--row-inset);right:0;top:0;height:1px;
+  background:var(--separator);transform:scaleY(.5);transform-origin:top;z-index:2;
+}
+/* the face is what slides; the actions sit still underneath it */
+.nrow-face{
+  position:relative;z-index:1;display:flex;align-items:center;
+  background:var(--surface);
+  transition:transform .22s var(--ease);
+}
 .nrow-main{
-  flex:1;min-width:0;display:block;text-align:left;cursor:pointer;
+  flex:1;min-width:0;min-height:var(--row-min-h);
+  display:flex;flex-direction:column;justify-content:center;
+  text-align:left;cursor:pointer;
   border:none;background:transparent;font-family:inherit;
-  padding:14px 4px 14px 16px;
+  padding:var(--sp-2) var(--sp-1) var(--sp-2) var(--row-inset);
   transition:background .15s var(--ease);
 }
 .nrow-main:hover{background:var(--hover)}
+.nrow-main:active{background:var(--surface-press)}
 .nrow-main:focus-visible{outline:none;box-shadow:inset 0 0 0 3px var(--blue-halo)}
-.nrow-t{font-size:15px;color:var(--ink);line-height:1.4;word-break:break-word}
-.nrow-m{font-size:12px;color:var(--placeholder);margin-top:2px}
-/* copy is its own button so copying never opens the note */
-.nrow-copy{
-  width:44px;flex:none;
-  border:none;background:transparent;color:var(--tertiary);cursor:pointer;
+/* line 1 — the title: bold, dark, ONE line, ending in a clean ellipsis */
+.nrow-t{
+  font-size:15px;font-weight:600;color:var(--ink);line-height:1.35;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+/* line 2 — a preview of the body: regular, gray, ONE line. Left out
+   entirely (never rendered blank) when the note is only a title. */
+.nrow-p{
+  font-size:14px;font-weight:400;color:var(--gray);line-height:1.35;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+/* line 3 — the date */
+.nrow-d{font-size:12px;color:var(--gray-light);line-height:1.35;margin-top:var(--sp-1)}
+/* the row's "…": quiet until the row is hovered or something in it is
+   focused, so the card stays calm at rest */
+.nrow-more{
+  width:var(--hit);flex:none;align-self:stretch;
+  border:none;background:transparent;color:var(--gray-light);cursor:pointer;
+  display:grid;place-items:center;opacity:0;
+  transition:opacity .15s var(--ease),color .15s var(--ease);
+}
+.nrow:hover .nrow-more,
+.nrow-more:focus-visible,
+.nrow:focus-within .nrow-more{opacity:1}
+.nrow-more:hover{color:var(--blue)}
+.nrow-more:focus-visible{outline:none;box-shadow:inset 0 0 0 3px var(--blue-halo);border-radius:8px}
+.nrow-more svg{width:18px;height:18px}
+/* Copy's checkmark confirmation, unchanged — it just lives on the "…" now */
+.nrow-more .i-check{display:none;width:16px;height:16px}
+.nrow-more[data-copied="true"]{opacity:1;color:var(--green)}
+.nrow-more[data-copied="true"] svg:first-child{display:none}
+.nrow-more[data-copied="true"] .i-check{display:block}
+/* the chevron: the row opens */
+.nrow-chev{width:15px;height:15px;flex:none;color:var(--chevron);margin-right:var(--sp-3)}
+
+/* swipe-to-reveal: Delete in red at the edge, Move in gray beside it */
+.nrow-swipe{
+  position:absolute;top:0;right:0;bottom:0;width:var(--swipe-w);
+  display:flex;z-index:0;
+}
+.nrow-swipe-btn{
+  flex:1;border:none;cursor:pointer;color:#fff;
+  font-family:inherit;font-size:14px;font-weight:600;
   display:grid;place-items:center;
+}
+.nrow-swipe-btn.move{background:var(--neutral-action)}
+.nrow-swipe-btn.del{background:var(--red)}
+.nrow-swipe-btn.del:hover{background:var(--red-deep)}
+.nrow-swipe-btn:focus-visible{outline:none;box-shadow:inset 0 0 0 3px rgba(255,255,255,.8)}
+/* a row that isn't swiped open keeps its actions out of the tab order */
+.nrow:not([data-swiped="true"]) .nrow-swipe-btn{visibility:hidden}
+.nrow[data-swiped="true"] .nrow-face{transform:translateX(calc(-1 * var(--swipe-w)))}
+
+/* --- list screen: the section header --- */
+/* Name (sentence case, 17px semibold), count, then the collapse chevron and
+   the "…" at the far right. Every control is a --hit square, whatever size
+   the glyph inside it is. */
+.nsec-head{
+  display:flex;align-items:center;gap:var(--sp-2);
+  min-height:var(--hit);
+}
+.nsec-main{
+  flex:1;min-width:0;min-height:var(--hit);
+  display:flex;align-items:center;gap:var(--sp-2);
+  border:none;background:transparent;font-family:inherit;cursor:pointer;
+  text-align:left;padding:0 0 0 var(--row-inset);border-radius:8px;
+}
+.nsec-main:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
+.nsec-t{
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:17px;font-weight:600;letter-spacing:-.01em;color:var(--ink);
+}
+.nsec-n{flex:none;font-size:13px;font-weight:400;color:var(--gray)}
+.nsec-icon{
+  width:var(--hit);height:var(--hit);flex:none;padding:0;
+  border:none;background:transparent;color:var(--gray);cursor:pointer;
+  display:grid;place-items:center;border-radius:50%;
   transition:background .15s var(--ease),color .15s var(--ease);
 }
-.nrow-copy:hover{background:var(--hover);color:var(--blue)}
-.nrow-copy:focus-visible{outline:none;box-shadow:inset 0 0 0 3px var(--blue-halo)}
-.nrow-copy svg{width:16px;height:16px}
-.nrow-copy .i-check{display:none}
-.nrow-copy[data-copied="true"]{color:var(--green)}
-.nrow-copy[data-copied="true"] .i-copy{display:none}
-.nrow-copy[data-copied="true"] .i-check{display:block}
-
-/* --- list screen: collapsible section groups --- */
-/* Each section is a .mg-head header (the same small-caps label the memory
-   view uses) made into a tappable button, over a .mg-card of note rows;
-   aria-expanded drives the rotating chevron and whether the card shows. */
-.nsec-head{
-  width:100%;display:flex;align-items:center;gap:8px;
-  border:none;background:transparent;font-family:inherit;cursor:pointer;
-  text-align:left;padding:6px 2px;
+.nsec-icon:hover{background:var(--hover);color:var(--ink)}
+.nsec-icon:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
+.nsec-icon svg{width:18px;height:18px}
+.nsec-chev{transition:transform .15s var(--ease)}
+.nsec-chevbtn[aria-expanded="true"] .nsec-chev{transform:rotate(90deg)}
+/* Rename / Delete — only in edit mode. In a panel this narrow they'd eat the
+   section's name, so they wrap onto their own line under it: the name stays
+   readable and both actions keep a full 44px hit area. */
+.nsec-acts{display:none;align-items:center;gap:var(--sp-1)}
+.notes[data-edit="on"] .nsec-head{flex-wrap:wrap}
+.notes[data-edit="on"] .nsec-acts{
+  display:flex;order:3;flex-basis:100%;
+  padding-left:calc(var(--row-inset) - var(--sp-2));
+  margin-top:calc(-1 * var(--sp-2));
 }
-.nsec-head:hover .nsec-t{color:var(--secondary)}
-.nsec-head:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo);border-radius:8px}
-.nsec-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.nsec-n{flex:none;font-weight:600;letter-spacing:0;text-transform:none;color:var(--placeholder)}
-.nsec-chev{width:14px;height:14px;flex:none;margin-left:auto;transition:transform .15s var(--ease)}
-.nsec-head[aria-expanded="true"] .nsec-chev{transform:rotate(90deg)}
-.nsec-empty{padding:14px 16px;font-size:13px;color:var(--gray-light)}
+.nsec-act{
+  min-height:var(--hit);padding:0 var(--sp-2);
+  border:none;background:transparent;cursor:pointer;
+  font-family:inherit;font-size:14px;font-weight:500;color:var(--blue);
+  border-radius:8px;white-space:nowrap;
+}
+.nsec-act:hover{background:var(--blue-tint)}
+.nsec-act:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
+.nsec-act.danger{color:var(--red)}
+.nsec-act.danger:hover{background:rgba(255,59,48,.10)}
+.nsec-empty{padding:var(--sp-4) var(--row-inset);font-size:13px;color:var(--gray-light)}
 
 /* --- editor screen --- */
 .note-ed-title{
@@ -994,10 +1177,8 @@ html[data-recstage="organizing"] #recordBtn{background:var(--placeholder)}
 }
 .av-quota[data-full="true"]{background:var(--coral-tint);color:var(--coral-deep);font-weight:600}
 
-/* the lists — same rows as the Library so the whole panel reads as one app */
-.av-list{flex:1;min-height:0;overflow-y:auto;padding:12px 0;display:flex;flex-direction:column;gap:8px}
-.av-list>*{flex:none}
-.av-list::-webkit-scrollbar{width:0}
+/* the lists — same inset grouped cards and rows as the Library, so the whole
+   panel reads as one app (see the shared .mem-list/.notes-list/.av-list rule) */
 .av-ic{
   width:34px;height:34px;border-radius:var(--radius-tile);flex:none;
   background:var(--blue);color:#fff;display:grid;place-items:center;
@@ -1147,6 +1328,94 @@ html[data-view="welcome"] .welcome{display:flex}
 .keycap:hover{border-color:var(--blue)}
 .keycap:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
 
+/* ================= In-panel sheets & menus (nsheet.js) =================
+   Rename, the section Delete confirmation, the Move picker and the "…"
+   popovers. They sit INSIDE the panel over their own scrim — a side panel
+   has no business calling window.prompt(), which is modal to the whole
+   browser and can't explain anything. All of their content is built in
+   JavaScript; there is no inline script anywhere. */
+.ns-scrim{
+  position:absolute;inset:0;z-index:34;background:rgba(29,29,31,.32);
+  opacity:0;visibility:hidden;transition:opacity .2s var(--ease),visibility .2s;
+}
+.ns-scrim.open{opacity:1;visibility:visible}
+.ns-sheet{
+  position:absolute;left:0;right:0;bottom:0;z-index:36;max-height:86%;
+  background:var(--surface);border-radius:20px 20px 0 0;
+  display:flex;flex-direction:column;gap:var(--sp-3);
+  padding:var(--sp-6) var(--sp-4) var(--sp-6);
+  transform:translateY(102%);transition:transform .24s var(--ease);
+  visibility:hidden;overflow-y:auto;
+}
+.ns-sheet.open{transform:translateY(0);visibility:visible}
+.ns-sheet::-webkit-scrollbar{width:0}
+.ns-title{font-size:20px;font-weight:700;letter-spacing:-.015em;color:var(--ink);line-height:1.25}
+.ns-msg{font-size:14px;line-height:1.5;color:var(--gray)}
+.ns-progress{font-size:14px;font-weight:600;color:var(--blue)}
+.ns-field{
+  width:100%;
+  border:1px solid var(--hairline-strong);border-radius:var(--sp-3);
+  font-family:inherit;font-size:16px;color:var(--ink);
+  padding:var(--sp-3);outline:none;background:var(--surface);
+  transition:border-color .15s var(--ease),box-shadow .15s var(--ease);
+}
+.ns-field:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-halo)}
+.ns-err{font-size:13px;font-weight:600;color:var(--red);line-height:1.45}
+.ns-row{display:flex;gap:var(--sp-2)}
+.ns-btn{
+  flex:1;min-height:var(--hit);
+  border:1px solid var(--hairline-strong);background:var(--surface);color:var(--ink);
+  font-family:inherit;font-size:15px;font-weight:600;
+  border-radius:var(--r-pill);cursor:pointer;
+  transition:background .15s var(--ease),border-color .15s var(--ease);
+}
+.ns-btn:hover{background:var(--hover)}
+.ns-btn:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
+.ns-btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.ns-btn.primary:hover{background:var(--blue-deep);border-color:var(--blue-deep)}
+.ns-btn:disabled{opacity:.45;cursor:default;pointer-events:none}
+
+/* the stack of answers on a confirmation sheet */
+.ns-choices{display:flex;flex-direction:column;gap:var(--sp-2)}
+.ns-choice{
+  width:100%;min-height:var(--hit);
+  display:flex;flex-direction:column;justify-content:center;gap:2px;
+  text-align:left;cursor:pointer;
+  border:1px solid var(--hairline);background:var(--surface);
+  border-radius:var(--radius-group);padding:var(--sp-3) var(--sp-4);
+  font-family:inherit;
+  transition:background .15s var(--ease),border-color .15s var(--ease);
+}
+.ns-choice:hover{background:var(--grouped-bg)}
+.ns-choice:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
+.ns-choice-l{font-size:15px;font-weight:600;color:var(--ink);line-height:1.35}
+.ns-choice-d{font-size:12.5px;color:var(--gray-light);line-height:1.4}
+.ns-choice.danger .ns-choice-l{color:var(--red)}
+.ns-choice.danger:hover{background:rgba(255,59,48,.06);border-color:rgba(255,59,48,.35)}
+.ns-choice.cancel .ns-choice-l{color:var(--gray);font-weight:500}
+.ns-choice:disabled{opacity:.5;cursor:default}
+.ns-choice:disabled:hover{background:var(--surface)}
+
+/* the "…" popover — anchored to the button that opened it */
+.ns-menu{
+  position:fixed;z-index:38;min-width:180px;
+  background:var(--surface);border-radius:var(--radius-menu);
+  border:1px solid var(--hairline);
+  box-shadow:0 12px 32px rgba(0,0,0,.18),0 2px 6px rgba(0,0,0,.08);
+  padding:var(--sp-1);display:flex;flex-direction:column;
+}
+.ns-menu-item{
+  min-height:var(--hit);width:100%;text-align:left;
+  border:none;background:transparent;cursor:pointer;
+  font-family:inherit;font-size:15px;font-weight:500;color:var(--ink);
+  padding:0 var(--sp-3);border-radius:var(--sp-2);
+}
+.ns-menu-item:hover{background:var(--grouped-bg)}
+.ns-menu-item:focus-visible{outline:none;box-shadow:0 0 0 3px var(--blue-halo)}
+.ns-menu-item.danger{color:var(--red)}
+.ns-menu-item.danger:hover{background:rgba(255,59,48,.08)}
+.ns-menu-item:disabled{opacity:.45;cursor:default;pointer-events:none}
+
 /* ================= Polish: hover & focus sweep ================= */
 /* Every interactive element gets the same 3px accent-tinted focus glow. */
 .txt-link:focus-visible,
@@ -1176,6 +1445,11 @@ html[data-view="welcome"] .welcome{display:flex}
   .welcome{padding-left:var(--space-2);padding-right:var(--space-2)}
   .ac-tiles .ac-tile{min-width:80px}
   .notes .mem-head .pill-btn{padding:8px 10px}
+  .notes .mem-head .txt-btn{padding:0 6px}
+  /* the segmented control's six filters get tighter, never smaller than
+     readable — the track scrolls sideways instead of wrapping */
+  .m-pill{padding:var(--sp-1) var(--sp-2);font-size:12.5px}
+  .notes-edit-hint{display:none}
 }
 /* Wide panels (a docked-wide side panel or a full tab): keep the content
    in a centered column instead of stretching edge to edge. */
