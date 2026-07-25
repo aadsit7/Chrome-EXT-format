@@ -112,13 +112,61 @@ Every message this module sends is prefixed "vi:" so it can never be confused
 with Sharon's own messages ("sr:" for the screen recorder).
 
 
+Where the listening actually happens
+------------------------------------
+Speech recognition needs a page on the EXTENSION's origin, because that is the
+origin holding the microphone permission Sharon was granted. There are two
+places to put one, and this module uses both — the first that works wins:
+
+  1. PRIMARY — a hidden 1x1 iframe (recognizer.html) that overlay.js puts
+     inside the web page itself, carrying allow="microphone". The website is
+     never prompted and never receives the audio; the iframe is inside the
+     button's shadow root, so the page cannot see, style or script it. It is
+     also local: no service worker has to be awake for words to flow.
+
+  2. FALLBACK — the recognizer in Sharon's one offscreen document. Chrome
+     publishes no offscreen "reason" for speech recognition (USER_MEDIA covers
+     getUserMedia and nothing covers the Web Speech API), so this path is
+     undocumented and does not behave the same on every Chrome build. It is
+     the second choice, used only if the iframe cannot listen — for instance on
+     a site whose Permissions-Policy refuses to delegate the microphone.
+
+The overlay gives the iframe 2.5 seconds to confirm it is really listening. If
+it doesn't, the offscreen recognizer takes the session over and the user sees
+nothing but a button that turned red. Exactly one engine ever runs.
+
+Both share engine.js, so both behave identically:
+
+  • continuous = true — one long session instead of restarting after every
+    phrase. Restarting is what loses words: the microphone is deaf for the
+    whole restart, so anything said in the gap is gone.
+  • interimResults = false — only settled words are ever typed into a page.
+  • errors are sorted. A refused microphone is fatal and says so. Silence, a
+    dropped connection and a device hiccup all recover, with a backoff; five
+    connection failures in a row is treated as genuinely offline.
+  • a watchdog restarts a session that dies without saying so — Chrome does
+    not always fire an "end" event, and that silence is what used to strand
+    the button on red with nothing being typed.
+
+Control messages travel by postMessage between overlay.js and the iframe, so
+they are instant. They carry a one-time random token, because any window can
+postMessage into a frame — commands without the token are ignored, which is
+what stops a website switching the microphone on by itself. The transcribed
+WORDS never travel that way: they go over extension messaging, which the host
+page cannot read.
+
+
 Files in this folder
 --------------------
-  overlay.js      the content script that runs inside web pages: finds the
-                  focused field, draws the button, inserts the text
-  overlay.css     the button's styles (loaded into the shadow root)
-  recognizer.js   the speech engine, running inside Sharon's hidden page
-  README.txt      this file
+  overlay.js            the content script that runs inside web pages: finds
+                        the focused field, draws the button, picks an engine,
+                        inserts the text
+  overlay.css           the button's styles (loaded into the shadow root)
+  engine.js             the recognition core, shared by both recognizers
+  recognizer.html       the hidden in-page iframe (primary engine)
+  recognizer-frame.js   its module: postMessage control, private word channel
+  recognizer.js         the fallback, inside Sharon's hidden offscreen page
+  README.txt            this file
 
 
 ==================================================================
@@ -139,7 +187,7 @@ Copy the whole voice-input/ folder in, then make these five edits.
   ],
   "web_accessible_resources": [
     {
-      "resources": ["voice-input/overlay.css"],
+      "resources": ["voice-input/overlay.css", "voice-input/recognizer.html"],
       "matches": ["http://*/*", "https://*/*"]
     }
   ],
@@ -187,11 +235,15 @@ file it is not allowed to fetch, and it will look unstyled.
      under a dictation in progress.
 
   c) A NEW, separate chrome.runtime.onMessage listener was appended for the
-     "vi:" namespace, plus the helpers dictationLive(), tellSharon(),
-     toOverlay(), startDictation() and stopDictation(). It handles:
-       vi:start      from the page   → ask the side panel, then start the
-                                       recognizer; answers { ok, reason? }
-       vi:stop       from the page   → stop the recognizer, release the page
+     "vi:" namespace, plus the helpers dictationLive(), screenRecBusy(),
+     tellSharon(), toOverlay(), startDictation(), stopDictation(),
+     startFallbackEngine() and stopFallbackEngine(). It handles:
+       vi:start      from the page   → ask the side panel; answers
+                                       { ok, reason? }. Starts NO engine: the
+                                       in-page iframe needs nothing from here
+       vi:engine     from the page   → start/stop the FALLBACK recognizer in
+                                       the offscreen document
+       vi:stop       from the page   → stop everything, release the page
        vi:open-panel from the page   → open the side panel (so the user can
                                        allow the microphone there)
        vi:evt        from recognizer → forwarded to the exact tab + frame that

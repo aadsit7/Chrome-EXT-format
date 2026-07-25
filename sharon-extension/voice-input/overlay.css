@@ -117,3 +117,18 @@
 .sharon-vi-msg.is-on {
   display: block;
 }
+
+/* The speech engine's iframe (voice-input/recognizer.html). It has no UI at
+   all — it exists so recognition runs on the extension's own origin, with the
+   microphone permission Sharon already holds. Kept in the shadow root, out of
+   the layout, and untouchable by the page. */
+.sharon-vi-frame {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}

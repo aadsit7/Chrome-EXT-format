@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Sharon voice input</title>
+  </head>
+  <body>
+    <!-- The Voice Input Overlay's speech engine. overlay.js loads this page in
+         a hidden 1×1 iframe inside the web page you are typing on, with
+         allow="microphone". It runs on the EXTENSION's origin, so it uses the
+         microphone permission Sharon was already granted — the website is
+         never asked for anything, and never sees the audio.
+
+         No inline JavaScript (Manifest V3 forbids it); the module below does
+         all the work and talks only to overlay.js and the service worker. -->
+    <script type="module" src="recognizer-frame.js"></script>
+  </body>
+</html>

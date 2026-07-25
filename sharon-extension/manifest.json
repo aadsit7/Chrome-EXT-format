@@ -54,7 +54,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["voice-input/overlay.css"],
+      "resources": ["voice-input/overlay.css", "voice-input/recognizer.html"],
       "matches": ["http://*/*", "https://*/*"]
     }
   ],

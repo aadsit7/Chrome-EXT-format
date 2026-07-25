@@ -73,26 +73,184 @@
   try {
     chrome.runtime.onMessage.addListener((msg) => {
       if (!msg || typeof msg.t !== "string" || msg.t.lastIndexOf("vi:", 0) !== 0) return;
-      if (msg.t === "vi:started") setLive(true);
-      else if (msg.t === "vi:result") insertText(msg.text || "");
-      else if (msg.t === "vi:ended") setLive(false);
-      else if (msg.t === "vi:error") onError(msg.error);
+      // Words arrive this way from BOTH engines — extension messaging, which
+      // the host page cannot read. Only a frame that is actually dictating
+      // takes them: the worker may address the whole tab if it was suspended
+      // and lost track of which frame asked.
+      if (msg.t === "vi:result") {
+        if (live) insertText(msg.text || "");
+      }
+      else if (msg.t === "vi:started") engineStarted();
+      else if (msg.t === "vi:ended") {
+        if (engine === "offscreen") setLive(false);
+      } else if (msg.t === "vi:error") onEngineError(msg.error);
     });
   } catch (_) {
     /* no messaging in this context — the button simply never appears */
   }
 
-  // Every failure ends the same way: stop, say two words, stay quiet.
-  function onError(code) {
-    setLive(false);
+  /* ---------------------------------------------------------------- *
+   * The two engines
+   *
+   * PRIMARY — a hidden extension-origin iframe in this very page
+   * (voice-input/recognizer.html). It carries Sharon's microphone permission,
+   * needs no service worker awake, and behaves like the Web Speech API does on
+   * any ordinary page.
+   *
+   * FALLBACK — the recognizer in Sharon's offscreen document, driven through
+   * the service worker. Used when the iframe can't run: a site whose
+   * Permissions-Policy refuses to delegate the microphone, or a page that
+   * blocks extension frames.
+   *
+   * Exactly one runs at a time. The frame gets ENGINE_WAIT_MS to prove it is
+   * listening; if it doesn't, the fallback takes over automatically and the
+   * user sees nothing but a button that turned red.
+   * ---------------------------------------------------------------- */
+  const ENGINE_WAIT_MS = 2500; // how long the frame has to say "I'm listening"
+
+  let engine = ""; // "" | "frame" | "offscreen"
+  let engineTimer = null;
+  let frame = null; // the hidden iframe, built once and reused
+  let frameReady = false;
+  let frameToken = ""; // proves a control message came from us, not the page
+  let startPending = false; // start as soon as the frame reports ready
+
+  function newToken() {
+    try {
+      const b = new Uint32Array(4);
+      crypto.getRandomValues(b);
+      return Array.from(b, (n) => n.toString(36)).join("");
+    } catch (_) {
+      return "vi" + String(performance.now()).replace(".", "");
+    }
+  }
+
+  function ensureFrame() {
+    if (frame) return true;
+    if (!shadow) return false;
+    try {
+      frameToken = newToken();
+      frame = document.createElement("iframe");
+      frame.className = "sharon-vi-frame";
+      frame.setAttribute("allow", "microphone"); // delegate the mic to our origin
+      frame.setAttribute("aria-hidden", "true");
+      frame.setAttribute("tabindex", "-1");
+      frame.setAttribute("title", "Sharon voice input");
+      frame.src = chrome.runtime.getURL("voice-input/recognizer.html");
+      // Inside the shadow root: invisible, and the page cannot style or reach it.
+      shadow.appendChild(frame);
+      return true;
+    } catch (_) {
+      frame = null;
+      return false;
+    }
+  }
+
+  function postFrame(msg) {
+    try {
+      if (!frame || !frame.contentWindow) return;
+      const target = chrome.runtime.getURL("").replace(/\/$/, "");
+      frame.contentWindow.postMessage(Object.assign({ t: "vi:frame", token: frameToken }, msg), target);
+    } catch (_) {
+      /* the frame is gone — the timeout falls through to the other engine */
+    }
+  }
+
+  window.addEventListener("message", (ev) => {
+    if (!frame || !ev || ev.source !== frame.contentWindow) return;
+    const msg = ev.data;
+    if (!msg || msg.t !== "vi:frame") return;
+
+    if (msg.event === "ready") {
+      frameReady = true;
+      // Hand over the token and our origin; only then will it take commands.
+      try {
+        const target = chrome.runtime.getURL("").replace(/\/$/, "");
+        frame.contentWindow.postMessage(
+          { t: "vi:frame", cmd: "hello", token: frameToken, origin: location.origin },
+          target
+        );
+      } catch (_) {
+        /* ignore */
+      }
+      if (startPending) postFrame({ cmd: "start" });
+      return;
+    }
+    if (msg.event === "started") engineStarted();
+    else if (msg.event === "ended") {
+      if (engine === "frame" && live) setLive(false);
+    } else if (msg.event === "error") onEngineError(msg.error);
+  });
+
+  // One engine has confirmed the microphone is genuinely open.
+  function engineStarted() {
+    if (engineTimer) {
+      clearTimeout(engineTimer);
+      engineTimer = null;
+    }
+    if (live) setLive(true);
+  }
+
+  function startEngine() {
+    engine = "frame";
+    startPending = true;
+    if (!ensureFrame()) {
+      useFallbackEngine();
+      return;
+    }
+    if (frameReady) postFrame({ cmd: "start" });
+    if (engineTimer) clearTimeout(engineTimer);
+    engineTimer = setTimeout(() => {
+      engineTimer = null;
+      if (live && engine === "frame") useFallbackEngine(); // it never spoke up
+    }, ENGINE_WAIT_MS);
+  }
+
+  // The iframe couldn't listen here — hand the session to Sharon's offscreen
+  // recognizer without the user noticing anything.
+  function useFallbackEngine() {
+    if (engine === "offscreen") return;
+    startPending = false;
+    postFrame({ cmd: "stop" }); // never two engines at once
+    engine = "offscreen";
+    send({ t: "vi:engine", cmd: "start" }).then((res) => {
+      if (!live || engine !== "offscreen") return;
+      if (!res || !res.ok) {
+        flash("Voice input unavailable");
+        endDictation();
+      }
+    });
+  }
+
+  function stopEngine() {
+    if (engineTimer) {
+      clearTimeout(engineTimer);
+      engineTimer = null;
+    }
+    startPending = false;
+    postFrame({ cmd: "stop" });
+    if (engine === "offscreen") send({ t: "vi:engine", cmd: "stop" });
+    engine = "";
+  }
+
+  // Every failure ends the same way: stop, say two words, stay quiet. A frame
+  // that fails for any reason other than a refused microphone is not the end —
+  // the other engine gets its turn first.
+  function onEngineError(code) {
     if (code === "not-allowed" || code === "service-not-allowed") {
       flash("Allow mic in Sharon");
       send({ t: "vi:open-panel" }); // Sharon asks for the mic — we never do
-    } else if (code === "no-speech" || code === "aborted") {
-      flash("Didn't catch that");
-    } else {
-      flash("Voice input unavailable");
+      endDictation();
+      return;
     }
+    if (engine === "frame" && live) {
+      useFallbackEngine();
+      return;
+    }
+    if (code === "network") flash("No connection");
+    else if (code === "no-speech" || code === "aborted") flash("Didn't catch that");
+    else flash("Voice input unavailable");
+    endDictation();
   }
 
   /* ---------------------------------------------------------------- *
@@ -232,11 +390,12 @@
     ev.stopPropagation();
     if (!field || !field.isConnected) return;
     if (live) {
-      setLive(false);
-      send({ t: "vi:stop" });
+      endDictation();
       return;
     }
     syncCaret(); // dictation begins exactly where the cursor is sitting now
+
+    // Ask Sharon first: she stands down, or refuses if she is mid-recording.
     const res = await send({ t: "vi:start" });
     if (!res || !res.ok) {
       const reason = res && res.reason;
@@ -245,13 +404,25 @@
       else if (reason === "mic") {
         flash("Allow mic in Sharon");
         send({ t: "vi:open-panel" });
-      } else if (reason !== "silent") {
-        // "silent" means a vi:error already put a message on the button.
+      } else {
         flash("Voice input unavailable");
       }
       return;
     }
-    setLive(true); // the recognizer confirms with vi:started; this is instant feedback
+    if (!field || !field.isConnected) {
+      send({ t: "vi:stop" }); // the field went away while we asked
+      return;
+    }
+    setLive(true); // instant feedback; an engine confirms right behind it
+    startEngine();
+  }
+
+  // One way out of a dictation, used by the button, by errors, and by the
+  // field going away: silence the engine, then hand Sharon back her ears.
+  function endDictation() {
+    setLive(false);
+    stopEngine();
+    send({ t: "vi:stop" });
   }
 
   /* ---------------------------------------------------------------- *
@@ -266,13 +437,39 @@
     setLive(false);
     flash("");
     host.style.display = "block";
+    bindField();
+
+    // Fields can be removed, hidden or moved with no event of their own.
+    watchTimer = setInterval(() => {
+      if (!field) return;
+      if (field.isConnected) {
+        place();
+        return;
+      }
+      // The page rebuilt the box underneath us — common on sites that re-render
+      // as you type. If the focus is still on an editable one, follow it and
+      // carry the dictation across instead of dropping it.
+      const next = document.activeElement;
+      const nextKind = next && next !== field ? editableKind(next) : "";
+      if (nextKind) {
+        unbindField();
+        field = next;
+        kind = nextKind;
+        bindField();
+        return;
+      }
+      detach();
+    }, 600);
+  }
+
+  // Watch one field: keep the button on it, and let the user's own hands move
+  // the insertion point. Everything else — re-renders, editor housekeeping —
+  // is ignored.
+  function bindField() {
+    if (!field) return;
     place();
     syncCaret(); // start from wherever the user's cursor actually is
-
-    // The only things allowed to move the insertion point are the user's own
-    // hands. Everything else — re-renders, editor housekeeping — is ignored.
     for (const ev of CARET_EVENTS) field.addEventListener(ev, onUserCaret, true);
-
     try {
       if (window.ResizeObserver) {
         ro = new ResizeObserver(() => place());
@@ -281,18 +478,9 @@
     } catch (_) {
       ro = null;
     }
-    // Fields can be removed, hidden or moved with no event of their own.
-    watchTimer = setInterval(() => {
-      if (!field || !field.isConnected) detach();
-      else place();
-    }, 600);
   }
 
-  function detach() {
-    if (live) {
-      setLive(false);
-      send({ t: "vi:stop" });
-    }
+  function unbindField() {
     if (field) {
       for (const ev of CARET_EVENTS) {
         try {
@@ -302,14 +490,6 @@
         }
       }
     }
-    caret = null;
-    caretRange = null;
-    field = null;
-    kind = "";
-    if (watchTimer) {
-      clearInterval(watchTimer);
-      watchTimer = null;
-    }
     if (ro) {
       try {
         ro.disconnect();
@@ -318,6 +498,21 @@
       }
       ro = null;
     }
+    caret = null;
+    caretRange = null;
+  }
+
+  function detach() {
+    if (live) endDictation();
+    unbindField();
+    field = null;
+    kind = "";
+    if (watchTimer) {
+      clearInterval(watchTimer);
+      watchTimer = null;
+    }
+    // The hidden recognizer iframe stays put: it is silent when idle, and
+    // keeping it saves reloading the engine for the next field.
     if (host) host.style.display = "none";
     flash("");
   }
