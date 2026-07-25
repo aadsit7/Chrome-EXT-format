@@ -295,50 +295,60 @@ async function tellSharon(cmd) {
   }
 }
 
-// Send one message to the exact frame that owns the mic button.
-function toOverlay(msg) {
-  if (!dictating || !chrome.tabs) return;
+// Send one message to the frame that owns the mic button.
+//
+// `from` is the sender of the event being relayed. It matters because this
+// worker is allowed to fall asleep: after ~30 seconds idle, MV3 suspends it and
+// `dictating` is gone. A phrase arriving after that must still reach the page,
+// so when the record is missing we address the sending tab as a whole. Only a
+// frame that is actually dictating acts on it — the overlay ignores words it
+// didn't ask for — so a broadcast can't leak text into some other frame.
+function toOverlay(msg, from) {
+  if (!chrome.tabs) return;
+  let tabId = dictating && dictating.tabId;
+  let frameId = dictating && dictating.frameId;
+  if (tabId == null && from && from.tab) tabId = from.tab.id;
+  if (tabId == null) return;
   try {
-    chrome.tabs.sendMessage(dictating.tabId, msg, { frameId: dictating.frameId }).catch(() => {});
+    const opts = frameId == null ? undefined : { frameId };
+    chrome.tabs.sendMessage(tabId, msg, opts).catch(() => {});
   } catch (_) {
     /* the tab or frame is gone — the next stop tidies up */
   }
 }
 
+// Open a dictation session. This settles Sharon ONLY — which engine does the
+// listening is the overlay's business, and the one it prefers (the extension
+// iframe inside the page) needs nothing from this worker.
 async function startDictation(tabId, frameId) {
   if (dictating) await stopDictation(); // one at a time, always
   const sharon = await tellSharon("begin");
   if (sharon && sharon.ok === false) return { ok: false, reason: sharon.reason || "busy" };
-
-  const ok = await acquireOffscreen("dictation");
-  if (!ok) {
-    await tellSharon("end");
-    return { ok: false, reason: "unavailable" };
-  }
   dictating = { tabId, frameId };
-  // A freshly created offscreen document may not have run its module scripts
-  // yet, so the first command can land before anyone is listening. Confirm the
-  // recognizer really started, and try once more if it didn't.
-  const started = await startRecognizer();
-  if (!started) {
-    // If the recognizer failed outright (no microphone, say) it already sent
-    // the page a vi:error and cleared the session — don't talk over that
-    // message with a second, vaguer one.
-    const alreadyReported = !dictating;
-    await stopDictation();
-    return { ok: false, reason: alreadyReported ? "silent" : "unavailable" };
-  }
   return { ok: true };
 }
 
-async function startRecognizer() {
+// The overlay asks for this only when the in-page iframe can't listen here.
+async function startFallbackEngine() {
+  if (!dictating) return { ok: false, reason: "unavailable" };
+  const ok = await acquireOffscreen("dictation");
+  if (!ok) return { ok: false, reason: "unavailable" };
+  // A freshly created offscreen document may not have run its module scripts
+  // yet, so the first command can land before anyone is listening. Confirm the
+  // recognizer really started, and try once more if it didn't.
   for (let attempt = 0; attempt < 2; attempt++) {
     chrome.runtime.sendMessage({ t: "vi:off", cmd: "start" }).catch(() => {});
     await new Promise((r) => setTimeout(r, attempt ? 300 : 150));
-    if (!dictating) return false; // an error ended the session while we waited
-    if (await dictationLive()) return true;
+    if (!dictating) return { ok: false, reason: "unavailable" };
+    if (await dictationLive()) return { ok: true };
   }
-  return false;
+  await releaseOffscreen("dictation");
+  return { ok: false, reason: "unavailable" };
+}
+
+async function stopFallbackEngine() {
+  chrome.runtime.sendMessage({ t: "vi:off", cmd: "stop" }).catch(() => {});
+  await releaseOffscreen("dictation");
 }
 
 // Always does the full tidy-up, even if this worker restarted and forgot which
@@ -375,6 +385,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // The overlay's fallback: run the recognizer in the offscreen document.
+  if (msg.t === "vi:engine") {
+    // If this worker was suspended and restarted since dictation began, take
+    // the sender as the record — the overlay asking is proof of a live session.
+    if (!dictating && sender && sender.tab && sender.tab.id != null) {
+      dictating = { tabId: sender.tab.id, frameId: sender.frameId || 0 };
+    }
+    if (msg.cmd === "start") {
+      startFallbackEngine().then(sendResponse, () => sendResponse({ ok: false, reason: "unavailable" }));
+      return true;
+    }
+    stopFallbackEngine().then(
+      () => sendResponse({ ok: true }),
+      () => sendResponse({ ok: true })
+    );
+    return true;
+  }
+
   if (msg.t === "vi:open-panel") {
     // Sharon already asks for the microphone in her first-run setup and in
     // Settings — this feature never asks on its own, it just opens her.
@@ -391,13 +419,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return; // no response
   }
 
-  // From the recognizer in the offscreen document → back to the page.
+  // From either recognizer → back to the page. (The in-page iframe sends its
+  // words this way too: extension messaging is invisible to the host page,
+  // unlike a postMessage the page could listen in on.)
   if (msg.t === "vi:evt") {
-    if (msg.event === "started") toOverlay({ t: "vi:started" });
-    else if (msg.event === "result") toOverlay({ t: "vi:result", text: msg.text || "" });
-    else if (msg.event === "ended") toOverlay({ t: "vi:ended" });
+    if (msg.event === "started") toOverlay({ t: "vi:started" }, sender);
+    else if (msg.event === "result") toOverlay({ t: "vi:result", text: msg.text || "" }, sender);
+    else if (msg.event === "ended") toOverlay({ t: "vi:ended" }, sender);
     else if (msg.event === "error") {
-      toOverlay({ t: "vi:error", error: msg.error || "unknown" });
+      toOverlay({ t: "vi:error", error: msg.error || "unknown" }, sender);
       stopDictation(); // a failed session releases Sharon and the document
     }
     return; // no response
