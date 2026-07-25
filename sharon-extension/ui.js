@@ -168,6 +168,8 @@ const I_TASKS = '<path d="m9 11 3 3 8-8"/><path d="M21 12v6a2 2 0 0 1-2 2H5a2 2 
 const I_GLOBE = '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>';
 const I_VOLUME = '<path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>';
 const I_X = '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>';
+// points right; CSS rotates it when a row opens
+const I_CHEVRON = '<path d="m9 18 6-6-6-6"/>';
 // One glyph, one meaning: the camcorder is video (screen recordings), the
 // waveform is audio (voice recordings), the eye is "look at this tab", the mic
 // means mute and nothing else.
@@ -1745,6 +1747,44 @@ function kindOf(h) {
   return { cls: "", label: h.entry_type ? String(h.entry_type) : "note" };
 }
 
+// Line 1 of a row: the title, falling back to the first line of the body for
+// anything saved without one.
+export function rowTitle(h) {
+  const title = String((h && h.title) || "").trim();
+  if (title) return title;
+  const first = String((h && h.content) || "").trim().split("\n")[0].trim();
+  return first || "(untitled)";
+}
+
+// Line 2: whatever the body says BEYOND the title, on one line. Empty when
+// there's nothing more — the line is then left out rather than drawn blank.
+export function rowPreview(h) {
+  const content = String((h && h.content) || "").trim();
+  if (!content) return "";
+  const title = rowTitle(h);
+  let body = content;
+  if (title && body.indexOf(title) === 0) body = body.slice(title.length);
+  body = body.replace(/\s+/g, " ").trim();
+  return body && body !== title ? body : "";
+}
+
+// The rows, cut into the existing date groups (Today / Yesterday / Earlier
+// this week / month) — each becomes a header plus ONE continuous card, and
+// the header needs its group's count before the first row is drawn.
+function dateGroups(rows) {
+  const out = [];
+  let current = null;
+  for (const h of rows) {
+    const g = groupLabel(h.created_at);
+    if (!current || current.label !== g) {
+      current = { label: g, rows: [] };
+      out.push(current);
+    }
+    current.rows.push(h);
+  }
+  return out;
+}
+
 function renderMemList() {
   if (!els.memList) return;
   // Under the Video filter the list belongs to the local video store, which
@@ -1761,155 +1801,175 @@ function renderMemList() {
   }
 
   const { onToggleDone, onDelete, onListen } = memCache.cb;
-  let lastGroup = null;
-  let groupCard = null;
-  for (const h of shown) {
-    const g = groupLabel(h.created_at);
-    if (g !== lastGroup) {
-      lastGroup = g;
-      const head = document.createElement("div");
-      head.className = "mg-head";
-      head.textContent = g;
-      els.memList.appendChild(head);
-      groupCard = document.createElement("div");
-      groupCard.className = "mg-card";
-      els.memList.appendChild(groupCard);
-    }
+  for (const group of dateGroups(shown)) {
+    const wrap = document.createElement("div");
+    wrap.className = "mg-group";
+    const head = document.createElement("div");
+    head.className = "mg-head";
+    const headT = document.createElement("span");
+    headT.className = "mg-head-t";
+    headT.textContent = group.label;
+    head.appendChild(headT);
+    const headN = document.createElement("span");
+    headN.className = "mg-head-n";
+    headN.textContent = group.rows.length === 1 ? "1 item" : group.rows.length + " items";
+    head.appendChild(headN);
+    wrap.appendChild(head);
+    const groupCard = document.createElement("div");
+    groupCard.className = "mg-card";
+    wrap.appendChild(groupCard);
+    els.memList.appendChild(wrap);
 
-    const isDone = String(h.status) === "done";
-    const canSelect = selectableHit_(h);
-    const item = document.createElement("div");
-    item.className = "mi" + (isDone ? " done" : "") + (memSelect && !canSelect ? " noselect" : "");
+    for (const h of group.rows) {
+      const isDone = String(h.status) === "done";
+      const canSelect = selectableHit_(h);
+      const item = document.createElement("div");
+      item.className = "mi" + (isDone ? " done" : "") + (memSelect && !canSelect ? " noselect" : "");
 
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "mi-row";
-    if (memSelect) {
-      // Rows are selection targets now — expose that instead of expansion.
-      row.setAttribute(
-        "aria-selected",
-        canSelect && selIds.has(String(h.entry_id)) ? "true" : "false"
-      );
-      if (!canSelect) row.setAttribute("aria-disabled", "true");
-      // The selection mark: a blue circle, deliberately round so it can't be
-      // read as the square green task done-checkbox.
-      const selMark = document.createElement("span");
-      selMark.className = "mi-sel";
-      selMark.appendChild(svgOf(I_CHECK));
-      row.appendChild(selMark);
-    } else {
-      row.setAttribute("aria-expanded", "false");
-    }
-    const kind = kindOf(h);
-    const chip = document.createElement("span");
-    chip.className = "kind" + (kind.cls ? " " + kind.cls : "");
-    chip.textContent = kind.label;
-    row.appendChild(chip);
-    const txt = document.createElement("div");
-    txt.className = "mi-txt";
-    const t = document.createElement("div");
-    t.className = "mi-t";
-    t.textContent = h.title || h.content || "(untitled)";
-    txt.appendChild(t);
-    const when = metaTime(h.created_at);
-    const metaText = when ? "Saved · " + when : "";
-    if (metaText) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "mi-row";
+      if (memSelect) {
+        // Rows are selection targets now — expose that instead of expansion.
+        row.setAttribute(
+          "aria-selected",
+          canSelect && selIds.has(String(h.entry_id)) ? "true" : "false"
+        );
+        if (!canSelect) row.setAttribute("aria-disabled", "true");
+        // The selection mark: a blue circle, deliberately round so it can't be
+        // read as the square green task done-checkbox.
+        const selMark = document.createElement("span");
+        selMark.className = "mi-sel";
+        selMark.appendChild(svgOf(I_CHECK));
+        row.appendChild(selMark);
+      } else {
+        row.setAttribute("aria-expanded", "false");
+      }
+      // Three lines: the title, a preview of the body, then the date — with
+      // the kind chip beside the date rather than competing with the title.
+      const txt = document.createElement("div");
+      txt.className = "mi-txt";
+      const t = document.createElement("div");
+      t.className = "mi-t";
+      t.textContent = rowTitle(h);
+      txt.appendChild(t);
+      const preview = rowPreview(h);
+      if (preview) {
+        const p = document.createElement("div");
+        p.className = "mi-p";
+        p.textContent = preview;
+        txt.appendChild(p);
+      }
+      const when = metaTime(h.created_at);
       const m = document.createElement("div");
       m.className = "mi-m";
-      m.textContent = metaText;
+      if (when) {
+        const w = document.createElement("span");
+        w.className = "mi-when";
+        w.textContent = "Saved · " + when;
+        m.appendChild(w);
+      }
+      const kind = kindOf(h);
+      const chip = document.createElement("span");
+      chip.className = "kind" + (kind.cls ? " " + kind.cls : "");
+      chip.textContent = kind.label;
+      m.appendChild(chip);
       txt.appendChild(m);
-    }
-    row.appendChild(txt);
-    row.addEventListener("click", () => {
-      if (suppressClick) {
+      row.appendChild(txt);
+      // The chevron says the row opens. It has no job in selection mode, where
+      // the circle on the left is what the tap means.
+      if (!memSelect) row.appendChild(svgOf(I_CHEVRON, "mi-chev"));
+      row.addEventListener("click", () => {
+        if (suppressClick) {
+          suppressClick = false;
+          return;
+        }
+        if (memSelect) {
+          if (canSelect) toggleSelect(h, row);
+          return;
+        }
+        const open = item.classList.toggle("open");
+        row.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+      // Press-and-hold (~500ms) on any row enters selection mode directly.
+      let lpTimer = null;
+      row.addEventListener("pointerdown", (ev) => {
+        if (ev.button != null && ev.button !== 0) return;
         suppressClick = false;
-        return;
-      }
-      if (memSelect) {
-        if (canSelect) toggleSelect(h, row);
-        return;
-      }
-      const open = item.classList.toggle("open");
-      row.setAttribute("aria-expanded", open ? "true" : "false");
-    });
-    // Press-and-hold (~500ms) on any row enters selection mode directly.
-    let lpTimer = null;
-    row.addEventListener("pointerdown", (ev) => {
-      if (ev.button != null && ev.button !== 0) return;
-      suppressClick = false;
-      if (lpTimer) clearTimeout(lpTimer);
-      lpTimer = setTimeout(() => {
-        lpTimer = null;
-        suppressClick = true; // the release click IS the long-press, not a tap
-        if (!memSelect) enterMemSelect(h);
-        else if (canSelect && !selIds.has(String(h.entry_id))) toggleSelect(h, row);
-      }, LONG_PRESS_MS);
-    });
-    const cancelPress = () => {
-      if (lpTimer) {
-        clearTimeout(lpTimer);
-        lpTimer = null;
-      }
-    };
-    row.addEventListener("pointerup", cancelPress);
-    row.addEventListener("pointerleave", cancelPress);
-    row.addEventListener("pointercancel", cancelPress);
-    item.appendChild(row);
+        if (lpTimer) clearTimeout(lpTimer);
+        lpTimer = setTimeout(() => {
+          lpTimer = null;
+          suppressClick = true; // the release click IS the long-press, not a tap
+          if (!memSelect) enterMemSelect(h);
+          else if (canSelect && !selIds.has(String(h.entry_id))) toggleSelect(h, row);
+        }, LONG_PRESS_MS);
+      });
+      const cancelPress = () => {
+        if (lpTimer) {
+          clearTimeout(lpTimer);
+          lpTimer = null;
+        }
+      };
+      row.addEventListener("pointerup", cancelPress);
+      row.addEventListener("pointerleave", cancelPress);
+      row.addEventListener("pointercancel", cancelPress);
+      item.appendChild(row);
 
-    // expanded action row — recordings are read-only: no edit/delete, just
-    // Listen, which plays right in the panel (Drive stays the fallback).
-    const actions = document.createElement("div");
-    actions.className = "mi-actions";
-    if (h.entry_type === "recording") {
-      if (onListen) {
-        const listen = document.createElement("button");
-        listen.type = "button";
-        listen.className = "pill-btn primary";
-        listen.textContent = "Listen" + (h.start_label ? " from " + h.start_label : "");
-        listen.addEventListener("click", () => onListen(h));
-        actions.appendChild(listen);
-      } else if (h.page_url) {
-        const listen = document.createElement("a");
-        listen.className = "pill-btn primary";
-        listen.href = h.page_url;
-        listen.target = "_blank";
-        listen.rel = "noopener noreferrer";
-        listen.textContent = "Listen";
-        actions.appendChild(listen);
+      // expanded action row — recordings are read-only: no edit/delete, just
+      // Listen, which plays right in the panel (Drive stays the fallback).
+      const actions = document.createElement("div");
+      actions.className = "mi-actions";
+      if (h.entry_type === "recording") {
+        if (onListen) {
+          const listen = document.createElement("button");
+          listen.type = "button";
+          listen.className = "pill-btn primary";
+          listen.textContent = "Listen" + (h.start_label ? " from " + h.start_label : "");
+          listen.addEventListener("click", () => onListen(h));
+          actions.appendChild(listen);
+        } else if (h.page_url) {
+          const listen = document.createElement("a");
+          listen.className = "pill-btn primary";
+          listen.href = h.page_url;
+          listen.target = "_blank";
+          listen.rel = "noopener noreferrer";
+          listen.textContent = "Listen";
+          actions.appendChild(listen);
+        }
+        // Recordings are deletable now — same Delete affordance as notes/tasks.
+        if (h.entry_id) {
+          const delBtn = document.createElement("button");
+          delBtn.type = "button";
+          delBtn.className = "pill-btn danger";
+          delBtn.textContent = "Delete";
+          delBtn.addEventListener("click", () => onDelete && onDelete(h));
+          actions.appendChild(delBtn);
+        }
+      } else {
+        if (h.entry_type === "task" && h.entry_id) {
+          const doneBtn = document.createElement("button");
+          doneBtn.type = "button";
+          doneBtn.className = "pill-btn primary";
+          doneBtn.textContent = isDone ? "Reopen" : "Mark done";
+          doneBtn.addEventListener("click", () => onToggleDone && onToggleDone(h));
+          actions.appendChild(doneBtn);
+        }
+        if (h.entry_id) {
+          const delBtn = document.createElement("button");
+          delBtn.type = "button";
+          delBtn.className = "pill-btn danger";
+          delBtn.textContent = "Delete";
+          delBtn.addEventListener("click", () => onDelete && onDelete(h));
+          actions.appendChild(delBtn);
+        }
       }
-      // Recordings are deletable now — same Delete affordance as notes/tasks.
-      if (h.entry_id) {
-        const delBtn = document.createElement("button");
-        delBtn.type = "button";
-        delBtn.className = "pill-btn danger";
-        delBtn.textContent = "Delete";
-        delBtn.addEventListener("click", () => onDelete && onDelete(h));
-        actions.appendChild(delBtn);
-      }
-    } else {
-      if (h.entry_type === "task" && h.entry_id) {
-        const doneBtn = document.createElement("button");
-        doneBtn.type = "button";
-        doneBtn.className = "pill-btn primary";
-        doneBtn.textContent = isDone ? "Reopen" : "Mark done";
-        doneBtn.addEventListener("click", () => onToggleDone && onToggleDone(h));
-        actions.appendChild(doneBtn);
-      }
-      if (h.entry_id) {
-        const delBtn = document.createElement("button");
-        delBtn.type = "button";
-        delBtn.className = "pill-btn danger";
-        delBtn.textContent = "Delete";
-        delBtn.addEventListener("click", () => onDelete && onDelete(h));
-        actions.appendChild(delBtn);
-      }
+      const spacer = document.createElement("span");
+      spacer.className = "spacer";
+      actions.appendChild(spacer);
+      if (actions.querySelector("button,a")) item.appendChild(actions);
+
+      groupCard.appendChild(item);
     }
-    const spacer = document.createElement("span");
-    spacer.className = "spacer";
-    actions.appendChild(spacer);
-    if (actions.querySelector("button,a")) item.appendChild(actions);
-
-    groupCard.appendChild(item);
   }
 }
 

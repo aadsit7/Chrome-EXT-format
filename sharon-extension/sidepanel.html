@@ -108,7 +108,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input type="text" id="memSearchInput" placeholder="Search everything I've saved…" aria-label="Search everything I've saved" />
         </div>
-        <div class="mem-filters" id="memFilters">
+        <!-- One iOS segmented control: a single rounded gray track with the
+             selected segment raised as a white pill inside it. Every filter
+             and its behavior is unchanged — this is styling only. -->
+        <div class="mem-filters" id="memFilters" role="group" aria-label="Filter what's shown">
           <button class="m-pill on" type="button" data-filter="all" aria-pressed="true">All</button>
           <button class="m-pill" type="button" data-filter="notes" aria-pressed="false">Notes</button>
           <button class="m-pill" type="button" data-filter="tasks" aria-pressed="false">Tasks</button>
@@ -135,25 +138,36 @@
            dropdown and the editor sub-screen. The LIST's back arrow is gone
            (the tab bar is the way out); the EDITOR keeps its back arrow,
            because that one is a real back — editor to list. -->
-      <div class="notes" id="notesView" role="region" aria-label="Notes" data-screen="list">
+      <div class="notes" id="notesView" role="region" aria-label="Notes" data-screen="list" data-edit="off">
         <div class="notes-screen" id="notesListScreen">
+          <!-- ONE filled primary button next to the title ("+ New note").
+               "Edit" is a plain text button beside it: it puts the list into
+               iOS-style edit mode, where every section header grows Rename
+               and Delete, and where "+ New section" lives. -->
           <div class="mem-head">
             <div class="mem-hd-txt">
               <div class="mem-title">Notes.</div>
               <div class="mem-sub" id="notesSubtitle">Saved in your Sheet</div>
             </div>
+            <button class="txt-btn" id="noteEditBtn" type="button" aria-pressed="false" aria-label="Edit your sections">Edit</button>
+            <button class="pill-btn primary" id="noteNewBtn" type="button" aria-label="Start a new note">+ New note</button>
+          </div>
+          <div class="notes-editbar" id="notesEditBar">
             <button class="pill-btn" id="noteNewSectionBtn" type="button" aria-label="Create a new section">+ New section</button>
-            <button class="pill-btn" id="noteNewBtn" type="button" aria-label="Start a new note">+ New note</button>
+            <span class="notes-edit-hint">Rename or delete a section from its header.</span>
           </div>
           <div class="note-compose">
             <textarea id="noteComposeArea" rows="3" placeholder="Paste or type a note — the first line becomes its title" aria-label="Paste or type a new note"></textarea>
+            <!-- The section picker and its dictation mic sit together on the
+                 right, with no dead space between them: pick where the note
+                 goes, then speak it. -->
             <div class="note-compose-bar">
-              <button class="note-mic" id="noteComposeMic" type="button" aria-label="Dictate a new note" aria-pressed="false">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
-              </button>
               <span class="note-ed-hint hidden" id="noteComposeHint" aria-live="polite">Listening — speak and I'll type it here</span>
               <span class="spacer" aria-hidden="true"></span>
               <select class="sel note-sec" id="noteComposeSection" aria-label="Section for a new note"></select>
+              <button class="note-mic" id="noteComposeMic" type="button" aria-label="Dictate a new note" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
+              </button>
             </div>
             <div class="note-compose-row hidden" id="noteComposeRow">
               <button class="pill-btn primary" id="noteComposeSave" type="button">Save note</button>
@@ -324,6 +338,16 @@
           <span class="tab-l">Video</span>
         </button>
       </nav>
+
+      <!-- ================= In-panel sheets & menus =================
+           Empty hosts that nsheet.js fills: the Rename sheet, the section
+           Delete confirmation, and the "…" popover menus. They live inside
+           the panel (a side panel has no business calling window.prompt),
+           and all of their markup is built in JavaScript — no inline script,
+           no onclick attributes anywhere. -->
+      <div class="ns-scrim" id="nsScrim"></div>
+      <div class="ns-sheet" id="nsSheet" role="dialog" aria-modal="true" aria-label="Section options"></div>
+      <div class="ns-menu hidden" id="nsMenu" role="menu"></div>
 
       <!-- Undo toast -->
       <div class="toast hidden" id="undoToast">

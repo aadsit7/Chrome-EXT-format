@@ -7,19 +7,20 @@
 //
 //   LIST   — every saved note (entry_type "note" in the Sheet, up to 500),
 //            newest first, via the same search_memory call the memory view
-//            uses, grouped into COLLAPSIBLE SECTIONS. A note's section is the
-//            "project" column of its memory_log row; notes without one land
-//            in "Unsorted", always last. Tapping a section header folds it
-//            open or closed (remembered in chrome.storage.local); "+ New
-//            section" creates a named section, which is stored locally until
-//            a note is saved into it (only then does it reach the Sheet).
-//            Each row shows the title, a human date, and a copy button that
-//            puts the FULL note on the clipboard without opening it. Up top:
-//            a "+ New note" button (opens a blank editor) and a
-//            paste-friendly box that saves whatever is typed or pasted as a
-//            new note — first line becomes the title, the rest becomes the
-//            body — with an always-visible dictation mic and a section
-//            picker, so a spoken or pasted note saves straight into place.
+//            uses, grouped into COLLAPSIBLE SECTIONS drawn as an iOS inset
+//            grouped list: one rounded white card per section, three lines
+//            per row (title, a preview of the body, the date) and a chevron
+//            saying the row opens. A note's section is the "project" column
+//            of its memory_log row; notes without one land in "Unsorted",
+//            always last. Tapping a section header folds it open or closed
+//            (remembered in chrome.storage.local). Up top: a "+ New note"
+//            button (opens a blank editor), an "Edit" button (see SECTIONS
+//            below) and a paste-friendly box that saves whatever is typed or
+//            pasted as a new note — first line becomes the title, the rest
+//            becomes the body — with a section picker and, right beside it,
+//            a dictation mic, so a spoken or pasted note saves into place.
+//            Swiping a row left reveals Move and Delete; a "…" on each row
+//            offers Copy, Move to section and Delete for keyboard and mouse.
 //   EDITOR — opens when a row is tapped: editable title + body, a copy
 //            button, a section picker (moving a note between sections saves
 //            like any other edit), a Save button (backing out also
@@ -33,24 +34,49 @@
 // conversation listening is sealed off and her voice stays quiet; stopping
 // (or leaving the screen) restores the mic to exactly the state it was in.
 //
+// SECTIONS ARE NOT A DATABASE OBJECT. A section is exactly two things: the
+// value of the "project" column on each individual note row in the Sheet, and
+// a list of names in chrome.storage.local (SECTIONS_KEY) that exists ONLY so
+// a brand-new, still-empty section can be shown before any note is in it.
+// Everything in the "Section management" block below follows from that:
+//
+//   • Renaming a section, or emptying one into Unsorted, means WRITING THE
+//     PROJECT COLUMN ON EVERY ONE OF ITS NOTES — one api.updateMemory() call
+//     per note. api.batchUpdateMemory() must never be used for this: it drops
+//     the project field on the way out (see api.js) and the backend's
+//     batchUpdateMemory_() only ever writes status / deleted / updated_at, so
+//     it would answer ok:true for every note and change nothing at all.
+//     batchUpdateMemory IS used for deleting notes, where "deleted" is a
+//     column it genuinely writes.
+//   • A section is removed from chrome.storage.local only AFTER every one of
+//     its notes came back confirmed from the server. A partial result keeps
+//     the section, restores the list, and says exactly what happened
+//     ("Renamed 6 of 8 notes — 2 failed, try again.").
+//   • A user-created section with zero notes lives only in local storage, so
+//     renaming or deleting THAT one is instant and touches no network.
+//
 // Creating a note needs the backend's "save_memory" action; an older Apps
 // Script deployment answers "unknown action", which api.js flags as
 // backendOutdated so the error here can say "redeploy Code.gs" instead of
 // blaming the connection. Sections need a deployment new enough to return
 // the "project" column — when notes load without it, a dismissible notice
 // above the list says sections won't save until Code.gs is redeployed, and
-// everything else keeps working. Reading and editing notes work against any
-// existing deployment.
+// everything else keeps working (that one notice is also what disables
+// Rename and the "keep the notes" delete option; there is no second warning).
+// Reading and editing notes work against any existing deployment.
 
 import * as api from "./api.js";
 import * as speech from "./speech.js";
 import * as ui from "./ui.js";
+import * as nsheet from "./nsheet.js";
 
 const els = {
   html: document.documentElement,
   view: document.getElementById("notesView"),
   subtitle: document.getElementById("notesSubtitle"),
   newBtn: document.getElementById("noteNewBtn"),
+  editBtn: document.getElementById("noteEditBtn"),
+  editBar: document.getElementById("notesEditBar"),
   newSectionBtn: document.getElementById("noteNewSectionBtn"),
   composeArea: document.getElementById("noteComposeArea"),
   composeRow: document.getElementById("noteComposeRow"),
@@ -77,6 +103,11 @@ const TITLE_MAX = 60; // first line → title, kept to a scannable length
 const COPIED_FLASH_MS = 1400;
 const NOTES_LIMIT = 500; // how many notes the list loads (the backend's cap)
 const UNSORTED = "Unsorted"; // the built-in group for notes with no section
+const UNDO_MS = 6000; // how long an undo toast stays up after a delete
+// Swipe-to-reveal: how far a row slides left, and how far a drag must travel
+// before it counts as a swipe rather than a tap.
+const SWIPE_W = 152;
+const SWIPE_SLOP = 8;
 
 // Sections live in chrome.storage.local (the same pattern sidepanel.js uses
 // for settings): the names the user created — kept even while empty, since
@@ -108,6 +139,9 @@ let userSections = []; // section names the user created (persisted locally)
 let openSections = {}; // section name → open?; missing names default to open
 let sectionStateLoaded = null; // resolves once chrome.storage delivered both
 let staleDismissed = false; // the redeploy notice stays away once dismissed
+let editMode = false; // iOS-style list editing: Rename/Delete on every header
+let sectionBusy = false; // a section rename/empty/delete loop is in flight
+let openSwipeRow = null; // the one row currently swiped open, if any
 
 export function initNotes(options) {
   opts = { ...opts, ...(options || {}) };
@@ -142,6 +176,9 @@ function openNotes() {
 
 function closeNotes() {
   stopDictationUI();
+  nsheet.close(); // never leave a Rename or Delete sheet hanging over another tab
+  closeSwipe();
+  setEditMode(false); // edit mode is per-visit, like an iOS list
   // Auto-save on the way out (same contract as the editor's back button);
   // fire-and-forget — the row updates next time the list loads.
   if (editorOpen() && editorDirty()) saveEditor({ quiet: true });
@@ -167,6 +204,9 @@ function onViewChanged() {
   // The view left Notes through a path that isn't ours (a tab tap, the user
   // addressing Sharon, the welcome replay): same cleanup as closeNotes.
   stopDictationUI();
+  nsheet.close();
+  closeSwipe();
+  setEditMode(false);
   if (editorOpen() && editorDirty()) saveEditor({ quiet: true });
 }
 
@@ -258,22 +298,77 @@ function isSectionOpen(name) {
   return v == null ? true : !!v; // no saved state = open
 }
 
+function setSectionOpen(name, open) {
+  openSections[name] = open;
+  saveOpenSections();
+}
+
+// The loaded notes that currently sit in a section, compared the same
+// case-insensitive way sectionNames() folds them together.
+function notesIn(name) {
+  const lower = String(name || "").trim().toLowerCase();
+  if (!lower) return [];
+  return hits.filter((h) => String((h && h.project) || "").trim().toLowerCase() === lower);
+}
+
+// Rule for every rename: names are compared case-insensitively, so two
+// sections can never differ only by case. Returns the clash message, or "".
+// `except` is the name being renamed, which is allowed to keep its own spot.
+function nameClash(name, except) {
+  const lower = String(name || "").trim().toLowerCase();
+  if (!lower) return "Give the section a name.";
+  const skip = String(except || "").trim().toLowerCase();
+  if (lower === UNSORTED.toLowerCase())
+    return "“" + UNSORTED + "” is where notes with no section already live.";
+  if (lower === skip) return ""; // same name, different spelling — fine
+  const existing = sectionNames().find((s) => s.toLowerCase() === lower);
+  if (existing) return "A section called " + existing + " already exists.";
+  return "";
+}
+
+/* --- the local list of names: the ONLY place an empty section exists --- */
+function ensureLocalSection(name) {
+  const lower = String(name || "").trim().toLowerCase();
+  if (!lower) return;
+  if (!userSections.some((s) => s.toLowerCase() === lower)) userSections.push(name);
+}
+
+function removeLocalSection(name) {
+  const lower = String(name || "").trim().toLowerCase();
+  userSections = userSections.filter((s) => s.toLowerCase() !== lower);
+  delete openSections[name];
+}
+
+// Rename in local storage: the name moves, and so does its open/closed state.
+function renameLocalSection(from, to) {
+  const wasOpen = isSectionOpen(from);
+  removeLocalSection(from);
+  ensureLocalSection(to);
+  openSections[to] = wasOpen;
+  saveUserSections();
+  saveOpenSections();
+}
+
 // "+ New section": name it, keep it locally, show it expanded and empty.
 // Nothing touches the Sheet — a section first reaches the Sheet when a note
-// is saved into it. Empty and duplicate names (and "Unsorted", which always
-// exists) are quietly ignored.
-function createSection() {
-  const raw = window.prompt("Name the new section:", "");
+// is saved into it. The in-panel sheet below replaces the window.prompt() that
+// used to live here; a duplicate name is refused out loud rather than
+// silently dropped, and the sheet stays open so the name can be fixed.
+async function createSection() {
+  const raw = await nsheet.textSheet({
+    title: "New section",
+    message: "It stays on this computer until you save a note into it.",
+    value: "",
+    placeholder: "Section name",
+    confirmLabel: "Create",
+    validate: (v) => nameClash(v, ""),
+  });
   if (raw == null) return;
   const name = String(raw).trim();
-  if (!name) return;
-  const lower = name.toLowerCase();
-  if (lower === UNSORTED.toLowerCase()) return;
-  if (sectionNames().some((s) => s.toLowerCase() === lower)) return;
-  userSections.push(name);
+  if (!name || nameClash(name, "")) return;
+  ensureLocalSection(name);
   saveUserSections();
-  openSections[name] = true;
-  saveOpenSections();
+  setSectionOpen(name, true);
   renderList();
 }
 
@@ -318,13 +413,26 @@ function setPickerValue(sel, name) {
 }
 
 // STALE BACKEND: notes loaded fine but not one entry carries a "project"
-// property — the deployed Apps Script predates sections. Say so once,
-// dismissibly, in the existing error styling; the list itself keeps working.
+// property — the deployed Apps Script predates sections. This ONE check is
+// also what disables Rename and the "keep the notes" delete option, so a
+// section change can never quietly fail against an old deployment.
+function backendStale() {
+  return hits.length > 0 && !hits.some((h) => h && typeof h === "object" && "project" in h);
+}
+
+// Bring the existing notice back and scroll it into view — what a blocked
+// Rename or "keep the notes" points at. Deliberately NOT a second warning.
+function showStaleNotice() {
+  staleDismissed = false;
+  renderStaleNotice();
+  if (els.stale) els.stale.scrollIntoView({ block: "nearest" });
+}
+
+// Say so once, dismissibly, in the existing error styling; the list itself
+// keeps working.
 function renderStaleNotice() {
   if (!els.stale) return;
-  const stale =
-    hits.length > 0 &&
-    !hits.some((h) => h && typeof h === "object" && "project" in h);
+  const stale = backendStale();
   if (!stale || staleDismissed) {
     els.stale.classList.add("hidden");
     return;
@@ -354,6 +462,7 @@ function renderList() {
   populateSectionPickers();
   renderStaleNotice();
   if (!els.list) return;
+  openSwipeRow = null; // the rows it referred to are about to be replaced
   els.list.innerHTML = "";
   const names = sectionNames();
   if (!hits.length && !names.length) {
@@ -381,35 +490,83 @@ function renderList() {
   if (unsorted.length) els.list.appendChild(sectionGroup(UNSORTED, unsorted));
 }
 
-// One section: a tappable .mg-head header (title, count, rotating chevron —
-// aria-expanded carries the state, no <details>) over a .mg-card of the
-// section's rows, built with the same noteRow() as always.
+// One section, drawn as an inset grouped list: a header sitting directly
+// above ONE continuous rounded card of rows. The header carries the section's
+// name in sentence case exactly as it was typed, its count, a collapse
+// chevron, and a "…" that offers Rename / Delete / Collapse without entering
+// edit mode. In edit mode it also grows visible Rename and Delete buttons.
+// Every control in it is a 44x44 hit area, whatever size the glyph inside is.
 function sectionGroup(name, rows) {
   const wrap = document.createElement("div");
   wrap.className = "nsec";
   const open = isSectionOpen(name);
+  const isUnsorted = name === UNSORTED;
+  const countText = rows.length === 1 ? "1 note" : rows.length + " notes";
 
-  const head = document.createElement("button");
-  head.type = "button";
-  head.className = "mg-head nsec-head";
-  head.setAttribute("aria-expanded", open ? "true" : "false");
-  head.setAttribute(
-    "aria-label",
-    "Section “" + name + "” — " + rows.length + (rows.length === 1 ? " note" : " notes")
-  );
+  const head = document.createElement("div");
+  head.className = "nsec-head";
+
+  // The name and count are themselves the collapse target — the whole left
+  // side of the header, not just the little chevron.
+  const main = document.createElement("button");
+  main.type = "button";
+  main.className = "nsec-main";
+  main.setAttribute("aria-expanded", open ? "true" : "false");
+  main.setAttribute("aria-label", "Section “" + name + "” — " + countText);
   const label = document.createElement("span");
   label.className = "nsec-t";
   label.textContent = name;
-  head.appendChild(label);
+  main.appendChild(label);
   const count = document.createElement("span");
   count.className = "nsec-n";
-  count.textContent = rows.length === 1 ? "1 note" : rows.length + " notes";
-  head.appendChild(count);
-  head.appendChild(svgOf(I_CHEVRON, "nsec-chev"));
+  count.textContent = countText;
+  main.appendChild(count);
+  head.appendChild(main);
+
+  // Edit mode: the two actions, spelled out. "Unsorted" isn't a section the
+  // user made — it's where sectionless notes land — so it has neither.
+  if (!isUnsorted) {
+    const acts = document.createElement("div");
+    acts.className = "nsec-acts";
+    const ren = document.createElement("button");
+    ren.type = "button";
+    ren.className = "nsec-act";
+    ren.textContent = "Rename";
+    ren.setAttribute("aria-label", "Rename the section “" + name + "”");
+    ren.addEventListener("click", () => renameSection(name));
+    acts.appendChild(ren);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "nsec-act danger";
+    del.textContent = "Delete";
+    del.setAttribute("aria-label", "Delete the section “" + name + "”");
+    del.addEventListener("click", () => deleteSection(name));
+    acts.appendChild(del);
+    head.appendChild(acts);
+  }
+
+  const chev = document.createElement("button");
+  chev.type = "button";
+  chev.className = "nsec-icon nsec-chevbtn";
+  chev.setAttribute("aria-expanded", open ? "true" : "false");
+  chev.setAttribute("aria-label", (open ? "Collapse" : "Expand") + " “" + name + "”");
+  chev.appendChild(svgOf(I_CHEVRON, "nsec-chev"));
+  head.appendChild(chev);
+
+  // The "…" is available WITHOUT edit mode — the fast path to the same things.
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "nsec-icon nsec-more";
+  more.setAttribute("aria-label", "More for the section “" + name + "”");
+  more.setAttribute("aria-haspopup", "menu");
+  more.appendChild(svgOf(I_MORE, ""));
+  more.addEventListener("click", () => sectionMenu(more, name, rows.length));
+  head.appendChild(more);
+
   wrap.appendChild(head);
 
   const card = document.createElement("div");
-  card.className = "mg-card";
+  card.className = "mg-card nsec-card";
   card.classList.toggle("hidden", !open);
   if (!rows.length) {
     const empty = document.createElement("div");
@@ -417,55 +574,648 @@ function sectionGroup(name, rows) {
     empty.textContent = "Nothing in this section yet — pick it when you save a note.";
     card.appendChild(empty);
   } else {
-    for (const h of rows) card.appendChild(noteRow(h));
+    for (const h of rows) card.appendChild(noteRow(h, name));
   }
   wrap.appendChild(card);
 
-  head.addEventListener("click", () => {
-    const nowOpen = head.getAttribute("aria-expanded") !== "true";
-    head.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+  const toggle = () => {
+    const nowOpen = main.getAttribute("aria-expanded") !== "true";
+    main.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+    chev.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+    chev.setAttribute("aria-label", (nowOpen ? "Collapse" : "Expand") + " “" + name + "”");
     card.classList.toggle("hidden", !nowOpen);
-    openSections[name] = nowOpen;
-    saveOpenSections();
-  });
+    setSectionOpen(name, nowOpen); // still saved under sharon_note_sections_open
+  };
+  main.addEventListener("click", toggle);
+  chev.addEventListener("click", toggle);
   return wrap;
 }
 
-function noteRow(h) {
+// The section "…" menu — the same three things the header offers, reachable
+// without entering edit mode. "Unsorted" can only be collapsed.
+async function sectionMenu(anchor, name, count) {
+  const isUnsorted = name === UNSORTED;
+  const open = isSectionOpen(name);
+  const items = [];
+  if (!isUnsorted) {
+    items.push({ key: "rename", label: "Rename" });
+    items.push({ key: "delete", label: "Delete", tone: "danger" });
+  }
+  items.push({ key: "collapse", label: open ? "Collapse" : "Expand" });
+  const choice = await nsheet.menu(anchor, items);
+  if (choice === "rename") renameSection(name);
+  else if (choice === "delete") deleteSection(name, count);
+  else if (choice === "collapse") {
+    setSectionOpen(name, !open);
+    renderList();
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * The row — title, a preview of the body, the date, and a chevron.
+ * Swiping it left reveals Move and Delete; the "…" carries the same
+ * actions (plus Copy) for anyone not using a touchpad.
+ * ------------------------------------------------------------------ */
+// Lines 1 and 2 are worked out exactly the way the Library works them out —
+// one definition, both screens. Line 1 is the title, falling back to the
+// first line of the body (notes saved from a single line keep the whole text
+// in `content`). Line 2 is whatever the body says BEYOND that, on one line,
+// and is empty — so the line is left out rather than drawn blank — when the
+// note is only a title.
+const rowTitle = ui.rowTitle;
+const rowPreview = ui.rowPreview;
+
+function noteRow(h, section) {
   const row = document.createElement("div");
   row.className = "nrow";
+
+  // The actions the swipe reveals, sitting UNDER the sliding face.
+  const behind = document.createElement("div");
+  behind.className = "nrow-swipe";
+  const moveBtn = document.createElement("button");
+  moveBtn.type = "button";
+  moveBtn.className = "nrow-swipe-btn move";
+  moveBtn.textContent = "Move";
+  moveBtn.setAttribute("aria-label", "Move this note to another section");
+  moveBtn.addEventListener("click", () => {
+    closeSwipe();
+    moveNote(h);
+  });
+  behind.appendChild(moveBtn);
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "nrow-swipe-btn del";
+  delBtn.textContent = "Delete";
+  delBtn.setAttribute("aria-label", "Delete this note");
+  delBtn.addEventListener("click", () => {
+    closeSwipe();
+    deleteNote(h, section);
+  });
+  behind.appendChild(delBtn);
+  row.appendChild(behind);
+
+  const face = document.createElement("div");
+  face.className = "nrow-face";
 
   const main = document.createElement("button");
   main.type = "button";
   main.className = "nrow-main";
-  main.setAttribute("aria-label", "Open the note “" + (h.title || "untitled") + "”");
+  main.setAttribute("aria-label", "Open the note “" + rowTitle(h) + "”");
   const t = document.createElement("div");
   t.className = "nrow-t";
-  t.textContent = h.title || h.content || "(untitled note)";
+  t.textContent = rowTitle(h);
   main.appendChild(t);
+  const preview = rowPreview(h);
+  if (preview) {
+    const p = document.createElement("div");
+    p.className = "nrow-p";
+    p.textContent = preview;
+    main.appendChild(p);
+  }
   const when = ui.metaTime(h.created_at);
   if (when) {
     const m = document.createElement("div");
-    m.className = "nrow-m";
+    m.className = "nrow-d";
     m.textContent = when;
     main.appendChild(m);
   }
-  main.addEventListener("click", () => openEditor(h));
-  row.appendChild(main);
-
-  // Copy is its own button so copying never opens the note.
-  const copy = document.createElement("button");
-  copy.type = "button";
-  copy.className = "nrow-copy";
-  copy.setAttribute("aria-label", "Copy this note");
-  copy.appendChild(svgOf(I_COPY, "i-copy"));
-  copy.appendChild(svgOf(I_CHECK, "i-check"));
-  copy.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    copyToClipboard(fullNoteText(h), () => flashCopied(copy));
+  main.addEventListener("click", () => {
+    // A swipe that ended on this row is not a tap, and an open row's next tap
+    // just puts it back rather than opening the editor.
+    if (row.getAttribute("data-swiped") === "true") {
+      closeSwipe();
+      return;
+    }
+    openEditor(h);
   });
-  row.appendChild(copy);
+  face.appendChild(main);
+
+  // The row's own "…": Copy (unchanged, checkmark and all), Move, Delete.
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "nrow-more";
+  more.setAttribute("aria-label", "More for the note “" + rowTitle(h) + "”");
+  more.setAttribute("aria-haspopup", "menu");
+  more.appendChild(svgOf(I_MORE, ""));
+  more.appendChild(svgOf(I_CHECK, "i-check"));
+  more.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    rowMenu(more, h, section);
+  });
+  face.appendChild(more);
+
+  face.appendChild(svgOf(I_CHEVRON, "nrow-chev"));
+  row.appendChild(face);
+
+  wireSwipe(row, face);
   return row;
+}
+
+async function rowMenu(anchor, h, section) {
+  const choice = await nsheet.menu(anchor, [
+    { key: "copy", label: "Copy" },
+    { key: "move", label: "Move to section" },
+    { key: "delete", label: "Delete", tone: "danger" },
+  ]);
+  if (choice === "copy") copyToClipboard(fullNoteText(h), () => flashCopied(anchor));
+  else if (choice === "move") moveNote(h);
+  else if (choice === "delete") deleteNote(h, section);
+}
+
+/* --- swipe-to-reveal --- */
+function closeSwipe() {
+  if (!openSwipeRow) return;
+  const row = openSwipeRow;
+  openSwipeRow = null;
+  row.removeAttribute("data-swiped");
+  const face = row.querySelector(".nrow-face");
+  if (face) face.style.transform = "";
+}
+
+function wireSwipe(row, face) {
+  let startX = 0;
+  let startY = 0;
+  let base = 0;
+  let dragging = false;
+  let decided = false; // horizontal (swipe) or vertical (the list scrolls)
+
+  row.addEventListener("pointerdown", (ev) => {
+    if (ev.pointerType === "mouse" && ev.button !== 0) return;
+    startX = ev.clientX;
+    startY = ev.clientY;
+    base = row.getAttribute("data-swiped") === "true" ? -SWIPE_W : 0;
+    dragging = true;
+    decided = false;
+  });
+
+  row.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    if (!decided) {
+      if (Math.abs(dx) < SWIPE_SLOP && Math.abs(dy) < SWIPE_SLOP) return;
+      // A mostly-vertical drag belongs to the scrolling list, not to us.
+      if (Math.abs(dy) > Math.abs(dx)) {
+        dragging = false;
+        return;
+      }
+      decided = true;
+      closeSwipeElsewhere(row);
+      face.style.transition = "none";
+      try {
+        row.setPointerCapture(ev.pointerId);
+      } catch (_) {
+        /* capture is an optimization — the drag still tracks without it */
+      }
+    }
+    const at = Math.max(-SWIPE_W, Math.min(0, base + dx));
+    face.style.transform = "translateX(" + at + "px)";
+  });
+
+  const end = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    if (!decided) return;
+    face.style.transition = "";
+    const dx = ev && ev.clientX != null ? ev.clientX - startX : 0;
+    const at = Math.max(-SWIPE_W, Math.min(0, base + dx));
+    const openIt = at < -SWIPE_W / 2;
+    face.style.transform = openIt ? "translateX(" + -SWIPE_W + "px)" : "";
+    if (openIt) {
+      row.setAttribute("data-swiped", "true");
+      openSwipeRow = row;
+    } else {
+      row.removeAttribute("data-swiped");
+      if (openSwipeRow === row) openSwipeRow = null;
+    }
+  };
+  row.addEventListener("pointerup", end);
+  row.addEventListener("pointercancel", end);
+  row.addEventListener("pointerleave", (ev) => {
+    if (dragging && decided) end(ev);
+  });
+}
+
+function closeSwipeElsewhere(row) {
+  if (openSwipeRow && openSwipeRow !== row) closeSwipe();
+}
+
+/* ------------------------------------------------------------------ *
+ * SECTION MANAGEMENT
+ *
+ * Read the rules at the top of this file before touching anything here.
+ * The short version, restated where it matters most:
+ *
+ *   A section change means writing the "project" column on every one of its
+ *   notes. That is api.updateMemory(), ONE NOTE PER CALL. api.batchUpdateMemory()
+ *   cannot do it — it drops the project field and the backend never writes
+ *   that column in a batch — so it appears here exactly once, for DELETING
+ *   notes, where "deleted" is a column the batch genuinely writes.
+ * ------------------------------------------------------------------ */
+
+// Whether the list is in edit mode — the header's Edit/Done button.
+function setEditMode(on) {
+  editMode = !!on;
+  if (els.view) els.view.setAttribute("data-edit", editMode ? "on" : "off");
+  if (els.editBtn) {
+    els.editBtn.textContent = editMode ? "Done" : "Edit";
+    els.editBtn.setAttribute("aria-pressed", editMode ? "true" : "false");
+    els.editBtn.setAttribute(
+      "aria-label",
+      editMode ? "Finish editing your sections" : "Edit your sections"
+    );
+  }
+  closeSwipe();
+}
+
+/**
+ * Write `project` onto every note in `rows`, one api.updateMemory() call at a
+ * time, reporting "<verb> 3 of 8…" into the open sheet as it goes.
+ *
+ * Returns { ok, failed } where ok is [{ h, was }] — `was` being the project
+ * the note held BEFORE the write, which is what undo re-sends. Nothing here
+ * is optimistic: a note's in-memory project only changes once its own call
+ * came back, so a partial failure leaves the list telling the truth.
+ */
+async function applyProject(rows, project, verb) {
+  const ok = [];
+  const failed = [];
+  const total = rows.length;
+  for (let i = 0; i < total; i++) {
+    const h = rows[i];
+    nsheet.progress(verb + " " + (i + 1) + " of " + total + "…");
+    if (!h || !h.entry_id) {
+      failed.push(h);
+      continue;
+    }
+    const was = String(h.project || "");
+    try {
+      await api.updateMemory({ entryId: h.entry_id, project }); // ONE note, one call
+      h.project = project;
+      ok.push({ h, was });
+    } catch (_) {
+      failed.push(h);
+    }
+  }
+  nsheet.progress("");
+  return { ok, failed };
+}
+
+// The same loop with no sheet on screen — how undo puts sections back.
+async function applyProjectQuiet(pairs) {
+  let restored = 0;
+  for (const { h, was } of pairs) {
+    if (!h || !h.entry_id) continue;
+    try {
+      await api.updateMemory({ entryId: h.entry_id, project: was });
+      h.project = was;
+      restored++;
+    } catch (_) {
+      /* the toast below reports the shortfall */
+    }
+  }
+  return restored;
+}
+
+function noteWord(n) {
+  return n === 1 ? "note" : "notes";
+}
+
+/* --------------------------- RENAME --------------------------- */
+async function renameSection(name) {
+  if (sectionBusy || name === UNSORTED) return;
+  // The deployed Apps Script doesn't know the project column: renaming would
+  // report success and write nothing. Point at the notice that already says
+  // so — never invent a second warning.
+  //
+  // This check comes BEFORE the zero-notes shortcut on purpose. While the
+  // backend is stale no note reports a project at all, so "this section has
+  // no notes" is not a fact — it's the absence of one. Renaming it locally
+  // could quietly strand notes that really are in it on the server.
+  if (backendStale()) {
+    showStaleNotice();
+    return;
+  }
+  const raw = await nsheet.textSheet({
+    title: "Rename section",
+    message: "Every note in it moves to the new name.",
+    value: name,
+    placeholder: "Section name",
+    confirmLabel: "Save",
+    validate: (v) => nameClash(v, name), // refuses a collision, keeps the sheet open
+  });
+  if (raw == null) return;
+  const next = String(raw).trim();
+  if (!next || next === name || nameClash(next, name)) return;
+
+  const rows = notesIn(name);
+  // A section the user created that still has zero notes exists ONLY in local
+  // storage — no network call at all.
+  if (!rows.length) {
+    renameLocalSection(name, next);
+    nsheet.close();
+    renderList();
+    return;
+  }
+
+  sectionBusy = true;
+  nsheet.workSheet({
+    title: "Renaming to “" + next + "”",
+    message: "Each note moves on its own — this takes a moment.",
+  });
+  try {
+    const { ok, failed } = await applyProject(rows, next, "Moving");
+    if (failed.length) {
+      // Some notes are still under the old name, so the old section is still
+      // real: keep it, restore the list, and say exactly what happened.
+      ensureLocalSection(name);
+      if (ok.length) ensureLocalSection(next);
+      saveUserSections();
+      renderList();
+      ui.showUndoToast({
+        label:
+          "Renamed " + ok.length + " of " + rows.length + " notes — " +
+          failed.length + " failed, try again.",
+        duration: 7000,
+      });
+      return;
+    }
+    // Every note confirmed — only NOW does the old name leave local storage.
+    renameLocalSection(name, next);
+    renderList();
+    ui.showUndoToast({ label: "Renamed to “" + next + "”", duration: 4000 });
+  } finally {
+    sectionBusy = false;
+    nsheet.close();
+  }
+}
+
+/* --------------------------- DELETE --------------------------- */
+async function deleteSection(name) {
+  if (sectionBusy || name === UNSORTED) return;
+  const rows = notesIn(name);
+
+  // Empty and local-only: nothing to ask about, nothing to send.
+  if (!rows.length) {
+    removeLocalSection(name);
+    saveUserSections();
+    saveOpenSections();
+    renderList();
+    return;
+  }
+
+  // If "keep the notes" is about to be unavailable, put the existing notice
+  // back on screen first, so the reason is visible behind the sheet.
+  const stale = backendStale();
+  if (stale) showStaleNotice();
+  const n = rows.length;
+  const choice = await nsheet.choiceSheet({
+    title: "Delete “" + name + "”?",
+    message:
+      "This section has " + n + " " + noteWord(n) +
+      ". Deleting the notes marks them deleted in your Sheet rather than erasing them, " +
+      "so you can still recover them there.",
+    choices: [
+      {
+        key: "keep",
+        label: "Keep the notes, move them to Unsorted",
+        detail: stale
+          ? "Needs a newer Apps Script — see the notice above the list."
+          : "The section goes; its " + n + " " + noteWord(n) + " stay.",
+        disabled: stale, // same single stale check as Rename
+      },
+      {
+        key: "purge",
+        label: "Delete the section and its " + n + " " + noteWord(n),
+        tone: "danger",
+      },
+      { key: "cancel", label: "Cancel", tone: "cancel" },
+    ],
+  });
+  if (!choice || choice === "cancel") {
+    nsheet.close();
+    return;
+  }
+  if (choice === "keep") await emptySectionToUnsorted(name, rows);
+  else if (choice === "purge") await deleteSectionAndNotes(name, rows);
+}
+
+// Option 1 — the notes survive: project := "" on each of them, one call each.
+async function emptySectionToUnsorted(name, rows) {
+  sectionBusy = true;
+  nsheet.workSheet({
+    title: "Moving to " + UNSORTED,
+    message: "Each note moves on its own — this takes a moment.",
+  });
+  try {
+    const { ok, failed } = await applyProject(rows, "", "Moving");
+    if (failed.length) {
+      ensureLocalSection(name); // the section still holds notes — it stays
+      saveUserSections();
+      renderList();
+      ui.showUndoToast({
+        label:
+          "Moved " + ok.length + " of " + rows.length + " notes to Unsorted — " +
+          failed.length + " failed, try again.",
+        duration: 7000,
+      });
+      return;
+    }
+    // Every note confirmed on the server — now the section may go.
+    removeLocalSection(name);
+    saveUserSections();
+    saveOpenSections();
+    renderList();
+    ui.showUndoToast({
+      label: "Moved " + ok.length + " " + noteWord(ok.length) + " to Unsorted",
+      duration: UNDO_MS,
+      onUndo: () => undoEmptySection(name, ok),
+    });
+  } finally {
+    sectionBusy = false;
+    nsheet.close();
+  }
+}
+
+// Undo for option 1: re-send each note's ORIGINAL section name, one at a time.
+async function undoEmptySection(name, pairs) {
+  ensureLocalSection(name);
+  saveUserSections();
+  renderList();
+  const restored = await applyProjectQuiet(pairs);
+  renderList();
+  if (restored < pairs.length) {
+    ui.showUndoToast({
+      label:
+        "Put back " + restored + " of " + pairs.length + " notes — " +
+        (pairs.length - restored) + " failed, try again.",
+      duration: 7000,
+    });
+  }
+}
+
+// Option 2 — the notes go too. "deleted" IS a column batch_update_memory
+// writes, so this is one round trip and it genuinely works.
+async function deleteSectionAndNotes(name, rows) {
+  const targets = rows.filter((h) => h && h.entry_id);
+  if (!targets.length) return;
+  sectionBusy = true;
+  nsheet.workSheet({ title: "Deleting “" + name + "”" });
+  nsheet.progress("Deleting " + targets.length + " " + noteWord(targets.length) + "…");
+  try {
+    const res = await api.batchUpdateMemory(
+      targets.map((h) => ({ entryId: h.entry_id, deleted: true }))
+    );
+    const results = (res && res.results) || [];
+    const okIds = new Set(results.filter((r) => r && r.ok).map((r) => String(r.entry_id)));
+    const ok = targets.filter((h) => okIds.has(String(h.entry_id)));
+    const failed = targets.filter((h) => !okIds.has(String(h.entry_id)));
+    const okSet = new Set(ok.map((h) => String(h.entry_id)));
+    hits = hits.filter((h) => !okSet.has(String((h && h.entry_id) || "")));
+
+    if (failed.length) {
+      ensureLocalSection(name); // notes are still in it — the section stays
+      saveUserSections();
+      renderList();
+      ui.showUndoToast({
+        label:
+          "Deleted " + ok.length + " of " + targets.length + " notes — " +
+          failed.length + " failed, try again.",
+        duration: 7000,
+      });
+      return;
+    }
+    removeLocalSection(name);
+    saveUserSections();
+    saveOpenSections();
+    renderList();
+    ui.showUndoToast({
+      label: "Deleted “" + name + "” and " + ok.length + " " + noteWord(ok.length),
+      duration: UNDO_MS,
+      onUndo: () => undoDeleteSection(name, ok),
+    });
+  } catch (_) {
+    renderList();
+    ui.showUndoToast({ label: "Couldn't delete — check your connection and try again." });
+  } finally {
+    sectionBusy = false;
+    nsheet.close();
+  }
+}
+
+// Undo for option 2: the same batch again with deleted:false.
+async function undoDeleteSection(name, rows) {
+  ensureLocalSection(name);
+  saveUserSections();
+  try {
+    const res = await api.batchUpdateMemory(
+      rows.map((h) => ({ entryId: h.entry_id, deleted: false }))
+    );
+    const results = (res && res.results) || [];
+    const okIds = new Set(results.filter((r) => r && r.ok).map((r) => String(r.entry_id)));
+    const back = rows.filter((h) => okIds.has(String(h.entry_id)));
+    hits = back.concat(hits);
+    sortHits();
+    renderList();
+    if (back.length < rows.length) {
+      ui.showUndoToast({
+        label:
+          "Restored " + back.length + " of " + rows.length + " notes — " +
+          (rows.length - back.length) + " failed, try again.",
+        duration: 7000,
+      });
+    }
+  } catch (_) {
+    renderList();
+    ui.showUndoToast({ label: "Couldn't restore those — check your connection." });
+  }
+}
+
+/* ----------------- one note: move, and delete ----------------- */
+async function moveNote(h) {
+  if (!h || !h.entry_id) return;
+  const here = String(h.project || "").trim();
+  const choices = [{ key: "", label: UNSORTED, detail: here ? "" : "Where it is now" }];
+  for (const s of sectionNames())
+    choices.push({
+      key: s,
+      label: s,
+      detail: s.toLowerCase() === here.toLowerCase() ? "Where it is now" : "",
+    });
+  // Cancel resolves null, exactly the same as dismissing the sheet, so no
+  // sentinel key is needed (and none can ever collide with a section name).
+  choices.push({ key: null, label: "Cancel", tone: "cancel" });
+  const choice = await nsheet.choiceSheet({
+    title: "Move “" + rowTitle(h) + "”",
+    message: "Pick the section it should live in.",
+    choices,
+  });
+  if (choice == null) {
+    nsheet.close();
+    return;
+  }
+  if (choice.toLowerCase() === here.toLowerCase()) {
+    nsheet.close();
+    return;
+  }
+  nsheet.workSheet({ title: "Moving “" + rowTitle(h) + "”" });
+  try {
+    await api.updateMemory({ entryId: h.entry_id, project: choice }); // one note, one call
+    h.project = choice;
+    renderList();
+    ui.showUndoToast({ label: "Moved to " + (choice || UNSORTED), duration: 4000 });
+  } catch (err) {
+    showErr(els.listErr, problemText(err, "I couldn't move that note."));
+  } finally {
+    nsheet.close();
+  }
+}
+
+async function deleteNote(h, section) {
+  if (!h || !h.entry_id) return;
+  const at = hits.indexOf(h);
+  if (at >= 0) hits.splice(at, 1);
+  renderList();
+  try {
+    await api.updateMemory({ entryId: h.entry_id, deleted: true });
+    ui.showUndoToast({
+      label: "Deleted “" + rowTitle(h) + "”",
+      duration: UNDO_MS,
+      onUndo: () => undoDeleteNote(h, at, section),
+    });
+  } catch (err) {
+    if (at >= 0) hits.splice(Math.min(at, hits.length), 0, h);
+    renderList();
+    showErr(els.listErr, problemText(err, "I couldn't delete that note."));
+  }
+}
+
+async function undoDeleteNote(h, at, section) {
+  hits.splice(Math.min(Math.max(at, 0), hits.length), 0, h);
+  // A note put back into a section the delete emptied needs its name shown
+  // again, even before the next load.
+  if (section && section !== UNSORTED) {
+    ensureLocalSection(section);
+    saveUserSections();
+  }
+  renderList();
+  try {
+    await api.updateMemory({ entryId: h.entry_id, deleted: false });
+  } catch (_) {
+    const back = hits.indexOf(h);
+    if (back >= 0) hits.splice(back, 1);
+    renderList();
+    ui.showUndoToast({ label: "Couldn't restore that note — check your connection." });
+  }
+}
+
+// Newest first, the order search_memory hands the list back in.
+function sortHits() {
+  hits.sort((a, b) => {
+    const at = new Date((a && a.created_at) || 0).getTime() || 0;
+    const bt = new Date((b && b.created_at) || 0).getTime() || 0;
+    return bt - at;
+  });
 }
 
 /* ------------------------------------------------------------------ *
@@ -530,6 +1280,7 @@ function openEditor(h) {
   // The list's quick-note mic must not keep listening under the editor —
   // and speech.js only holds one dictation callback anyway.
   stopDictationUI("compose");
+  closeSwipe();
   editing = {
     entryId: h ? h.entry_id : null,
     hit: h || null,
@@ -795,11 +1546,15 @@ function svgOf(inner, cls) {
   svg.innerHTML = inner;
   return svg;
 }
-const I_COPY =
-  '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>';
 const I_CHECK = '<path d="M20 6 9 17l-5-5"/>';
 const I_CHEVRON = '<path d="m9 18 6-6-6-6"/>'; // points right; CSS rotates it open
 const I_X = '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>';
+// The "…" glyph: three solid dots, so it reads at 16px (svgOf strokes by
+// default, which would turn small circles into blobs).
+const I_MORE =
+  '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/>' +
+  '<circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/>' +
+  '<circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>';
 
 /* ------------------------------------------------------------------ *
  * Wiring
@@ -809,7 +1564,15 @@ function wire() {
   // on the list any more, because the tab bar is the way out. The editor keeps
   // its own back arrow below: that one is a real back, editor → list.
   if (els.newBtn) els.newBtn.addEventListener("click", () => openEditor(null));
+  // "Edit" / "Done" — iOS list editing. "+ New section" lives inside it, so
+  // only ONE filled button ever competes with the title.
+  if (els.editBtn) els.editBtn.addEventListener("click", () => setEditMode(!editMode));
   if (els.newSectionBtn) els.newSectionBtn.addEventListener("click", createSection);
+  // A tap anywhere else in the list puts an open swipe back, the way iOS does.
+  if (els.list)
+    els.list.addEventListener("pointerdown", (ev) => {
+      if (openSwipeRow && !openSwipeRow.contains(ev.target)) closeSwipe();
+    });
   if (els.composeArea) els.composeArea.addEventListener("input", syncComposeRow);
   if (els.composeSave) els.composeSave.addEventListener("click", saveCompose);
   if (els.composeMic) els.composeMic.addEventListener("click", () => toggleDictation("compose"));

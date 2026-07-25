@@ -23,4 +23,41 @@
   --space-1: 8px; --space-2: 16px; --space-3: 24px;
   --space-4: 40px; --space-5: 64px; --space-6: 96px;
   --content-max: 1024px;
+
+  /* =======================================================
+     Inset grouped lists — the Notes and Library screens.
+     One rounded white card per section over a grouped gray
+     surface; rows inside it are divided by a hairline that
+     starts where the row's text starts.
+     ======================================================= */
+  --font-system: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+
+  /* Surfaces */
+  --surface: #FFFFFF;        /* the card itself — white, never gray */
+  --grouped-bg: #F2F2F7;     /* the scrolling surface the cards sit on */
+  --surface-press: #E5E5EA;  /* a row held down */
+  --separator: #C6C6C8;      /* the 1px hairline between rows */
+  --track: #E9E9EB;          /* segmented-control track */
+  --chevron: #C7C7CC;        /* the disclosure chevron at a row's right edge */
+
+  /* Functional colors */
+  --red: #FF3B30;            /* destructive — Delete */
+  --red-deep: #D70015;       /* its pressed state */
+  --neutral-action: #8E8E93; /* the gray swipe action (Move) */
+
+  /* Shape */
+  --radius-group: 12px;      /* the section card */
+  --radius-menu: 14px;       /* popover menus and in-panel sheets */
+  --radius-seg: 9px;         /* the segmented control's selected pill */
+
+  /* Measurements */
+  --list-inset: 16px;        /* how far a card sits in from the panel edges */
+  --row-inset: 16px;         /* where a row's text — and its hairline — starts */
+  --row-min-h: 60px;         /* minimum row height */
+  --hit: 44px;               /* minimum tappable area for any control */
+  --group-gap: 24px;         /* space between two section cards */
+  --swipe-w: 152px;          /* the two revealed swipe actions, together */
+
+  /* The 4px spacing grid everything in these lists snaps to */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-6: 24px;
 }
