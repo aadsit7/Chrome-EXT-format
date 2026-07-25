@@ -24,7 +24,8 @@
 // than one sentence per tap.
 
 const SR = self.webkitSpeechRecognition || self.SpeechRecognition;
-const RESTART_MS = 250; // breath between phrases in one dictation session
+const RESTART_MS = 120; // breath between phrases — short, so no words fall in the gap
+const RETRY_MS = 350; // the engine wasn't ready yet; come back once
 
 let rec = null;
 let live = false; // is a dictation session open?
@@ -107,16 +108,24 @@ function build() {
   return r;
 }
 
-function begin() {
+function begin(retried) {
   if (starting) return;
   try {
     if (!rec) rec = build();
     starting = true;
     rec.start();
   } catch (_) {
-    // start() throws if it's already running — harmless; anything else ends
-    // the session quietly.
+    // start() throws while the engine is still winding down from the last
+    // phrase. One more try, a moment later, keeps a long dictation from
+    // stopping mid-sentence.
     starting = false;
+    if (live && !retried) {
+      if (restartTimer) clearTimeout(restartTimer);
+      restartTimer = setTimeout(() => {
+        restartTimer = null;
+        if (live) begin(true);
+      }, RETRY_MS);
+    }
   }
 }
 
