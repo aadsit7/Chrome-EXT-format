@@ -37,6 +37,10 @@
   const MIN_W = 60; // don't decorate fields too small to hold the button
   const MIN_H = 18;
   const TEXT_TYPES = new Set(["text", "search", "email", "url", "tel"]); // never "password"
+  // The only events that hand the insertion point back to the user: they
+  // clicked, typed, selected, or pasted. (Our own writes fire "input" too, but
+  // by then the live cursor already IS our caret, so the sync is a no-op.)
+  const CARET_EVENTS = ["pointerup", "keyup", "select", "input"];
 
   let host = null; // the shadow host that carries the button
   let shadow = null;
@@ -203,6 +207,7 @@
       send({ t: "vi:stop" });
       return;
     }
+    syncCaret(); // dictation begins exactly where the cursor is sitting now
     const res = await send({ t: "vi:start" });
     if (!res || !res.ok) {
       const reason = res && res.reason;
@@ -233,6 +238,11 @@
     flash("");
     host.style.display = "block";
     place();
+    syncCaret(); // start from wherever the user's cursor actually is
+
+    // The only things allowed to move the insertion point are the user's own
+    // hands. Everything else — re-renders, editor housekeeping — is ignored.
+    for (const ev of CARET_EVENTS) field.addEventListener(ev, onUserCaret, true);
 
     try {
       if (window.ResizeObserver) {
@@ -254,6 +264,17 @@
       setLive(false);
       send({ t: "vi:stop" });
     }
+    if (field) {
+      for (const ev of CARET_EVENTS) {
+        try {
+          field.removeEventListener(ev, onUserCaret, true);
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    }
+    caret = null;
+    caretRange = null;
     field = null;
     kind = "";
     if (watchTimer) {
@@ -305,6 +326,128 @@
   }
 
   /* ---------------------------------------------------------------- *
+   * The insertion point — the caret THIS MODULE owns
+   *
+   * Dictation has to read left to right, every time. The page's own caret
+   * cannot be trusted to stay where the last phrase finished: a React
+   * re-render puts it back at 0, an unfocused <input> reports 0, and rich
+   * editors move it whenever they normalize their markup. Reading it fresh
+   * for each phrase is what makes words land out of order.
+   *
+   * So the insertion point belongs to this module for the length of a
+   * dictation: it starts wherever the user's cursor was, advances by exactly
+   * the characters we typed, and is re-synced ONLY when the user themselves
+   * moves it — a click, a key, a selection. Nothing the page does in between
+   * can shuffle the words.
+   * ---------------------------------------------------------------- */
+  let caret = null; // { start, end } — for input / textarea
+  let caretRange = null; // a collapsed Range — for contenteditable
+
+  // The user moved the cursor themselves → that is the new insertion point.
+  // Our own writes are ignored: after a write the live selection already IS
+  // our caret, so this sees nothing to change.
+  function onUserCaret() {
+    if (!field) return;
+    try {
+      if (kind === "input") {
+        const len = (field.value || "").length;
+        let s = typeof field.selectionStart === "number" ? field.selectionStart : len;
+        let e = typeof field.selectionEnd === "number" ? field.selectionEnd : s;
+        if (s > e) {
+          const t = s;
+          s = e;
+          e = t;
+        }
+        if (caret && caret.start === s && caret.end === e) return; // where we left it
+        caret = { start: s, end: e };
+      } else {
+        const r = liveRange();
+        if (r) caretRange = r;
+      }
+    } catch (_) {
+      /* keep the caret we have */
+    }
+  }
+
+  // The page's live selection, but only if it is genuinely inside our field.
+  function liveRange() {
+    try {
+      const sel = window.getSelection ? window.getSelection() : null;
+      if (sel && sel.rangeCount) {
+        const r = sel.getRangeAt(0);
+        if (field.contains(r.commonAncestorContainer)) return r.cloneRange();
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function endRange() {
+    const r = document.createRange();
+    r.selectNodeContents(field);
+    r.collapse(false); // the very end of the field
+    return r;
+  }
+
+  function usableRange(r) {
+    try {
+      return !!(r && r.startContainer && r.startContainer.isConnected && field.contains(r.startContainer));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Dictation types into the field the user is looking at, so keep the focus
+  // there: it is what makes React restore the caret correctly, and what makes
+  // editors treat the text as typed rather than pasted from nowhere.
+  function refocus() {
+    try {
+      if (document.activeElement !== field) field.focus({ preventScroll: true });
+    } catch (_) {
+      /* some fields refuse focus — the insertion still works */
+    }
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Spacing — the difference between dictation and a ransom note
+   * ---------------------------------------------------------------- */
+  // Email and URL boxes hold one unbroken token: no sentence case there.
+  function plainToken() {
+    if (kind !== "input" || field.tagName !== "INPUT") return false;
+    const type = (field.getAttribute("type") || "text").toLowerCase();
+    return type === "email" || type === "url";
+  }
+
+  // Join one spoken phrase to the words already around it, the way a person
+  // typing would: exactly one space between words, never a space before
+  // punctuation or after an opening bracket, a capital at the start of a
+  // sentence, and one space kept in front of whatever follows the cursor.
+  function join(before, after, raw) {
+    let t = String(raw == null ? "" : raw)
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!t) return "";
+
+    const tail = before.slice(-1);
+    const tightAfter = /[([{“‘"'\/@#$\-–—_]/.test(tail); // "(" — no space after
+    const tightBefore = /^[.,!?;:%)\]}…"'’”]/.test(t); // "," — no space before
+    const lead = before && !/\s/.test(tail) && !tightAfter && !tightBefore ? " " : "";
+
+    // Sentence case: the first words in the field, and every phrase that
+    // follows a finished sentence.
+    if (!plainToken() && (!before.trim() || /[.!?…]["'’”)\]]?\s*$/.test(before))) {
+      t = t.charAt(0).toUpperCase() + t.slice(1);
+    }
+
+    // Dictating into the middle of a line keeps a space in front of the rest.
+    const next = after.charAt(0);
+    const trail = next && !/\s/.test(next) && !/[.,!?;:%)\]}…]/.test(next) ? " " : "";
+
+    return lead + t + trail;
+  }
+
+  /* ---------------------------------------------------------------- *
    * Typing the words in
    * ---------------------------------------------------------------- */
   // React keeps its own copy of an input's value; assigning through the native
@@ -322,17 +465,6 @@
       /* fall through */
     }
     el.value = value;
-  }
-
-  // A spoken phrase joins what's already there like a human would type it.
-  function spaced(before, text) {
-    const t = String(text || "").trim();
-    if (!t) return "";
-    if (!before) return t;
-    const last = before.slice(-1);
-    if (/\s/.test(last)) return t;
-    if (/^[.,!?;:)\]]/.test(t)) return t;
-    return " " + t;
   }
 
   function insertText(text) {
@@ -353,48 +485,107 @@
   }
 
   function insertIntoInput(text) {
+    refocus();
     const value = field.value || "";
-    let start = typeof field.selectionStart === "number" ? field.selectionStart : value.length;
-    let end = typeof field.selectionEnd === "number" ? field.selectionEnd : start;
-    if (start > end) {
-      const s = start;
-      start = end;
-      end = s;
-    }
+    if (!caret) syncCaret();
+    const start = Math.max(0, Math.min(caret ? caret.start : value.length, value.length));
+    const end = Math.max(start, Math.min(caret ? caret.end : start, value.length));
     const before = value.slice(0, start);
     const after = value.slice(end);
-    const chunk = spaced(before, text);
-    setNativeValue(field, before + chunk + after);
-    const caret = start + chunk.length;
+    const chunk = join(before, after, text);
+    if (!chunk) return;
+
+    // Select what we're replacing first, so a framework that snapshots the
+    // selection around its own update sees the same edit a typist would make.
     try {
-      field.setSelectionRange(caret, caret);
+      field.setSelectionRange(start, end);
     } catch (_) {
       /* some input types don't support selection ranges */
+    }
+    setNativeValue(field, before + chunk + after);
+
+    const at = start + chunk.length;
+    caret = { start: at, end: at }; // ours — the next phrase continues from here
+    try {
+      field.setSelectionRange(at, at);
+    } catch (_) {
+      /* ignore */
     }
   }
 
   function insertIntoRich(text) {
-    const sel = window.getSelection ? window.getSelection() : null;
-    let range = null;
-    if (sel && sel.rangeCount) {
-      const r = sel.getRangeAt(0);
-      if (field.contains(r.commonAncestorContainer)) range = r;
-    }
-    if (!range) {
-      range = document.createRange();
-      range.selectNodeContents(field);
-      range.collapse(false); // no live cursor → append at the end
-    }
-    const before = (range.startContainer.textContent || "").slice(0, range.startOffset);
-    const chunk = spaced(before, text);
+    refocus();
+    if (!usableRange(caretRange)) caretRange = liveRange() || endRange();
+    const range = caretRange;
+    const before = textBefore(range);
+    const after = textAfter(range);
+    const chunk = join(before, after, text);
+    if (!chunk) return;
+
     range.deleteContents();
     const node = document.createTextNode(chunk);
     range.insertNode(node);
-    range.setStartAfter(node);
-    range.collapse(true);
-    if (sel) {
-      sel.removeAllRanges();
-      sel.addRange(range);
+
+    // Park the caret immediately after what we just typed — both ours and the
+    // page's, so the two never disagree about where the next phrase goes.
+    const out = document.createRange();
+    out.setStartAfter(node);
+    out.collapse(true);
+    caretRange = out.cloneRange();
+    try {
+      const sel = window.getSelection ? window.getSelection() : null;
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(out);
+      }
+    } catch (_) {
+      /* the editor manages its own selection — our own copy still holds */
+    }
+  }
+
+  // The text on either side of the insertion point, for the spacing rules.
+  // Only the nearest few hundred characters matter, and rich fields can be
+  // enormous, so both are clipped.
+  function textBefore(range) {
+    try {
+      const r = document.createRange();
+      r.selectNodeContents(field);
+      r.setEnd(range.startContainer, range.startOffset);
+      return r.toString().slice(-400);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function textAfter(range) {
+    try {
+      const r = document.createRange();
+      r.selectNodeContents(field);
+      r.setStart(range.endContainer, range.endOffset);
+      return r.toString().slice(0, 40);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  // Take the cursor as it stands right now (on attach, and when dictation
+  // starts) — from there on it is ours.
+  function syncCaret() {
+    caret = null;
+    caretRange = null;
+    if (!field) return;
+    if (kind === "input") {
+      const len = (field.value || "").length;
+      let s = typeof field.selectionStart === "number" ? field.selectionStart : len;
+      let e = typeof field.selectionEnd === "number" ? field.selectionEnd : s;
+      if (s > e) {
+        const t = s;
+        s = e;
+        e = t;
+      }
+      caret = { start: Math.min(s, len), end: Math.min(e, len) };
+    } else {
+      caretRange = liveRange() || endRange();
     }
   }
 

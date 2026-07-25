@@ -16,14 +16,28 @@ It works in:
 
 It deliberately NEVER appears on a password field.
 
-Three quiet details that make it actually work on real websites:
+Four quiet details that make it actually work on real websites:
 
+  • Your words always come out left to right, in the order you said them.
+    The module keeps its own cursor for the length of a dictation: it starts
+    where your cursor was, moves along by exactly what it typed, and hands
+    control back only when YOU move the cursor (a click, a key, a selection).
+    Websites move the cursor constantly — a React re-render puts it back at
+    the start, an unfocused box reports position zero, rich editors reset it
+    whenever they tidy their markup — and any of those will scramble phrases
+    into reverse order if you trust the page. This one doesn't.
+  • Spacing is written the way a person types: one space between phrases and
+    never two, no space before a comma or a full stop, no space after an
+    opening bracket, a capital letter to start the field and to start each new
+    sentence, and a space kept in front of whatever the cursor sat before.
+    Email and web-address boxes are left exactly as spoken.
   • The button lives inside a shadow DOM, so the website's own CSS cannot
     restyle it and its CSS cannot leak into the website.
   • After typing your words in, it fires both an "input" event and a "change"
     event. React, Vue and Gmail throw away text that arrives without them.
-  • It follows the field as you scroll and resize, and disappears the moment
-    you click away or the field is removed from the page.
+
+It follows the field as you scroll and resize, and disappears the moment you
+click away or the field is removed from the page.
 
 It fails quietly. If speech recognition is unavailable, or the microphone has
 not been allowed, the button shows two words for two seconds and stops. It
