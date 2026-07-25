@@ -268,6 +268,7 @@ function updateStatus() {
         ? "screen_review"
         : "screen_rec"
     );
+  else if (inMode(MODES.DICTATING)) setDictatingStatusLine();
   else if (inMode(MODES.SEARCHING)) ui.setPhase("searching");
   else if (thinking || busy) ui.setPhase("thinking");
   else if (inMode(MODES.SCREEN)) ui.setPhase("screen");
@@ -2764,6 +2765,35 @@ function exitSearchingMode() {
 }
 
 /* ------------------------------------------------------------------ *
+ * DICTATING — the Voice Input Overlay (voice-input/) is typing the user's
+ * speech into a text field on a web page. Two recognizers must never fight
+ * over the microphone, and Sharon must never treat dictated words as
+ * commands, so she stands down completely for the duration. The overlay
+ * asks through background.js ("vi:mode"); the manager does the rest.
+ * ------------------------------------------------------------------ */
+let dictationPrevMuted = true; // her mic state before the page borrowed it
+
+function setDictatingStatusLine() {
+  ui.setPhase("dictating");
+  if (ui.els.statusText) ui.els.statusText.textContent = "Dictating on the page";
+}
+
+function enterDictatingMode() {
+  dictationPrevMuted = speech.isMicMuted();
+  speech.stopSpeaking(); // she never talks over the user's dictation
+  speech.setMicMuted(true); // her ears off — the page owns the mic now
+  resetCapture(); // drop any half-heard words so none arrive late
+  updateStatus();
+}
+
+// Leaving DICTATING for ANY reason hands the microphone straight back: she
+// returns to exactly the listening state she was in before.
+function exitDictatingMode() {
+  speech.setMicMuted(dictationPrevMuted);
+  updateStatus();
+}
+
+/* ------------------------------------------------------------------ *
  * In-panel audio player — plays a saved recording right here, queued to
  * the moment that matched the user's question. The audio arrives base64
  * through the backend (the Drive file stays private; no sharing changes),
@@ -3468,11 +3498,42 @@ function wireControls() {
     });
 
   if (chrome.runtime && chrome.runtime.onMessage) {
-    chrome.runtime.onMessage.addListener((msg) => {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (!msg) return;
+      // The Voice Input Overlay (voice-input/) wants to dictate into a page
+      // text field. This is the ONLY message it sends the panel, and answering
+      // it is how exclusivity is kept: a recording in progress is never
+      // interrupted, and otherwise Sharon stands down until dictation ends.
+      if (msg.t === "vi:mode") {
+        if (msg.cmd === "begin") {
+          if (recActive() || screenRecActive()) {
+            sendResponse({ ok: false, reason: "busy" }); // the overlay says "Busy recording"
+          } else {
+            enterMode(MODES.DICTATING);
+            sendResponse({ ok: true });
+          }
+        } else if (msg.cmd === "end") {
+          if (inMode(MODES.DICTATING)) enterMode(MODES.LISTENING);
+          sendResponse({ ok: true });
+        } else {
+          sendResponse({ ok: false });
+        }
+        return; // synchronous response
+      }
       if (msg.type === "sharon-activate") {
         // The "Activate Sharon" keyboard shortcut is an explicit summons —
         // the one non-click path allowed to wake the voice assistant.
+        // Summoning her while dictating ends the dictation first, so the two
+        // recognizers never hold the microphone at the same time.
+        if (inMode(MODES.DICTATING)) {
+          dictationPrevMuted = false; // the summons means "listen to me"
+          try {
+            chrome.runtime.sendMessage({ t: "vi:stop" }).catch(() => {});
+          } catch (_) {
+            /* ignore */
+          }
+          enterMode(MODES.LISTENING);
+        }
         showConversationForVoice();
         speech.retryMic();
         updateStatus();
@@ -3547,6 +3608,7 @@ function wireControls() {
       [MODES.SCREEN_REC]: { enter: enterScreenRecMode, exit: forceScreenRecIdle },
       [MODES.SCREEN]: { enter: enterScreenMode, exit: exitScreenMode },
       [MODES.SEARCHING]: { enter: updateStatus, exit: exitSearchingMode },
+      [MODES.DICTATING]: { enter: enterDictatingMode, exit: exitDictatingMode },
     },
     onChange: (m) => {
       ui.setMode(m);

@@ -13,6 +13,10 @@
 //                with that snapshot attached, then the mode ends itself.
 //   SEARCHING  — automatic: lit while an assist call is out running a web
 //                search, cleared when the reply arrives (or is interrupted).
+//   DICTATING  — the Voice Input Overlay owns the microphone: the user is
+//                speaking into a text field on a web page, so Sharon's own
+//                listening and speaking stand down until it ends. She refuses
+//                the request outright while RECORDING or SCREEN_REC.
 //
 // Exclusivity is enforced HERE, not by each feature: entering a mode always
 // runs the previous mode's exit routine first, so no code path can leave
@@ -29,6 +33,7 @@ export const MODES = {
   SCREEN_REC: "screen_rec",
   SCREEN: "screen",
   SEARCHING: "searching",
+  DICTATING: "dictating",
 };
 
 const VALID = new Set(Object.values(MODES));
