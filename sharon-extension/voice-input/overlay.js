@@ -108,9 +108,38 @@
       return TEXT_TYPES.has(type) ? "input" : "";
     }
     if (tag === "TEXTAREA") return "input";
-    // Rich text: the element itself, or the contenteditable="true" host it sits in.
-    if (el.isContentEditable && el.closest && el.closest('[contenteditable="true"]')) return "rich";
+    // Rich text: the element itself, or the contenteditable="true" host it sits
+    // in. closest() stops at a shadow boundary, so a field inside a web
+    // component is taken at its word — the browser already says it's editable.
+    if (el.isContentEditable) {
+      if (el.closest && el.closest('[contenteditable="true"]')) return "rich";
+      if (inShadow(el)) return "rich";
+    }
     return "";
+  }
+
+  function inShadow(el) {
+    try {
+      const root = el.getRootNode ? el.getRootNode() : null;
+      return !!(root && root.host);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Web components retarget focus events to their host, so the element the
+  // page reports is the wrapper, not the box the user is typing in. The event
+  // path still knows which one it really was.
+  function focusTarget(e) {
+    try {
+      if (e && typeof e.composedPath === "function") {
+        const path = e.composedPath();
+        if (path && path.length) return path[0];
+      }
+    } catch (_) {
+      /* fall back to the plain target */
+    }
+    return e && e.target;
   }
 
   /* ---------------------------------------------------------------- *
@@ -593,7 +622,7 @@
    * Wiring
    * ---------------------------------------------------------------- */
   function onFocusIn(e) {
-    const el = e && e.target;
+    const el = focusTarget(e);
     const k = editableKind(el);
     if (k) attach(el, k);
     else if (field) detach(); // focus moved to something that isn't editable
@@ -601,7 +630,7 @@
 
   function onFocusOut(e) {
     if (!field) return;
-    if (e && e.target !== field) return;
+    if (e && focusTarget(e) !== field) return;
     detach();
   }
 
