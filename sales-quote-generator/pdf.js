@@ -23,6 +23,9 @@
     '·': [0xb7, 278, 280], // ·
     '×': [0xd7, 584, 584], // ×
     '…': [0x85, 1000, 1000], // … (ellipsis used when a value is clipped at its column edge)
+    '€': [0x80, 556, 556], // € (currency symbol on every figure when the quote is in EUR)
+    '£': [0xa3, 556, 556], // £
+    '¥': [0xa5, 556, 556], // ¥
   };
 
   function normalize(s) {
@@ -267,7 +270,7 @@
     return used;
   }
 
-  function drawAddressBlock(p, name, addrLines, extras, x, startY, width, maxLines) {
+  function drawAddressBlock(p, name, addrLines, extras, x, startY, width, maxLines, lineH) {
     // Draws: the name, then address lines, then any labeled extra lines (e.g. a
     // Contact and an Email line). Everything is capped to maxLines TOTAL (name
     // included); room for the extras is reserved first, so they are never dropped
@@ -275,19 +278,20 @@
     // Returns the y just past the last drawn line (the block's true bottom).
     extras = (extras || []).filter((s) => s);
     maxLines = maxLines || 8;
+    lineH = lineH || LINE_H;
     fitText(p, name || '', x, startY, width, 8.5, COLOR.body); // line 0 = name
-    let y = startY + LINE_H;
+    let y = startY + lineH;
     let used = 1;
     const addrRoom = Math.max(0, maxLines - used - extras.length);
     let drawn = 0;
     for (let i = 0; i < addrLines.length && drawn < addrRoom; i++) {
       if (addrLines[i]) fitText(p, addrLines[i], x, y, width, 8.5, COLOR.body);
-      y += LINE_H; drawn++; used++;
+      y += lineH; drawn++; used++;
     }
     extras.forEach((ex) => {
       if (used >= maxLines) return;
       fitText(p, ex, x, y, width, 8.5, COLOR.body);
-      y += LINE_H; used++;
+      y += lineH; used++;
     });
     return y;
   }
@@ -352,62 +356,126 @@
     return y;
   }
 
-  /* ---- Product table + totals ---- */
-  const PROD_BAR_H = 17; // product-table header bar height
+  /* ---- Product table + totals ----
+     Columns (v3.9):  Product Name (term dates as a subline)  |  Qty  |  Unit List
+     Price  |  Extended List  |  Discount %  |  Discount Amt  |  Net Price.
+     Every figure arrives pre-formatted from app.js (pdfFigures) with the currency
+     symbol on it; the numbers foot by construction (qty x unit = extended,
+     extended - discount = net, and the columns sum to the totals waterfall).
+     Each numeric column is right-aligned at COL.r and may never spill past its
+     width into the neighbour (fitText shrinks, then clips at the column edge). */
+  const PROD_BAR_H = 24; // product-table header bar height at density 0 (two-line headings)
+  const COL = {
+    name: { x: 22, w: 218 },
+    qty: { r: 286, w: 40 },
+    unit: { r: 346, w: 54 },
+    ext: { r: 412, w: 60 },
+    pct: { r: 452, w: 34 },
+    disc: { r: 520, w: 62 },
+    net: { r: 588, w: 62 },
+  };
+  const HEAD_SIZE = 7.5;
 
-  function drawProductHeader(p, topY) {
-    p.rect(BAR_L, topY, BAR_W, PROD_BAR_H, COLOR.dark);
-    const baseline = topY + 12;
-    p.text('Product Name', 22, baseline, { size: 9, bold: true, color: COLOR.white });
-    p.text('Start Date', 300, baseline, { size: 9, bold: true, color: COLOR.white, align: 'right' });
-    p.text('End Date', 400, baseline, { size: 9, bold: true, color: COLOR.white, align: 'right' });
-    p.text('Quantity', 505, baseline, { size: 9, bold: true, color: COLOR.white, align: 'right' });
-    p.text('Total', 588, baseline, { size: 9, bold: true, color: COLOR.white, align: 'right' });
-    return topY + PROD_BAR_H;
+  function drawProductHeader(p, topY, M) {
+    const barH = M.prodBarH;
+    p.rect(BAR_L, topY, BAR_W, barH, COLOR.dark);
+    const one = topY + barH * 0.65, top = topY + barH * 0.42, bot = topY + barH * 0.82;
+    const H = (str, x, y, align) => p.text(str, x, y, { size: HEAD_SIZE, bold: true, color: COLOR.white, align: align });
+    H('Product Name', COL.name.x, one);
+    H('Qty', COL.qty.r, one, 'right');
+    H('Unit List', COL.unit.r, top, 'right'); H('Price', COL.unit.r, bot, 'right');
+    H('Extended', COL.ext.r, top, 'right'); H('List', COL.ext.r, bot, 'right');
+    H('Discount', COL.pct.r, top, 'right'); H('%', COL.pct.r, bot, 'right');
+    H('Discount', COL.disc.r, top, 'right'); H('Amt', COL.disc.r, bot, 'right');
+    H('Net', COL.net.r, top, 'right'); H('Price', COL.net.r, bot, 'right');
+    return topY + barH;
   }
 
-  function drawProductRow(p, rowTop, item) {
-    const baseline = rowTop + 16;
-    fitText(p, item.name || '', 30, baseline, 220, 8.5, COLOR.body);
-    p.text(item.start || '', 300, baseline, { size: 8.5, color: COLOR.body, align: 'right' });
-    p.text(item.end || '', 400, baseline, { size: 8.5, color: COLOR.body, align: 'right' });
-    p.text(item.qty || '', 505, baseline, { size: 8.5, color: COLOR.body, align: 'right' });
-    p.text(item.total || '', 588, baseline, { size: 8.5, color: COLOR.body, align: 'right' });
-    p.line(20, rowTop + 28, 592, rowTop + 28, COLOR.hair, 0.5);
+  // The term window for a row, as one "Term: start – end" subline.
+  function termLabel(item) {
+    const a = item.start || '', b = item.end || '';
+    if (!a && !b) return '';
+    return 'Term: ' + (a && b ? a + ' – ' + b : (a || b));
   }
 
-  function drawTotals(p, thinRuleY, taxesY, grandY, grandTotal) {
-    p.line(500, thinRuleY, 588, thinRuleY, COLOR.navy, 0.8);
-    p.text('Taxes', 492, taxesY, { size: 9, bold: true, color: COLOR.navy, align: 'right' });
-    p.text('Not Included', 588, taxesY, { size: 9, bold: true, color: COLOR.navy, align: 'right' });
-    p.text('Grand Total', 492, grandY, { size: 9, bold: true, color: COLOR.navy, align: 'right' });
-    p.text(grandTotal || '', 588, grandY, { size: 9, color: COLOR.navy, align: 'right' });
+  function drawProductRow(p, rowTop, item, M) {
+    const baseline = rowTop + M.rowNameDy;
+    fitText(p, item.name || '', COL.name.x, baseline, COL.name.w, 8.5, COLOR.body);
+    const term = termLabel(item);
+    if (term) fitText(p, term, COL.name.x, rowTop + M.rowTermDy, COL.name.w, 7, COLOR.slate);
+    const num = (key, str) => fitText(p, str == null ? '' : String(str), COL[key].r, baseline, COL[key].w, 8.5, COLOR.body, { align: 'right', floor: 6 });
+    num('qty', item.qty);
+    num('unit', item.unitList);
+    num('ext', item.extList);
+    num('pct', item.discPct);
+    num('disc', item.discAmt);
+    num('net', item.net);
+    p.line(20, rowTop + M.rowH, 592, rowTop + M.rowH, COLOR.hair, 0.5);
   }
 
-  function drawTerms(p, barTopY, size, leading, paraGap, lines1, lines2) {
+  /* Totals waterfall — the discount is never baked silently into the Grand Total:
+       Total List Price          $57,750.00
+       Partner Discount (25%)   -$14,437.50     (one line per discount that applies;
+       ...                                       a direct quote prints Discount (0%)  $0.00)
+       ───────────────────────────────────
+       Net Total                 $43,312.50
+       Taxes                    Not Included
+       Grand Total               $43,312.50 */
+  const TOT_LABEL_X = 492, TOT_VALUE_X = 588, TOT_RULE_X = 380;
+  // Row baselines for the totals block, from its thin top rule (computed once in
+  // computeLayout and drawn from the plan, so the plan and the drawing can never differ).
+  function totalsRows(thinRule, discCount, M) {
+    const listY = thinRule + 12;
+    const discYs = [];
+    for (let i = 0; i < discCount; i++) discYs.push(listY + M.totPitch * (i + 1));
+    const lastDisc = discCount ? discYs[discCount - 1] : listY;
+    const netRuleY = lastDisc + 5;
+    const netY = lastDisc + M.totGap;
+    const taxesY = netY + M.totPitch;
+    const grandY = taxesY + M.totGap;
+    return { listY, discYs, netRuleY, netY, taxesY, grandY };
+  }
+
+  function drawTotals(p, lay, wf) {
+    const t = lay.totals;
+    const row = (label, value, y, opt) => {
+      opt = opt || {};
+      p.text(label, TOT_LABEL_X, y, { size: 9, bold: true, color: COLOR.navy, align: 'right' });
+      fitText(p, value == null ? '' : String(value), TOT_VALUE_X, y, TOT_VALUE_X - TOT_LABEL_X - 8, 9, COLOR.navy, { align: 'right', bold: !!opt.bold });
+    };
+    p.line(TOT_RULE_X, lay.thinRule, TOT_VALUE_X, lay.thinRule, COLOR.navy, 0.8);
+    row('Total List Price', wf.list, t.listY);
+    (wf.discounts || []).forEach((d, i) => { row(d.label, d.amt, t.discYs[i]); });
+    p.line(TOT_RULE_X, t.netRuleY, TOT_VALUE_X, t.netRuleY, COLOR.hair, 0.5);
+    row('Net Total', wf.net, t.netY, { bold: true });
+    row('Taxes', wf.taxes || 'Not Included', t.taxesY, { bold: true });
+    row('Grand Total', wf.grand, t.grandY, { bold: true });
+  }
+
+  function drawTerms(p, barTopY, size, leading, paraGap, lines1, lines2, M) {
     drawSectionBar(p, barTopY, 'Terms & Conditions');
-    const startY = barTopY + 15 + 16;
+    const startY = barTopY + BAR_H + M.termsPad;
     const last1 = drawTokenLines(p, lines1, L, startY, 10, size, leading);
     const start2 = last1 + paraGap;
     drawTokenLines(p, lines2, L, start2, 10, size, leading);
   }
 
-  function drawSignatures(p, barTopY) {
+  function drawSignatures(p, barTopY, M) {
     drawSectionBar(p, barTopY, 'Acceptance & Signatures');
-    const introY = barTopY + 15 + 15;
+    const introY = barTopY + BAR_H + M.sigIntro;
     p.text('By signing below, each party agrees to the terms of this Quote Form, including the Terms & Conditions referenced above.',
       L, introY, { size: 7.6, color: COLOR.slate });
-    const headerY = introY + 25;
+    const headerY = introY + M.sigHead;
     p.text('Customer', L, headerY, { size: 8.8, bold: true, color: COLOR.navy });
     p.text('Recast Software, Inc.', 330, headerY, { size: 8.8, bold: true, color: COLOR.navy });
     const rows = ['Signature', 'Name', 'Title', 'Date'];
-    let y = headerY + 24;
+    let y = headerY + M.sigPitch;
     rows.forEach((label) => {
       p.text(label, L, y, { size: 8, color: COLOR.body });
       p.line(76, y + 1.5, 282, y + 1.5, COLOR.navy, 0.6);
       p.text(label, 330, y, { size: 8, color: COLOR.body });
       p.line(382, y + 1.5, 588, y + 1.5, COLOR.navy, 0.6);
-      y += 24;
+      y += M.sigPitch;
     });
   }
 
@@ -430,11 +498,11 @@
   // block is taller (lay.preparedRowY / lay.autoRenewRowY, precomputed the same
   // way in computeLayout). Returns the section's bottom y.
   function drawParties(p, meta, billLines, shipLines, lay) {
-    const top = lay.partiesTop, maxL = lay.blockMaxLines;
+    const top = lay.partiesTop, maxL = lay.blockMaxLines, lineH = lay.metrics.lineH;
     p.text('Bill To', L, top, { size: 8.5, bold: true, color: COLOR.navy });
-    p.text('Address', L, top + LINE_H, { size: 8.5, bold: true, color: COLOR.navy });
+    p.text('Address', L, top + lineH, { size: 8.5, bold: true, color: COLOR.navy });
     p.text('Ship To', 352, top, { size: 8.5, bold: true, color: COLOR.navy });
-    p.text('Address', 352, top + LINE_H, { size: 8.5, bold: true, color: COLOR.navy });
+    p.text('Address', 352, top + lineH, { size: 8.5, bold: true, color: COLOR.navy });
 
     // Bill To also carries the person (Contact) and the relevant email, so a
     // reader sees who / where to invoice. On a partner deal the bill-to party is
@@ -443,8 +511,8 @@
     const billEmailVal = meta.partnerActive ? meta.partnerEmail : meta.email;
     const billEmail = billEmailVal ? ('Email: ' + billEmailVal) : '';
 
-    drawAddressBlock(p, meta.billToName, billLines, [billContact, billEmail], 172, top, 170, maxL);
-    drawAddressBlock(p, meta.shipToName, shipLines, [], 460, top, 128, maxL);
+    drawAddressBlock(p, meta.billToName, billLines, [billContact, billEmail], 172, top, 170, maxL, lineH);
+    drawAddressBlock(p, meta.shipToName, shipLines, [], 460, top, 128, maxL, lineH);
 
     const pr = lay.preparedRowY, ar = lay.autoRenewRowY;
     p.text('Prepared By', L, pr, { size: 8.5, bold: true, color: COLOR.navy });
@@ -516,10 +584,34 @@
      so partner quotes (more content in the same slots) and direct quotes both lay
      out cleanly and the Bill To / Ship To dead space collapses. If the flowed
      document would exceed the page, it is compressed in a fixed order — (a) the
-     inter-section gaps, (b) the Terms line leading, (c) the Terms font down to a
-     6pt floor — never dropping content and never spilling to a second page. */
+     inter-section gaps, (b) the Terms line leading, (c) the row / block density
+     (product rows, totals pitch, address lines, signature spacing — v3.9, so a
+     full five-line quote with every discount layer still prints every row),
+     (d) the Terms font down to a 6pt floor — never dropping content and never
+     spilling to a second page. */
   const BOTTOM_LIMIT = 772;   // last signature rule must land above this
-  const PROD_ROW_H = 28;      // product-table row height
+  const PROD_ROW_H = 28;      // product-table row height at density 0
+
+  // Row / block pitches at a given density: 0 = the template's spacing, 1 = the
+  // tightest spacing at which every glyph box still clears its neighbours (the
+  // layout harness asserts zero overlaps at both ends).
+  function metrics(dense) {
+    const lerp = (a, b) => +(a + (b - a) * dense).toFixed(3);
+    const rowH = lerp(PROD_ROW_H, 24);
+    return {
+      dense: dense,
+      lineH: lerp(LINE_H, 10),          // address / label line height
+      odPitch: lerp(16, 14),            // Prepared By / Auto Renewal / Order Details row pitch
+      prodBarH: lerp(PROD_BAR_H, 20),   // product header bar (two-line headings)
+      rowH: rowH,                       // product row (name + term subline)
+      rowNameDy: +(rowH * 0.43).toFixed(3),
+      rowTermDy: +(rowH - 5.5).toFixed(3),
+      totPitch: lerp(13.5, 11.5),       // totals waterfall row pitch
+      totGap: lerp(15.5, 13.5),         // last discount → Net Total, Taxes → Grand Total
+      termsPad: lerp(16, 12),           // Terms bar → first text baseline
+      sigIntro: lerp(15, 12), sigHead: lerp(25, 20), sigPitch: lerp(24, 18),
+    };
+  }
 
   // Six compressible inter-section gaps: [default, floor]. gapScale 1 → default,
   // gapScale 0 → floor. Everything else (bar heights, row pitches) is fixed.
@@ -527,7 +619,7 @@
     hp: [32, 12],  // header (quote number) → parties
     po: [17, 8],   // parties bottom → Order Details bar
     op: [12, 6],   // Order Details → product-table header bar
-    tt: [40, 16],  // product table bottom → totals thin rule
+    tt: [24, 12],  // product table bottom → totals thin rule
     tg: [17, 8],   // grand total → Terms bar
     ts: [19, 8],   // Terms bottom → Acceptance & Signatures bar
   };
@@ -535,6 +627,7 @@
   function computeLayout(p, o) {
     const s = o.gapScale;
     const gp = (k) => GAPS[k][1] + (GAPS[k][0] - GAPS[k][1]) * s;
+    const M = metrics(o.dense || 0);
 
     // ---- top flow: header → parties (address blocks collapse to used height) ----
     const headerBottom = 106;                       // quote-number baseline
@@ -542,30 +635,31 @@
     const billLC = blockLineCount(o.billLines.length, o.billExtras, o.blockMaxLines);
     const shipLC = blockLineCount(o.shipLines.length, o.shipExtras, o.blockMaxLines);
     const blockLines = Math.max(billLC, shipLC, 2); // ≥2 so both labels have room
-    const blockBottom = partiesTop + blockLines * LINE_H;
+    const blockBottom = partiesTop + blockLines * M.lineH;
     const preparedRowY = blockBottom + 6;           // Prepared By / Billing Frequency
-    const autoRenewRowY = preparedRowY + 16;        // Auto Renewal / Expiration Date
+    const autoRenewRowY = preparedRowY + M.odPitch; // Auto Renewal / Expiration Date
     const partiesBottom = autoRenewRowY + 6;
 
     // ---- Order Details ----
     const odBarTop = partiesBottom + gp('po');
     const odRow1 = odBarTop + BAR_H + 14;
     const odHair1 = odRow1 + 5;
-    const odRow2 = odRow1 + 16;
+    const odRow2 = odRow1 + M.odPitch;
     const odHair2 = odRow2 + 5;
-    const odRow3 = odRow2 + 16;
+    const odRow3 = odRow2 + M.odPitch;
     const odHair3 = odRow3 + 5;
     const orderBottom = odHair3;
 
     // ---- product table ----
     const phBarTop = orderBottom + gp('op');
-    const rowTop0 = phBarTop + PROD_BAR_H;
-    const tableBottom = rowTop0 + (o.rowCount + o.noteRow) * PROD_ROW_H;
+    const rowTop0 = phBarTop + M.prodBarH;
+    const tableBottom = rowTop0 + (o.rowCount + o.noteRow) * M.rowH;
 
-    // ---- totals ----
+    // ---- totals waterfall (list, one row per discount, net, taxes, grand) ----
     const thinRule = tableBottom + gp('tt');
-    const taxesY = thinRule + 12;
-    const grandY = taxesY + 20;
+    const totals = totalsRows(thinRule, o.discCount, M);
+    const taxesY = totals.taxesY;
+    const grandY = totals.grandY;
 
     // ---- Terms & Conditions ----
     const termsSize = o.termsSize;
@@ -575,21 +669,22 @@
     const lines1 = wrapTokens(p, TERMS_PARA_1, termsSize, width, indent);
     const lines2 = wrapTokens(p, TERMS_PARA_2, termsSize, width, indent);
     const termsBarTop = grandY + gp('tg');
-    const termsStart = termsBarTop + BAR_H + 16;
+    const termsStart = termsBarTop + BAR_H + M.termsPad;
     const termsLast1 = termsStart + (lines1.length - 1) * leading;
     const termsStart2 = termsLast1 + paraGap;
     const termsLast2 = termsStart2 + (lines2.length - 1) * leading;
 
     // ---- Acceptance & Signatures ----
     const acceptBarTop = termsLast2 + gp('ts');
-    const introY = acceptBarTop + BAR_H + 15;
-    const headerY = introY + 25;
-    const lastRuleY = headerY + 24 * 4 + 1.5;
+    const introY = acceptBarTop + BAR_H + M.sigIntro;
+    const headerY = introY + M.sigHead;
+    const lastRuleY = headerY + M.sigPitch * 4 + 1.5;
 
     return {
+      metrics: M,
       partiesTop, blockMaxLines: o.blockMaxLines, preparedRowY, autoRenewRowY, partiesBottom,
       odBarTop, odRow1, odHair1, odRow2, odHair2, odRow3, odHair3, orderBottom,
-      phBarTop, rowTop0, tableBottom, thinRule, taxesY, grandY,
+      phBarTop, rowTop0, tableBottom, thinRule, totals, taxesY, grandY,
       termsSize, leading, paraGap, lines1, lines2, termsBarTop, acceptBarTop, lastRuleY,
     };
   }
@@ -605,42 +700,62 @@
     const blockMaxLines = 9;
 
     const items = (data.items || []).slice(0, 20);
+    const wf = normalizeWaterfall(data);
     let rowCount = items.length;
     let overflow = items.length - rowCount;
     let noteRow = overflow > 0 ? 1 : 0;
 
-    const base = { billLines, shipLines, billExtras, shipExtras: 0, blockMaxLines };
-    let s = 1, lf = 10.4, ts = 7.6;
-    const build = () => computeLayout(p, Object.assign({}, base, { rowCount, noteRow, gapScale: s, leadFactor: lf, termsSize: ts }));
+    const base = { billLines, shipLines, billExtras, shipExtras: 0, blockMaxLines, discCount: wf.discounts.length };
+    let s = 1, lf = 10.4, ts = 7.6, dense = 0;
+    const build = () => computeLayout(p, Object.assign({}, base, { rowCount, noteRow, gapScale: s, leadFactor: lf, termsSize: ts, dense: dense }));
     let layout = build();
     const fits = () => layout.lastRuleY <= BOTTOM_LIMIT;
-    // (a) inter-section gaps → (b) Terms leading → (c) Terms font (6pt floor).
+    // (a) inter-section gaps → (b) Terms leading → (c) row / block density → (d) Terms font (6pt floor).
     while (!fits() && s > 0) { s = Math.max(0, +(s - 0.1).toFixed(2)); layout = build(); }
     while (!fits() && lf > 8.6) { lf = +(lf - 0.2).toFixed(2); layout = build(); }
+    while (!fits() && dense < 1) { dense = Math.min(1, +(dense + 0.25).toFixed(2)); layout = build(); }
     while (!fits() && ts > 6.0) { ts = +(ts - 0.2).toFixed(2); layout = build(); }
     // Safety valve for a pathological product count only (compressions run first):
     // fold the tail into a "+N more" note so a quote can never reach a 2nd page.
     while (!fits() && rowCount > 1) { rowCount -= 1; overflow = items.length - rowCount; noteRow = overflow > 0 ? 1 : 0; layout = build(); }
 
-    return { meta, billLines, shipLines, items, rowCount, noteRow, overflow, layout };
+    return { meta, billLines, shipLines, items, rowCount, noteRow, overflow, layout, waterfall: wf };
+  }
+
+  // The totals waterfall as app.js builds it (pdfFigures). A caller that only
+  // supplies the old tcvPdf grand total still gets the full block, with a single
+  // zero discount line, so the template is always the same one.
+  function normalizeWaterfall(data) {
+    const wf = data.waterfall || {};
+    const grand = wf.grand != null ? wf.grand : (data.tcvPdf ? '$' + data.tcvPdf : '');
+    const discounts = (wf.discounts && wf.discounts.length) ? wf.discounts.slice(0, 6)
+      : [{ label: 'Discount (0%)', amt: '$0.00' }];
+    return {
+      list: wf.list != null ? wf.list : grand,
+      discounts: discounts.map((d) => ({ label: d.label || '', amt: d.amt || '' })),
+      net: wf.net != null ? wf.net : grand,
+      taxes: wf.taxes || 'Not Included',
+      grand: grand,
+    };
   }
 
   // Draw the whole quote onto p using a pre-computed plan (logoImg may be null).
   function drawQuote(p, logoImg, data, plan) {
-    const { meta, billLines, shipLines, items, rowCount, noteRow, overflow, layout } = plan;
+    const { meta, billLines, shipLines, items, rowCount, noteRow, overflow, layout, waterfall } = plan;
     drawHeader(p, logoImg, meta);
     drawParties(p, meta, billLines, shipLines, layout);
     drawOrderDetails(p, meta, layout);
-    drawProductHeader(p, layout.phBarTop);
+    const M = layout.metrics;
+    drawProductHeader(p, layout.phBarTop, M);
     let rowTop = layout.rowTop0;
-    items.slice(0, rowCount).forEach((it) => { drawProductRow(p, rowTop, it); rowTop += PROD_ROW_H; });
+    items.slice(0, rowCount).forEach((it) => { drawProductRow(p, rowTop, it, M); rowTop += M.rowH; });
     if (noteRow) {
-      p.text('+ ' + overflow + ' more product' + (overflow === 1 ? '' : 's') + ' (see calculator)', 30, rowTop + 16, { size: 8, color: COLOR.body });
-      p.line(20, rowTop + PROD_ROW_H, 592, rowTop + PROD_ROW_H, COLOR.hair, 0.5);
+      p.text('+ ' + overflow + ' more product' + (overflow === 1 ? '' : 's') + ' (see calculator)', COL.name.x, rowTop + M.rowNameDy + 2, { size: 8, color: COLOR.body });
+      p.line(20, rowTop + M.rowH, 592, rowTop + M.rowH, COLOR.hair, 0.5);
     }
-    drawTotals(p, layout.thinRule, layout.taxesY, layout.grandY, data.tcvPdf);
-    drawTerms(p, layout.termsBarTop, layout.termsSize, layout.leading, layout.paraGap, layout.lines1, layout.lines2);
-    drawSignatures(p, layout.acceptBarTop);
+    drawTotals(p, layout, waterfall);
+    drawTerms(p, layout.termsBarTop, layout.termsSize, layout.leading, layout.paraGap, layout.lines1, layout.lines2, M);
+    drawSignatures(p, layout.acceptBarTop, M);
     return p;
   }
 
@@ -676,5 +791,5 @@
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
-  window.SQG_PDF = { downloadQuotePdf, generateQuotePdf, _layoutProbe: layoutProbe };
+  window.SQG_PDF = { downloadQuotePdf, generateQuotePdf, _layoutProbe: layoutProbe, _columns: COL };
 })();

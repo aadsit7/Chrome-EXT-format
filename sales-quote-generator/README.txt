@@ -241,8 +241,7 @@ USING THE TOOL
 - "Create quote" downloads a one-page Recast-branded quote PDF that
   matches the official Recast Software quote form: the Recast logo
   and company address, the quote number, a Bill To / Ship To block,
-  an Order Details section, a product table (one row per line item, with
-  start date, end date, quantity, and total), a Grand Total, the standard
+  an Order Details section, a product table, a totals waterfall, the standard
   Terms & Conditions copy, and an Acceptance & Signatures block with
   signature/name/title/date lines for both parties. Every form field the
   app knows about is drawn (or left cleanly blank): the Bill To block
@@ -262,6 +261,37 @@ USING THE TOOL
   already displayed in the app — the PDF never re-derives pricing math,
   and everything is laid out to always fit on one page (the Terms &
   Conditions type shrinks slightly first if a quote has many line items).
+- PRODUCT TABLE + TOTALS WATERFALL (v3.9). The product table has one row
+  per line item with these columns:
+      Product Name (the term "Start – End" as a subline) | Qty |
+      Unit List Price | Extended List | Discount % | Discount Amt | Net Price
+  and every row foots: Qty × Unit List Price = Extended List, and
+  Extended List − Discount Amt = Net Price. Under the table the totals
+  are a waterfall — never a single unexplained number:
+      Total List Price          $57,750.00
+      Partner Discount (25%)   −$14,437.50
+      Net Total                 $43,312.50
+      Taxes                    Not Included
+      Grand Total               $43,312.50
+  Rules that hold on every quote: no discount is ever baked silently into
+  the Grand Total — each discount that applies (RCT bundle, partner margin,
+  extra discount, term discount) gets its own visible line showing BOTH
+  the negotiated percentage and the dollar amount, and the discount lines
+  always sum to Total List Price − Net Total; a line with no discount
+  prints 0% and $0.00 (never blank) so the columns always reconcile; the
+  columns sum to the waterfall (Σ Extended List = Total List Price,
+  Σ Discount Amt = the discount lines, Σ Net Price = Net Total = Grand
+  Total = the calculator's total); the currency symbol is on every figure
+  (USD $, EUR €, GBP £, …, from the quote's Currency field); the unit list
+  price prints to 2 decimals, or 4 when the tiered price needs them (e.g.
+  $2.8875 — it grows further only if the multiplication would otherwise
+  not foot to the cent), and every extended and total figure prints to 2.
+  It is ONE template for everything: a direct / end-customer quote uses
+  the same columns and waterfall with a "Discount (0%)  $0.00" line, so
+  there is never a second document to maintain. Figures are contract-term
+  amounts (a 3-year quote shows 3 years of list, discount, and net; a
+  co-term add-on shows the prorated stub), which is exactly what the
+  Grand Total has always been.
 - Every time you "Create quote", the quote is also saved automatically
   to the shared database (there is no separate "Save to database"
   button anymore) — see below.

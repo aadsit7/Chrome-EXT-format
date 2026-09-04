@@ -4,12 +4,13 @@
   "private": true,
   "description": "Dev-only test harness for the Sales Quote Generator 'Analyze this page' and 'Speak to fill' features. NOT part of the Chrome extension (not referenced by manifest.json).",
   "scripts": {
-    "test": "node analyze.test.js && node voice.test.js && node cleaning.test.js && node layout.test.js && node quotetypes.test.js",
+    "test": "node analyze.test.js && node voice.test.js && node cleaning.test.js && node layout.test.js && node quotetypes.test.js && node pdfmath.test.js",
     "test:analyze": "node analyze.test.js",
     "test:voice": "node voice.test.js",
     "test:cleaning": "node cleaning.test.js",
     "test:layout": "node layout.test.js",
-    "test:quotetypes": "node quotetypes.test.js"
+    "test:quotetypes": "node quotetypes.test.js",
+    "test:pdfmath": "node pdfmath.test.js"
   },
   "devDependencies": {
     "jsdom": "^24.0.0"
