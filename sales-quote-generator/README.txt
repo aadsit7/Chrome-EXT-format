@@ -181,6 +181,17 @@ USING THE TOOL
   analysis — and if you press "Create quote" while a required field is
   still empty, the section holding that field opens automatically so
   the message points you straight to the fix.
+- EDITABLE UNIT PRICE (v3.10). Every product line in "What are you
+  selling?" has a "Unit price" field under the quantity stepper —
+  $/user/mo for user products, $/endpoint/yr for endpoint products (the
+  same units as the rate tables in settings). It shows the blended
+  volume-tier price for the current quantity; type a different number
+  to override it for that line (the line's meta reads "custom unit
+  price"), and the platform fee, yearly minimum and support rules still
+  apply on top exactly as they do for tier pricing. Leave it blank, or
+  tap "Use volume pricing", to go back to the tiers. The override saves
+  with the quote and flows into the quote sheet, the saved database row,
+  and the PDF's Unit List Price like any other price.
 - The gear icon in the header switches between the quote calculator
   and the pricing settings screen. Opening settings requires a
   password — the default is 2026. Change it any time from the
@@ -206,7 +217,9 @@ USING THE TOOL
   "Who's it for?". It holds the fields that only appear on the quote
   PDF: Bill To address and Ship To address (multi-line), Billing
   Contact, Payment Method (default "Credit Card, ACH/Wire, Check"),
-  Payment Terms (default "Net 120"), and Currency (default "USD").
+  Payment Terms (default "Net 30" — v3.10; a quote saved by an older
+  version that still carries the old "Net 120" default is moved to
+  Net 30 on restore), and Currency (default "USD").
   Auto renewal is ALWAYS Yes (v3.8): it has no toggle in the panel —
   every quote simply prints "Auto Renewal: Yes" on the PDF (quotes
   saved by older versions are flipped to Yes on restore). All of the

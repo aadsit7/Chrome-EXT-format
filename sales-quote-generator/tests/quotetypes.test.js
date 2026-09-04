@@ -123,6 +123,11 @@ const appSrc = src; // the exact app.js source loaded above
 checkEq('auto renewal', 'no Auto renewal toggle rendered', false, /sqg-toggle-title'\s*},\s*'Auto renewal'/.test(appSrc));
 checkEq('auto renewal', 'restored quotes coerced to Yes', true, /state\.quote\.autoRenewal = true/.test(appSrc));
 
+/* ============ (h) payment terms — every quote defaults to Net 30 (v3.10) ============ */
+console.log('\n── (h) payment terms default to Net 30 ──');
+checkEq('payment terms', 'fresh quote defaults to Net 30', 'Net 30', APP._defaultQuote().paymentTerms);
+checkEq('payment terms', 'restored old "Net 120" default moved to Net 30', true, /=== 'Net 120'\) state\.quote\.paymentTerms = 'Net 30'/.test(appSrc));
+
 /* ---- report ---- */
 console.log('\n================= RESULTS =================');
 const pad = function (s, n) { s = String(s); return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); };

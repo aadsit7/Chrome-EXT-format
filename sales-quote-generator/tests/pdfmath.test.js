@@ -206,6 +206,28 @@ const future = (days) => new Date(Date.now() + days * 864e5).toISOString().slice
   eq('(i) 100% margin', 'discount %', '100%', fig.items[0].discPct);
 }
 
+/* ============ (j) editable unit price (v3.10): the typed rate prices the line ============ */
+{
+  const cfg = APP.defaults();
+  // 500 users × $4.50/user/mo × 12 = $27,000 (above the $12,000 minimum);
+  // 5,000 endpoints × $3.10/endpoint/yr = $15,500 + $7,500 platform fee = $23,000.
+  const q = quote({ lines: [{ id: 'l1', productId: 'aw', qty: 500, rate: 4.5 }, { id: 'l2', productId: 'rct', qty: 5000, rate: 3.1 }] });
+  const { fig, m } = foot('(j) custom unit price', cfg, q);
+  eq('(j) custom unit price', 'user line flagged custom', true, m.lines[0].c.customRate);
+  eq('(j) custom unit price', 'user line rate echoes the typed value', 4.5, m.lines[0].c.rate);
+  eq('(j) custom unit price', 'user line extended = 500 × 4.50 × 12', '$27,000.00', fig.items[0].extList);
+  eq('(j) custom unit price', 'user line unit list price (per year)', '$54.00', fig.items[0].unitList);
+  eq('(j) custom unit price', 'endpoint line extended = 5,000 × 3.10 + platform fee', '$23,000.00', fig.items[1].extList);
+  eq('(j) custom unit price', 'endpoint line unit list price', '$4.60', fig.items[1].unitList);
+  // Blank / zero / junk rates fall back to volume pricing (identical to no rate at all).
+  const tiered = APP._model(cfg, quote({ lines: [{ id: 'l1', productId: 'rct', qty: 5000 }] })).msrpC;
+  [null, '', 0, -2, 'abc'].forEach((bad) => {
+    const mm = APP._model(cfg, quote({ lines: [{ id: 'l1', productId: 'rct', qty: 5000, rate: bad }] }));
+    eq('(j) custom unit price', 'rate ' + JSON.stringify(bad) + ' falls back to tiers', tiered, mm.msrpC);
+    eq('(j) custom unit price', 'rate ' + JSON.stringify(bad) + ' not flagged custom', false, mm.lines[0].c.customRate);
+  });
+}
+
 /* ---- report ---- */
 const pad = (s, n) => { s = String(s); return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); };
 console.log('── v3.9 PDF figures foot (window.SQG_APP._pdfFigures) ──\n');
