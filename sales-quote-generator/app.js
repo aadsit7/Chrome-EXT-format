@@ -365,7 +365,9 @@ function model(cfg, q, partnerFeature) {
     const s1 = Math.round(aC * (100 - margin) / 100);
     const pC = Math.round(aC * (100 - margin) / 100 * (100 - extra) / 100);
     msrpC += mC; afterBundleC += aC; step1C += s1; netC += pC;
-    return Object.assign({ bundleApplied }, x);
+    // Per-line annual list / net cents: the PDF's line-item columns are derived
+    // from these (pdfFigures) so every row foots to the same model figures.
+    return Object.assign({ bundleApplied, listC: mC, netC: pC }, x);
   });
   const years = q.years || 1;
   const months = q.months || years * 12;
@@ -391,13 +393,17 @@ function model(cfg, q, partnerFeature) {
     const baseC = rl.reduce((a, e) => a + Math.round(Math.max(0, +e.price || 0) * 100), 0);
     const p = q.uplift ? Math.min(10, Math.max(0, +q.upliftPct || 0)) : 0;
     const nYears = Math.max(1, Math.ceil(baseYears - 1e-9));
-    let tcvC2 = 0, grossC = 0; const renYears = [];
+    let tcvC2 = 0, grossC = 0, afterMarginTcvC = 0, afterExtraTcvC = 0; const renYears = [];
     for (let i = 1; i <= nYears; i++) {
       const frac = Math.min(1, baseYears - (i - 1));
       const rateC = Math.round(baseC * Math.pow(1 + p / 100, i));
       const amtC = Math.round(rateC * frac);
       const netYC = Math.round(amtC * (100 - margin) / 100 * (100 - extra) / 100 * (100 - termPct) / 100);
       grossC += amtC; tcvC2 += netYC;
+      // Same chained rounding as netYC, cut after each layer, so the PDF's
+      // waterfall lines (Partner / Extra / Term) sum exactly to gross - net.
+      afterMarginTcvC += Math.round(amtC * (100 - margin) / 100);
+      afterExtraTcvC += Math.round(amtC * (100 - margin) / 100 * (100 - extra) / 100);
       renYears.push({ frac, netYC });
     }
     const y1 = Math.round(baseC * (1 + p / 100));
@@ -411,6 +417,9 @@ function model(cfg, q, partnerFeature) {
       isRenOnly: true, renBaseC: baseC, upliftP: p, upliftY1C: y1 - baseC, renYears,
       msrpC: baseC, bundleAmtC: 0, marginAmtC: y1 - s1, extraAmtC: s1 - s2, termAmtC: s2 - s3,
       netFinalC: s3, totalAnnualC: s3, tcvC: tcvC2, msrpTcvC: grossC,
+      // Contract-total waterfall: [list, after bundle, after partner margin,
+      // after extra discount, after term discount (= tcvC)]. No bundle on renewals.
+      tcvStepsC: [grossC, grossC, afterMarginTcvC, afterExtraTcvC, tcvC2],
     };
   }
   const termAmtC = netC - Math.round(netC * (100 - termPct) / 100);
@@ -420,15 +429,22 @@ function model(cfg, q, partnerFeature) {
   const tcvC = isCoterm ? Math.round(netFinalC * stubYears)
     : addonRenew ? stubC + Math.round(renewalAnnualC * baseYears)
     : Math.round(netFinalC * baseYears);
-  const msrpTcvC = isCoterm ? Math.round(msrpC * stubYears)
-    : addonRenew ? Math.round(msrpC * stubYears) + Math.round((msrpC + existingC) * baseYears)
-    : Math.round(msrpC * baseYears);
+  // Scale an ANNUAL figure to the contract total exactly the way tcvC is built
+  // (co-term stub, stub + renewal term with the current products, or the plain
+  // term), so list / after-each-discount / net all share one rounding rule.
+  const scaleTcv = (x) => isCoterm ? Math.round(x * stubYears)
+    : addonRenew ? Math.round(x * stubYears) + Math.round((x + existingC) * baseYears)
+    : Math.round(x * baseYears);
+  const msrpTcvC = scaleTcv(msrpC);
+  // Contract-total waterfall: [list, after bundle, after partner margin, after
+  // extra discount, after term discount]. The last step is tcvC by construction.
+  const tcvStepsC = [msrpTcvC, scaleTcv(afterBundleC), scaleTcv(step1C), scaleTcv(netC), tcvC];
   return {
     lines, bundleOn, partnerOn, margin, extra, termPct, effYears, isCurrent, dealType, isCoterm, addonRenew, needsDate,
     isRenOnly: false, renBaseC: 0, upliftP: 0, upliftY1C: 0, renYears: [],
     addonDays, addonValid, stubYears, baseYears, existingC, stubC, renewalAnnualC,
     msrpC, bundleAmtC: msrpC - afterBundleC, marginAmtC: afterBundleC - step1C, extraAmtC: step1C - netC, termAmtC,
-    netFinalC, totalAnnualC: renewalAnnualC, tcvC, msrpTcvC,
+    netFinalC, totalAnnualC: renewalAnnualC, tcvC, msrpTcvC, tcvStepsC,
   };
 }
 
@@ -1485,6 +1501,148 @@ function formatMDY(d) {
 }
 function fmtPdf(n) { return Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 
+/* ---- PDF line-item + totals figures (v3.9) ----
+   Everything the quote PDF prints in the product table and the totals waterfall
+   comes from here, in integer cents, so the columns and the totals FOOT exactly:
+     Qty x Unit List Price = Extended List
+     Extended List - Discount Amt = Net Price
+     sum(Extended List) = Total List Price
+     sum(Discount Amt)  = sum of the waterfall discount lines
+     sum(Net Price)     = Net Total = Grand Total = the calculator's total (m.tcvC)
+   The model rounds its totals once, at the quote level; the cent of rounding that
+   can leave between "sum of rounded lines" and "rounded total" is settled on the
+   largest DISCOUNTED line, so an undiscounted line always prints 0% / 0.00 and a
+   direct quote is the same template with every discount at zero.
+   Pure (cfg + quote in, strings + cents out) - exposed as SQG_APP._pdfFigures for
+   the /tests harness (tests/pdfmath.test.js). */
+const CURRENCY_SYMBOLS = { USD: '$', CAD: 'CA$', AUD: 'A$', NZD: 'NZ$', SGD: 'S$', HKD: 'HK$', MXN: 'MX$', EUR: '\u20ac', GBP: '\u00a3', JPY: '\u00a5', CHF: 'CHF ' };
+function currencySymbol(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (!c) return '$';
+  if (CURRENCY_SYMBOLS[c]) return CURRENCY_SYMBOLS[c];
+  if (/^(US ?)?DOLLARS?$|^US\$$|^\$$/.test(c)) return '$';
+  if (/^EUROS?$|^\u20ac$/.test(c)) return '\u20ac';
+  if (/^POUNDS?( STERLING)?$|^\u00a3$/.test(c)) return '\u00a3';
+  return c + ' ';
+}
+// Cents -> "$1,234.56" / "-$1,234.56" (the symbol on EVERY figure).
+function fmtCents(c, sym) {
+  const abs = Math.abs(c);
+  return (c < 0 ? '-' : '') + sym + (abs / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+// "25%" / "12.5%" / "28.75%" - a percentage with up to 2 decimals, no trailing zeros.
+function fmtPctNum(p) { return String(+Number(p || 0).toFixed(2)); }
+// Line discount % = Discount Amt / Extended List (the effective rate on that row).
+function pctString(discC, extC) {
+  if (!(extC > 0) || discC === 0) return '0%';
+  return fmtPctNum(discC / extC * 100) + '%';
+}
+// Unit list price = Extended List / Qty, shown at the fewest decimals - 2, else 4
+// - at which Qty x Unit List Price reproduces Extended List to the cent. Blended
+// tier pricing on an odd quantity can need more; accuracy wins, so the precision
+// keeps growing (to 8) until the multiplication foots.
+function unitPriceString(extC, qty, sym) {
+  if (!(qty > 0)) return '';
+  const unit = extC / 100 / qty;
+  for (let d = 2; d <= 8; d++) {
+    const r = +unit.toFixed(d);
+    if (Math.round(r * qty * 100) === extC) {
+      const shown = d <= 2 ? 2 : d <= 4 ? 4 : d;
+      return sym + r.toLocaleString('en-US', { minimumFractionDigits: shown, maximumFractionDigits: shown });
+    }
+  }
+  return sym + unit.toLocaleString('en-US', { minimumFractionDigits: 8, maximumFractionDigits: 8 });
+}
+
+function pdfFigures(cfg, q, mIn) {
+  const m = mIn || model(cfg, q, PARTNER_FEATURE);
+  const r = cfg.rules;
+  const sym = currencySymbol(q.currency);
+  const listTcvC = m.msrpTcvC, tcvC = m.tcvC;
+  const findProd = (id) => cfg.products.find((x) => x.id === id);
+
+  // ---- per-line Extended List / Net Price in cents ----
+  let rows;
+  if (m.isRenOnly) {
+    // Renewal: every line renews at its current price, uplifted the same way, so
+    // each line's share of the (compounded) list / net contract totals is its
+    // share of the current annual price.
+    const baseC = m.renBaseC;
+    const anyDisc = m.margin > 0 || m.extra > 0 || m.termPct > 0;
+    rows = (q.renewLines || []).map((rl) => {
+      const p = findProd(rl.productId);
+      const priceC = Math.round(Math.max(0, +rl.price || 0) * 100);
+      return {
+        name: p ? p.name : 'Product', qty: int(rl.qty), kind: 'renew',
+        extC: baseC > 0 ? Math.round(priceC * listTcvC / baseC) : 0,
+        netC: baseC > 0 ? Math.round(priceC * tcvC / baseC) : 0,
+        discounted: anyDisc && priceC > 0,
+      };
+    });
+  } else {
+    // New products run for the co-term stub, the stub + the renewal term, or the
+    // plain term; current products (add-on + renewal) renew undiscounted for the term.
+    const mult = m.isCoterm ? m.stubYears : m.addonRenew ? m.stubYears + m.baseYears : m.baseYears;
+    const termKeep = (100 - m.termPct) / 100;
+    rows = m.lines.map((x) => ({
+      name: x.c.prod.name, qty: x.c.units, kind: 'new',
+      extC: Math.round(x.listC * mult),
+      netC: Math.round(x.netC * termKeep * mult),
+      discounted: x.netC * termKeep < x.listC,
+    })).concat(m.addonRenew ? (q.existing || []).map((ex) => {
+      const p = findProd(ex.productId);
+      const priceC = Math.round(Math.max(0, +ex.price || 0) * 100);
+      const c = Math.round(priceC * m.baseYears);
+      return { name: p ? p.name : 'Current product', qty: null, kind: 'existing', extC: c, netC: c, discounted: false };
+    }) : []);
+  }
+  // Settle the cent-rounding residual against the quote totals on the largest
+  // discounted line (or the largest line when nothing is discounted - then list
+  // and net totals are identical, so the row stays exactly 0% / 0.00).
+  const pick = (pred) => rows.reduce((best, row, i) => (pred(row) && (best < 0 || row.extC > rows[best].extC)) ? i : best, -1);
+  let target = pick((row) => row.discounted);
+  if (target < 0) target = pick(() => true);
+  if (target >= 0) {
+    rows[target].extC += listTcvC - rows.reduce((a, row) => a + row.extC, 0);
+    rows[target].netC += tcvC - rows.reduce((a, row) => a + row.netC, 0);
+  }
+
+  // ---- totals waterfall: one visible line per discount layer that applies ----
+  const st = m.tcvStepsC;
+  let layers = [
+    { key: 'bundle', label: 'RCT Bundle Discount', pct: m.bundleOn ? r.bundlePct : 0, amtC: st[0] - st[1] },
+    { key: 'partner', label: 'Partner Discount', pct: m.margin, amtC: st[1] - st[2] },
+    { key: 'extra', label: 'Extra Discount', pct: m.extra, amtC: st[2] - st[3] },
+    { key: 'term', label: 'Term Discount', pct: m.termPct, amtC: st[3] - st[4] },
+  ].filter((l) => l.pct > 0 || l.amtC !== 0);
+  if (!layers.length) layers = [{ key: 'none', label: 'Discount', pct: 0, amtC: 0 }];
+  const discounts = layers.map((l) => ({
+    key: l.key, pct: l.pct, amtC: l.amtC,
+    label: l.label + ' (' + fmtPctNum(l.pct) + '%)',
+    amt: fmtCents(-l.amtC, sym), // prints "-$14,437.50", or "$0.00" for a zero line
+  }));
+
+  const items = rows.map((row) => {
+    const discC = row.extC - row.netC;
+    return {
+      name: row.name, kind: row.kind, qtyN: row.qty, extC: row.extC, discC: discC, netC: row.netC,
+      qty: row.qty == null ? '\u2014' : row.qty.toLocaleString('en-US'),
+      unitList: row.qty == null ? '\u2014' : unitPriceString(row.extC, row.qty, sym),
+      extList: fmtCents(row.extC, sym),
+      discPct: pctString(discC, row.extC),
+      discAmt: fmtCents(discC, sym),
+      net: fmtCents(row.netC, sym),
+    };
+  });
+  return {
+    sym, items,
+    waterfall: {
+      listC: listTcvC, netC: tcvC, discounts,
+      list: fmtCents(listTcvC, sym), net: fmtCents(tcvC, sym), taxes: 'Not Included', grand: fmtCents(tcvC, sym),
+    },
+  };
+}
+
 // The term window shared by every new-product / renewal-only line in a quote.
 function computeTermWindow(v) {
   const { m, q } = v;
@@ -1511,26 +1669,31 @@ function buildQuoteData(v) {
   const existingStartDisp = existingWin ? formatMDY(existingWin.start) : '';
   const existingEndDisp = existingWin ? formatMDY(existingWin.end) : '';
 
-  const items = (m.isRenOnly ? (q.renewLines || []).map((rl) => {
+  // Quote-sheet display rows (annual figures), in the same order as the PDF rows.
+  const uiItems = (m.isRenOnly ? (q.renewLines || []).map((rl) => {
     const p = cfg.products.find((x) => x.id === rl.productId);
     return {
       name: p ? p.name : 'Product',
       qtyDisp: int(rl.qty).toLocaleString('en-US') + ' ' + (p && p.unit === 'user' ? 'users' : 'endpoints') + ' · renews',
       amt: fmt(Math.max(0, +rl.price || 0)),
-      start: termStartDisp, end: termEndDisp, qty: int(rl.qty).toLocaleString('en-US'), total: fmtPdf(Math.max(0, +rl.price || 0)),
+      start: termStartDisp, end: termEndDisp,
     };
   }) : m.lines.map(({ c }) => ({
     name: c.prod.name,
     qtyDisp: c.units.toLocaleString('en-US') + ' ' + (c.isUser ? 'users' : 'endpoints') + (c.support > 0 ? ' · support' : '') + (m.addonRenew ? ' · new' : ''),
     amt: fmt(c.msrp),
-    start: termStartDisp, end: termEndDisp, qty: c.units.toLocaleString('en-US'), total: fmtPdf(c.msrp),
+    start: termStartDisp, end: termEndDisp,
   }))).concat(m.addonRenew ? (q.existing || []).map((ex) => {
     const p = cfg.products.find((x) => x.id === ex.productId);
     return {
       name: p ? p.name : 'Current product', qtyDisp: 'current · renews at today’s price', amt: fmt(Math.max(0, +ex.price || 0)),
-      start: existingStartDisp, end: existingEndDisp, qty: '', total: fmtPdf(Math.max(0, +ex.price || 0)),
+      start: existingStartDisp, end: existingEndDisp,
     };
   }) : []);
+  // PDF columns (contract-term figures that foot: qty x unit = extended,
+  // extended - discount = net) and the totals waterfall - see pdfFigures.
+  const fig = pdfFigures(cfg, q, m);
+  const items = uiItems.map((it, i) => Object.assign({}, it, fig.items[i] || {}));
 
   const totals = [];
   totals.push({ label: m.isRenOnly ? 'Current · annual' : 'List price · annual', amt: fmt(m.msrpC / 100) });
@@ -1618,6 +1781,7 @@ function buildQuoteData(v) {
 
   return {
     items, totals, hasYears, schedule, tcvLabel, tcv: fmt(m.tcvC / 100), tcvPdf: fmtPdf(m.tcvC / 100), tcvSub, savings, partner, termLabel,
+    waterfall: fig.waterfall, currencySymbol: fig.sym,
     meta: cleanedMeta,
   };
 }
@@ -2147,6 +2311,10 @@ window.SQG_APP = {
   // Fresh-quote factory — exposed for the /tests harness (v3.8 asserts auto
   // renewal starts Yes; there is no UI control for it).
   _defaultQuote: defaultQuote,
+  // v3.9 - PDF line-item / totals figures (pure: cfg + quote in) - exposed for
+  // the /tests harness, which asserts every column and the waterfall foot.
+  _pdfFigures: pdfFigures,
+  _model: function (cfg, q) { return model(cfg, q, PARTNER_FEATURE); },
   // v3.7 — automatic, guarded HQ-address fill; called by voice.js's AI
   // reasoning pass after a dictation session ends.
   autoLookupAddress: maybeAutoLookupBillingAddress,

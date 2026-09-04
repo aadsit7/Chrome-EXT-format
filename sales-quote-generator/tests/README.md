@@ -75,11 +75,31 @@ renders nothing (voice is silent after stopping; no recap panel).
 ### `layout.test.js` — flow-based one-page PDF (Bug 1)
 
 Drives `window.SQG_PDF._layoutProbe` (the logo's `chrome.runtime.getURL` call is
-stubbed) with six quotes — a minimal direct quote, a direct quote with a long
+stubbed) with eight quotes — a minimal direct quote, a direct quote with a long
 customer name + long addresses, a partner quote with all partner fields long, a
-partner quote at max product lines, a partner renewal, and a quote with a 60+
-character email — and asserts, off the recorded glyph boxes, **one-page fit, zero
-overlapping text bounding boxes, and zero column overflows** for every one.
+partner quote at max product lines, a partner renewal (the $2.8875 unit-price
+example), a quote with a 60+ character email, a v3.9 worst case (max lines, all
+four discount layers, long addresses) and a EUR quote — and asserts, off the
+recorded glyph boxes, **one-page fit, zero overlapping text bounding boxes, zero
+column overflows** (v3.9: every product-table figure stays inside its own
+column) **and a complete totals waterfall** (Total List Price, one line per
+discount, Net Total, Taxes, Grand Total, values on the 588pt edge) for every one.
+
+### `pdfmath.test.js` — the v3.9 PDF figures foot
+
+Loads app.js head-less and drives `SQG_APP._pdfFigures` (the exact strings the
+PDF prints) against `SQG_APP._model` (the calculator) for every quote type —
+the worked example (20,000 × $2.8875 = $57,750.00, Partner Discount (25%)
+−$14,437.50, Grand Total $43,312.50), a direct quote with no discount (same
+template, `0%` / `$0.00` / `Discount (0%)`), all four discount layers stacked
+over 3 years with mixed user/endpoint lines, a co-term add-on, an add-on +
+renewal with current products, a 3-year renewal with uplift, a prorated
+18-month quote, EUR, and a 100% margin — asserting on the printed strings that
+Qty × Unit List Price = Extended List, Extended List − Discount Amt = Net
+Price, Σ Extended = Total List Price = the model's list contract value,
+Σ Discount Amt = the waterfall discount lines = Total List − Net Total, and
+Σ Net Price = Net Total = Grand Total = `m.tcvC`; that an undiscounted line
+never prints blank; and that every figure carries the currency symbol.
 
 ### `cleaning.test.js` — value cleaning (Bugs 2 & 3)
 
@@ -101,7 +121,7 @@ and a run-on dictation glob fused onto ".com" is rejected by the email guard
 ```bash
 cd sales-quote-generator/tests
 npm install        # installs jsdom (dev-only) for the DOM-driven checks
-npm test           # runs analyze / voice / cleaning / layout
+npm test           # runs analyze / voice / cleaning / layout / quotetypes / pdfmath
 ```
 
 Both files also run without `npm install`: `voice.test.js` needs nothing, and
