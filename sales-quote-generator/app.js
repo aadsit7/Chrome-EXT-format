@@ -177,7 +177,8 @@ function defaultQuote() {
     // lookedUp marks a Bill To address filled by "Look up address", which shows
     // the "Auto-filled — please verify" note. (Changes 2c & 3.)
     billingAuto: { billTo: true, contact: true, lookedUp: false },
-    paymentMethod: 'Credit Card, ACH/Wire, Check', paymentTerms: 'Net 120', currency: 'USD',
+    // Payment terms default to Net 30 on every quote (v3.10).
+    paymentMethod: 'Credit Card, ACH/Wire, Check', paymentTerms: 'Net 30', currency: 'USD',
     // Auto renewal is ALWAYS Yes (v3.8) and has no UI control — it only
     // surfaces as "Auto Renewal: Yes" on the PDF and in the saved sheet row.
     autoRenewal: true,
@@ -223,6 +224,10 @@ try {
     // by an older version may carry false — flip it on restore so no quote
     // can print "Auto Renewal: No" again.
     state.quote.autoRenewal = true;
+    // v3.10: payment terms default to Net 30. A quote saved by an older version
+    // still carrying that version's "Net 120" default moves to Net 30, so every
+    // quote generated from now on prints Net 30 unless the rep types otherwise.
+    if (String(state.quote.paymentTerms || '').trim() === 'Net 120') state.quote.paymentTerms = 'Net 30';
     // A restored in-progress quote may be a type the admin has since turned off
     // (or an install migrating to the new default where only net-new is on).
     // Clamp it to an enabled type and queue a one-time toast shown right after
@@ -309,6 +314,12 @@ function flash(text, tone) {
 function int(n) { n = Number(String(n).replace(/[^0-9]/g, '')); return isFinite(n) ? Math.max(0, Math.floor(n)) : 0; }
 function fmt(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
 function fmtU(n) { return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+// Unit-price field value: 2 decimals, or up to 4 when the rate needs them (2.8875).
+function fmtRate(n) {
+  n = Number(n || 0);
+  const two = n.toFixed(2);
+  return Math.abs(+two - n) < 5e-7 ? two : n.toFixed(4).replace(/0+$/, '');
+}
 function sortTiers(list) { return list.slice().sort((a, b) => (a.upTo == null ? Infinity : a.upTo) - (b.upTo == null ? Infinity : b.upTo)); }
 
 function graduated(units, tiers) {
@@ -322,20 +333,32 @@ function graduated(units, tiers) {
   return sum;
 }
 
+// v3.10 — a per-line unit price typed by the rep (ln.rate). Null / blank / zero
+// means "use the volume tiers". $/user/month for user products, $/endpoint/year
+// for endpoint products (the same units the rate tables use).
+function customRate(ln) {
+  if (!ln || ln.rate == null || String(ln.rate).trim() === '') return null;
+  const v = Number(ln.rate);
+  return isFinite(v) && v > 0 ? v : null;
+}
+
 function computeLine(ln, cfg, supportOn) {
   const prod = cfg.products.find((p) => p.id === ln.productId) || cfg.products[0] || { name: '?', unit: 'endpoint', platformFee: 0, minTotal: 0, factor: 1, id: 'none' };
   const isUser = prod.unit === 'user';
   const r = cfg.rules;
   let units = int(ln.qty);
+  // A custom unit price replaces ONLY the graduated tier lookup; the platform
+  // fee, yearly minimum and support rules still apply on top exactly as before.
+  const custom = customRate(ln);
   let baseARR = 0, fee = 0, waived = false, bpp = 0, support = 0, minApplied = false;
   if (isUser) {
     units = Math.max(r.minUsers, units);
-    baseARR = graduated(units, sortTiers(cfg.userTiers)) * 12;
+    baseARR = (custom != null ? units * custom : graduated(units, sortTiers(cfg.userTiers))) * 12;
     waived = true; bpp = baseARR;
   } else {
     const f = prod.factor || 1;
     const tiers = sortTiers(cfg.epTiers).map((t) => ({ upTo: t.upTo, rate: Math.max(+(t.rate * f).toFixed(4), 0.05) }));
-    baseARR = graduated(units, tiers);
+    baseARR = custom != null ? units * custom : graduated(units, tiers);
     fee = baseARR >= r.waiveAt ? 0 : (prod.platformFee || 0);
     waived = fee === 0 && (prod.platformFee || 0) > 0;
     bpp = Math.max(baseARR + fee, prod.minTotal || 0);
@@ -343,7 +366,10 @@ function computeLine(ln, cfg, supportOn) {
     support = supportOn ? Math.max(bpp * r.suppPct / 100, r.suppMin) : 0;
   }
   const msrp = bpp + support;
-  return { prod, isUser, units, baseARR, fee, waived, bpp, support, minApplied, msrp };
+  // The effective base unit price (what the "Unit price" field shows): the typed
+  // rate, or the blended tier rate for this quantity.
+  const rate = custom != null ? custom : (units > 0 ? (isUser ? baseARR / 12 / units : baseARR / units) : 0);
+  return { prod, isUser, units, baseARR, fee, waived, bpp, support, minApplied, msrp, rate, customRate: custom != null };
 }
 
 function model(cfg, q, partnerFeature) {
@@ -1010,7 +1036,8 @@ function sectionSelling(v) {
       const listTop = topRate * c.units;
       const volPct = listTop > 0 ? Math.max(0, (listTop - c.baseARR) / listTop * 100) : 0;
       const bits = [fmtU(c.units > 0 ? c.msrp / c.units / 12 : 0) + '/' + noun + '/mo'];
-      if (volPct >= 0.05) bits.push(volPct.toFixed(0) + '% volume discount');
+      if (c.customRate) bits.push('custom unit price');
+      else if (volPct >= 0.05) bits.push(volPct.toFixed(0) + '% volume discount');
       if (!c.isUser && c.fee > 0) bits.push('incl. ' + fmt(c.fee) + ' platform fee');
       if (c.waived && !c.isUser) bits.push('platform fee waived');
       if (c.minApplied) bits.push(fmt(c.prod.minTotal) + ' yearly minimum');
@@ -1019,6 +1046,14 @@ function sectionSelling(v) {
         let n = int(val);
         if (c.isUser) n = Math.max(r.minUsers, n || r.minUsers);
         setQ({ lines: q.lines.map((l) => l.id === ln.id ? Object.assign({}, l, { qty: n || 1 }) : l) });
+      };
+      // v3.10 — editable unit price. Blank / 0 / a non-number clears the override
+      // and the line goes back to volume pricing; a positive value is kept to 4
+      // decimals (e.g. 2.8875) so the PDF's Unit List Price prints exactly it.
+      const rateUnit = c.isUser ? '/user/mo' : '/endpoint/yr';
+      const setRate = (val) => {
+        const n = parseFloat(String(val == null ? '' : val).replace(/[^0-9.]/g, ''));
+        setQ({ lines: q.lines.map((l) => l.id === ln.id ? Object.assign({}, l, { rate: isFinite(n) && n > 0 ? +n.toFixed(4) : null }) : l) });
       };
       list.append(h('div', { class: 'sqg-line' },
         h('div', { class: 'sqg-line-top' },
@@ -1046,6 +1081,21 @@ function sectionSelling(v) {
           q.lines.length > 1
             ? iconButton('x', 'sm', () => setQ({ lines: q.lines.filter((l) => l.id !== ln.id) }), 'Remove product')
             : h('span')
+        ),
+        h('div', { class: 'sqg-line-rate' },
+          h('span', { class: 'sqg-line-rate-label' }, 'Unit price'),
+          h('div', { class: 'sqg-money', style: 'flex: 0 0 auto;' },
+            h('span', { class: 'sqg-suffix' }, currencySymbol(q.currency)),
+            h('input', {
+              class: 'sqg-in', type: 'text', inputmode: 'decimal', value: fmtRate(c.rate), dataK: 'rate-' + ln.id,
+              'aria-label': 'Unit price ' + rateUnit, onChange: (e) => setRate(e.target.value),
+              style: 'height: 34px; width: 84px; padding: 0 8px; border-radius: 9px; font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); text-align: right; ' + IN_BASE,
+            }),
+            h('span', { class: 'sqg-suffix' }, rateUnit)
+          ),
+          c.customRate
+            ? h('button', { class: 'sqg-link-btn sqg-line-rate-reset', type: 'button', onClick: () => setRate('') }, 'Use volume pricing')
+            : h('span', { class: 'sqg-line-rate-hint' }, 'edit to override')
         )
       ));
     }

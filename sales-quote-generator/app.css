@@ -197,6 +197,12 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 .sqg-stepper { display: flex; align-items: center; gap: 5px; }
 .sqg-stepper-unit { font-size: 11px; color: var(--text-tertiary); margin-left: 3px; }
 
+/* Editable unit price (v3.10): "$ [ 4.00 ] /user/mo" + a reset link when overridden */
+.sqg-line-rate { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sqg-line-rate-label { font-size: 11.5px; color: var(--text-tertiary); min-width: 60px; }
+.sqg-line-rate-hint { font-size: 11px; color: var(--text-tertiary); }
+.sqg-line-rate .sqg-line-rate-reset { padding: 0; font-size: 11.5px; color: var(--blue); text-decoration: none; white-space: nowrap; }
+
 /* Quantity stepper buttons */
 .sqg-qty-btn {
   width: 30px; height: 32px; border: 1px solid var(--border-default); border-radius: 9px;
